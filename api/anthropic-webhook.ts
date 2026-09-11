@@ -1,0 +1,80 @@
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { env } from "../lib/env.js";
+import { anthropic, lastIdleEvent, latestAgentReport, listAllEvents, meta, pendingCustomToolUses, setMeta } from "../lib/anthropic.js";
+import { replyInThread } from "../lib/gmail.js";
+import { releaseBrowser } from "../lib/browser.js";
+import { handleCustomTool } from "../lib/tools.js";
+
+export const config = { api: { bodyParser: false } };
+
+async function rawBody(req: VercelRequest): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(typeof c === "string" ? Buffer.from(c) : c);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function headerMap(req: VercelRequest): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string") out[k] = v;
+  return out;
+}
+
+/**
+ * Anthropic -> us. Subscribe this endpoint (Console -> Manage -> Webhooks) to
+ * session.status_idled and session.status_terminated. Payloads are thin, so we fetch the session
+ * and its events and act on the current state.
+ */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "POST") return res.status(405).end();
+  const body = await rawBody(req);
+  let event;
+  try {
+    event = anthropic().beta.webhooks.unwrap(body, { headers: headerMap(req), key: env.anthropic.webhookSigningKey() });
+  } catch {
+    return res.status(400).json({ error: "invalid signature" });
+  }
+
+  const data = event.data as { type: string; id: string };
+  if (!data.type.startsWith("session.")) return res.status(204).end();
+
+  const session = await anthropic().beta.sessions.retrieve(data.id).catch(() => undefined);
+  if (!session) return res.status(204).end();
+  const m = meta(session);
+  if (!m.gmail_thread_id) return res.status(204).end(); // not one of ours
+
+  if (data.type === "session.status_idled") {
+    const events = await listAllEvents(session.id);
+    const idle = lastIdleEvent(events);
+    if (!idle) return res.status(204).end();
+
+    if (idle.stop_reason.type === "requires_action") {
+      for (const call of pendingCustomToolUses(events)) await handleCustomTool(session, call);
+      return res.status(200).json({ handled: "tools" });
+    }
+
+    if (m.last_replied_idle_id === idle.id) return res.status(200).json({ handled: "duplicate" });
+    let report = latestAgentReport(events);
+    if (idle.stop_reason.type === "budget_reached") {
+      report = `I stopped because this task reached its spend cap ($${env.policy.sessionBudgetUsd()}). Reply if you want me to continue.\n\n${report}`;
+    } else if (idle.stop_reason.type === "retries_exhausted") {
+      report = `I hit a platform error and could not finish.\n\n${report}`;
+    }
+    if (report) {
+      await replyInThread({
+        threadId: m.gmail_thread_id,
+        subject: m.gmail_subject ?? "Task",
+        inReplyTo: m.last_gmail_message_id_header || undefined,
+        body: report,
+      });
+    }
+    await setMeta(session.id, { last_replied_idle_id: idle.id });
+    return res.status(200).json({ handled: "reported" });
+  }
+
+  if (data.type === "session.status_terminated") {
+    if (m.browserbase_session_id) await releaseBrowser(m.browserbase_session_id);
+    return res.status(200).json({ handled: "terminated" });
+  }
+
+  return res.status(204).end();
+}

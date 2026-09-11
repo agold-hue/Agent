@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/inbox.ts": { "maxDuration": 300 },
+    "api/anthropic-webhook.ts": { "maxDuration": 300 }
+  },
+  "crons": [
+    { "path": "/api/inbox", "schedule": "* * * * *" }
+  ]
+}
