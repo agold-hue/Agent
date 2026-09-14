@@ -47,7 +47,7 @@ export function toChatItems(events: SessionEvent[]): ChatItem[] {
         break;
       }
       case "agent.custom_tool_use":
-        if (e.name === "checkpoint" || e.name === "ask_user") {
+        if (e.name === "checkpoint" || e.name === "ask_user" || e.name === "send_email") {
           items.push({ kind: "tool", id: e.id, name: e.name, input: e.input as Record<string, unknown>, at, resolved: answered.has(e.id) });
         }
         break;

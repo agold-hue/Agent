@@ -90,6 +90,28 @@ export const customTools: Anthropic.Beta.Agents.AgentCreateParams["tools"] = [
   },
   {
     type: "custom",
+    name: "send_email",
+    description:
+      "Send an email from the user's assistant mailbox to anyone (a broker, a realtor, a vendor), signed as the " +
+      "user's assistant. Replies come back to you automatically as new tasks. Attach files you wrote to " +
+      "/mnt/session/outputs/ by filename. The host applies the user's approval rules and holds the email for the " +
+      "user's yes when required, so write the final version, not a draft. Use mode 'send_to_owner' to email the " +
+      "user something for review instead of an outsider.",
+    input_schema: obj(
+      {
+        to: { type: "string", description: "Recipient address(es), comma separated. Use a contact from contacts.md." },
+        cc: { type: "string" },
+        subject: { type: "string" },
+        body: { type: "string", description: "Plain text. Courteous, specific, signed with the user's name and 'via assistant'." },
+        attachments: { type: "array", items: { type: "string" }, description: "Filenames under /mnt/session/outputs/ to attach." },
+        mode: { type: "string", enum: ["send", "send_to_owner"], description: "Default 'send'." },
+        purpose: { type: "string", description: "One line on why this email is being sent, shown to the user for approval." },
+      },
+      ["to", "subject", "body"],
+    ),
+  },
+  {
+    type: "custom",
     name: "checkpoint",
     description:
       "REQUIRED before any irreversible action: paying, placing an order, sending a message or post as the user, " +

@@ -20,9 +20,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     action = "started";
   } else {
     const m = meta(session);
-    if (m.pending_kind === "checkpoint") {
+    if (m.pending_kind === "checkpoint" || m.pending_kind === "send_email") {
       await resolvePending(session, text, isApprovalReply(text));
-      action = "checkpoint_resolved";
+      action = `${m.pending_kind}_resolved`;
     } else if (m.pending_kind === "ask_user") {
       await resolvePending(session, text, null);
       action = "question_answered";

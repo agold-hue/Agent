@@ -1,6 +1,6 @@
 # Personal Web Agent
 
-A secretary you chat with or email. It remembers everything you have told it, keeps your calendar straight, opens a hosted browser that holds your own logins, does the job on whatever website it takes, and reports back. Nothing runs on your machine.
+A secretary you chat with or email. It remembers everything you have told it, keeps your calendar straight, runs multi-step projects over days or weeks (research, shortlist, get your go-ahead, write to your broker or realtor, chase replies), opens a hosted browser that holds your own logins, and reports back. Nothing runs on your machine.
 
 ```
 you ──chat──▶ public/index.html ──▶ api/chat/send ──┐
@@ -14,7 +14,9 @@ chat ◀── api/chat/stream (live) ── / ── email ◀── api/anthro
                     │
                     ├─ login ........ 1Password ▶ fills the form in the hosted browser (password never reaches the agent)
                     ├─ checkpoint ... auto-approve under your rules, else email you and wait for "yes"
-                    ├─ ask_user ..... one batched question email with defaults + deadline
+                    ├─ ask_user ..... one batched question with defaults + deadline
+                    ├─ send_email ... to anyone, from the assistant mailbox; held for your yes unless auto-approved
+                    │                 replies from those people come back through api/inbox as new tasks
                     └─ get_email_code / save_login / browser_session
 ```
 
@@ -29,7 +31,8 @@ chat ◀── api/chat/stream (live) ── / ── email ◀── api/anthro
 | Inbox route (`api/inbox.ts`) | Vercel, every minute | Unread mail from you → new session or follow-up; resolves approvals and answers; expires unanswered questions |
 | Webhook route (`api/anthropic-webhook.ts`) | Vercel | Runs the custom tools, emails the final report |
 | Passwords | 1Password service account | Looked up by website URL; TOTP handled; new accounts saved back |
-| Memory | Anthropic memory store | `standing_instructions.md`, `calendar.md`, `facts.md`, `preferences.md`, `sites/<domain>.md`, `history/…`, `conversations/YYYY-MM-DD.md` |
+| Memory | Anthropic memory store | `standing_instructions.md`, `calendar.md`, `facts.md`, `contacts.md`, `preferences.md`, `projects/<slug>.md`, `sites/<domain>.md`, `history/…`, `conversations/YYYY-MM-DD.md` |
+| Daily review | `api/inbox.ts`, once a day at `DAILY_REVIEW_HOUR` | Walks open projects, nudges people who owe a reply, briefs you only if something needs attention |
 
 State lives in session metadata (Gmail thread id, pending approval, browser session id). No database.
 
@@ -57,6 +60,8 @@ Paste the printed `AGENT_ID`, `ENVIRONMENT_ID`, `MEMORY_STORE_ID`, `SANDBOX_TOOL
 **Chat**: open your Vercel URL, enter `CHAT_PASSWORD`. Replies stream in. A chat session stays warm for `CHAT_SESSION_MAX_AGE_HOURS`; after that a fresh session starts, but memory carries over, so nothing is forgotten. Approval requests and questions appear as cards; "yes" or the Approve button approves, anything else is taken as new instructions.
 
 **Memory of everything**: every chat and email, both directions, is appended by the host to `conversations/YYYY-MM-DD.md` in the memory store. The agent greps it when you refer to something from the past. Dated commitments you mention ("appointment in FL next Wednesday") go into `calendar.md` and are checked before it schedules any delivery, pickup or appointment. Every message is stamped with the current time in `OWNER_TIMEZONE` so relative dates resolve correctly.
+
+**Projects** ("buy me a house, 3 bed, under $650k, Bucks County"): the agent writes a project file, researches in the browser, shows you a shortlist with a recommendation and one question. On your yes it emails your mortgage broker from `contacts.md` for a pre-approval letter, logs that it is waiting, and when the reply lands (attachments included) it drafts the offer email to your realtor with the letter attached and holds it for your approval. Fill in `contacts.md` so "my broker" resolves to a real address. Every outbound email to an outsider is held for your yes unless you put `message` in `AUTO_APPROVE_TYPES`.
 
 **Email**: email the agent from your address. Subject is the task title, body is the task. Optional `TASK_PASSPHRASE` gates new tasks. Replies in the same thread continue the same session, so "yes" approves a checkpoint and a numbered list answers its questions.
 

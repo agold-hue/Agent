@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { env } from "../lib/env.js";
 import { anthropic, channelOf, lastIdleEvent, latestAgentReport, listAllEvents, meta, pendingCustomToolUses, setMeta } from "../lib/anthropic.js";
-import { replyInThread } from "../lib/gmail.js";
+import { notifyOwner } from "../lib/notify.js";
 import { releaseBrowser } from "../lib/browser.js";
 import { handleCustomTool } from "../lib/tools.js";
 import { appendTranscript } from "../lib/transcript.js";
@@ -62,15 +62,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } else if (idle.stop_reason.type === "retries_exhausted") {
       report = `I hit a platform error and could not finish.\n\n${report}`;
     }
-    if (report) {
-      if (channel === "email") {
-        await replyInThread({
-          threadId: m.gmail_thread_id,
-          subject: m.gmail_subject ?? "Task",
-          inReplyTo: m.last_gmail_message_id_header || undefined,
-          body: report,
-        });
-      }
+    // The daily review says NO_REPORT when nothing needs the owner; stay silent then.
+    const silent = /^NO_REPORT\b/.test(report.trim()) && !!m.review_day;
+    if (report && !silent) {
+      await notifyOwner(session, report, m.review_day ? `Daily review ${m.review_day}` : undefined);
       await appendTranscript({ channel, role: "agent", text: report }).catch(() => {});
     }
     await setMeta(session.id, { last_replied_idle_id: idle.id });

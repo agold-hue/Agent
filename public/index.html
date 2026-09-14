@@ -110,14 +110,18 @@
         const i = item.input;
         h.textContent = "Approval needed";
         body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}`;
+      } else if (item.name === "send_email") {
+        const i = item.input;
+        h.textContent = "Email ready to send";
+        body.textContent = `${i.purpose ? i.purpose + "\n\n" : ""}To: ${i.to}${i.cc ? "\nCc: " + i.cc : ""}\nSubject: ${i.subject}${(i.attachments || []).length ? "\nAttachments: " + i.attachments.join(", ") : ""}\n\n${i.body}`;
       } else {
         h.textContent = "Quick questions";
         body.textContent = (item.input.questions || []).map((q, n) => `${n + 1}. ${q.question}\n   Default: ${q.default}`).join("\n");
       }
       el.append(h, body);
       const actions = document.createElement("div"); actions.className = "actions";
-      if (item.name === "checkpoint") {
-        const yes = document.createElement("button"); yes.className = "primary"; yes.textContent = "Approve";
+      if (item.name === "checkpoint" || item.name === "send_email") {
+        const yes = document.createElement("button"); yes.className = "primary"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve";
         yes.onclick = () => send("yes");
         const no = document.createElement("button"); no.textContent = "Change…";
         no.onclick = () => $("text").focus();

@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import Anthropic, { toFile } from "@anthropic-ai/sdk";
 import { env } from "./env.js";
 import { MEMORY_STORE_NAME, SANDBOX_TOOLS_MOUNT } from "./agent-config.js";
 
@@ -15,7 +15,9 @@ export type Session = Anthropic.Beta.Sessions.BetaManagedAgentsSession;
 /**
  * Session metadata is our only state store. Keys (max 16, values <= 512 chars):
  *   channel (chat | email),
- *   gmail_thread_id, gmail_subject, last_gmail_message_id, last_gmail_message_id_header,
+ *   gmail_thread_id (owner-facing thread), gmail_subject, last_gmail_message_id, last_gmail_message_id_header,
+ *   correspondent, correspondent_thread_id, correspondent_subject (a reply from a third party),
+ *   review_day (the daily project review session),
  *   browserbase_session_id,
  *   pending_kind (checkpoint | ask_user), pending_event_id, pending_since, pending_deadline,
  *   last_replied_idle_id
@@ -55,11 +57,19 @@ export async function findSessionByThread(threadId: string): Promise<Session | u
   return undefined;
 }
 
+export interface SessionFile {
+  filename: string;
+  mimeType: string;
+  content: Buffer;
+}
+
 export async function createSession(opts: {
   channel: "chat" | "email";
   title: string;
   metadata?: Record<string, string>;
   text: string;
+  /** Files (e.g. email attachments) mounted at /workspace/inbox/<filename> before the first turn. */
+  files?: SessionFile[];
 }): Promise<Session> {
   const resources: Anthropic.Beta.Sessions.SessionCreateParams["resources"] = [
     {
@@ -75,7 +85,7 @@ export async function createSession(opts: {
   if (toolsFile) resources.push({ type: "file", file_id: toolsFile, mount_path: SANDBOX_TOOLS_MOUNT });
 
   const budget = env.policy.sessionBudgetUsd();
-  return anthropic().beta.sessions.create({
+  const session = await anthropic().beta.sessions.create({
     agent: env.anthropic.agentId(),
     environment_id: env.anthropic.environmentId(),
     title: opts.title.slice(0, 120) || "Task",
@@ -87,9 +97,39 @@ export async function createSession(opts: {
     },
     // Budget amount is minor units (cents) as an integer string, per the API.
     ...(budget > 0 ? { budget: { type: "limit" as const, max_list_cost: { amount: String(Math.round(budget * 100)), currency: "USD" as const } } } : {}),
-    initial_events: [{ type: "user.message", content: [{ type: "text", text: opts.text }] }],
+    ...(opts.files?.length ? {} : { initial_events: [{ type: "user.message" as const, content: [{ type: "text" as const, text: opts.text }] }] }),
   });
+  if (opts.files?.length) {
+    // Files can only be attached before the turn that needs them, so mount first, then start.
+    for (const f of opts.files) await addFileToSession(session.id, f);
+    await sendUserMessage(session.id, opts.text);
+  }
+  return session;
 }
+
+export async function addFileToSession(sessionId: string, f: SessionFile): Promise<string> {
+  const uploaded = await anthropic().beta.files.upload({
+    file: await toFile(f.content, f.filename, { type: f.mimeType }),
+  });
+  const safe = f.filename.replace(/[^A-Za-z0-9._-]/g, "_");
+  await anthropic().beta.sessions.resources.add(sessionId, { type: "file", file_id: uploaded.id, mount_path: `/workspace/inbox/${safe}` });
+  return `/workspace/inbox/${safe}`;
+}
+
+/** Files the agent wrote to /mnt/session/outputs/ during this session. */
+export async function listSessionOutputs(sessionId: string): Promise<Array<{ id: string; filename: string; mimeType: string }>> {
+  const out: Array<{ id: string; filename: string; mimeType: string }> = [];
+  for await (const f of anthropic().beta.files.list({ scope_id: sessionId, betas: ["managed-agents-2026-04-01"] })) {
+    out.push({ id: f.id, filename: f.filename, mimeType: f.mime_type });
+  }
+  return out;
+}
+
+export async function downloadFile(fileId: string): Promise<Buffer> {
+  const resp = await anthropic().beta.files.download(fileId);
+  return Buffer.from(await resp.arrayBuffer());
+}
+
 
 export async function sendUserMessage(sessionId: string, text: string): Promise<void> {
   await anthropic().beta.sessions.events.send(sessionId, {

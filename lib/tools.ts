@@ -1,18 +1,75 @@
 import { createBrowser, liveViewUrl, reuseBrowser } from "./browser.js";
 import { env } from "./env.js";
-import { findRecentCodes, replyInThread } from "./gmail.js";
+import { findRecentCodes, sendMail, type OutboundAttachment } from "./gmail.js";
 import { loginToSite } from "./login.js";
+import { notifyOwner } from "./notify.js";
 import { saveCredential, registrableDomain } from "./onepassword.js";
-import { autoApprove, formatCheckpointEmail, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
-import { channelOf, meta, sendToolResult, setMeta, type CustomToolUse, type Session } from "./anthropic.js";
+import { autoApprove, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
+import {
+  channelOf,
+  downloadFile,
+  listAllEvents,
+  listSessionOutputs,
+  meta,
+  sendToolResult,
+  setMeta,
+  type CustomToolUse,
+  type Session,
+} from "./anthropic.js";
+
+export interface SendEmailInput {
+  to: string;
+  cc?: string;
+  subject: string;
+  body: string;
+  attachments?: string[];
+  mode?: "send" | "send_to_owner";
+  purpose?: string;
+}
+
+async function markPending(sessionId: string, kind: "checkpoint" | "ask_user" | "send_email", eventId: string, deadline = "") {
+  await setMeta(sessionId, { pending_kind: kind, pending_event_id: eventId, pending_since: new Date().toISOString(), pending_deadline: deadline });
+}
+
+async function clearPending(sessionId: string) {
+  await setMeta(sessionId, { pending_kind: null, pending_event_id: null, pending_since: null, pending_deadline: null });
+}
+
+/** Actually send an email the agent composed, with any attachments from the session's outputs. */
+async function deliverEmail(session: Session, input: SendEmailInput): Promise<string> {
+  const attachments: OutboundAttachment[] = [];
+  const missing: string[] = [];
+  if (input.attachments?.length) {
+    const outputs = await listSessionOutputs(session.id);
+    for (const name of input.attachments) {
+      const f = outputs.find((o) => o.filename === name || o.filename.endsWith(`/${name}`));
+      if (!f) {
+        missing.push(name);
+        continue;
+      }
+      attachments.push({ filename: name.split("/").pop() ?? name, mimeType: f.mimeType, content: await downloadFile(f.id) });
+    }
+  }
+  const to = input.mode === "send_to_owner" ? env.gmail.ownerEmail() : input.to;
+  const cc = input.mode === "send_to_owner" ? undefined : process.env.CC_OWNER_ON_OUTBOUND === "true" ? env.gmail.ownerEmail() : input.cc;
+  const sent = await sendMail({ to, cc, subject: input.subject, body: input.body, attachments });
+  return JSON.stringify({
+    sent: true,
+    to,
+    thread_id: sent.threadId,
+    attached: attachments.map((a) => a.filename),
+    ...(missing.length ? { missing_attachments: missing } : {}),
+    note: "Replies from the recipient will reach you as a new task. Record what you are waiting for in the project file.",
+  });
+}
 
 /**
- * Executes one custom tool call. Everything that touches secrets or the user's money happens here,
- * on our side, never in the sandbox.
+ * Executes one custom tool call. Everything that touches secrets, the user's money, or the user's
+ * name happens here, on our side, never in the sandbox.
  *
- * checkpoint and ask_user leave the tool call pending: on the email channel we send a mail and the
- * inbox route resolves it from the reply; on the chat channel the UI renders the pending tool call
- * and the next chat message resolves it.
+ * checkpoint, ask_user and (when not auto-approved) send_email leave the tool call pending: on the
+ * email channel the owner gets a mail and the inbox route resolves it from the reply; on chat the
+ * UI renders the pending card and the next chat message resolves it.
  */
 export async function handleCustomTool(session: Session, call: CustomToolUse): Promise<void> {
   const m = meta(session);
@@ -67,47 +124,35 @@ export async function handleCustomTool(session: Session, call: CustomToolUse): P
         return reply(JSON.stringify(found.slice(0, 3)));
       }
 
+      case "send_email": {
+        const draft = input as unknown as SendEmailInput;
+        // Mail to the owner is never gated. Mail to anyone else is a "message" action under the policy.
+        if (draft.mode === "send_to_owner") return reply(await deliverEmail(session, draft));
+        const verdict = autoApprove({ action_type: "message", summary: draft.purpose ?? draft.subject, details: draft.body });
+        if (verdict.ok) return reply(await deliverEmail(session, draft));
+        await notifyOwner(session, formatEmailApproval(draft), `Approve email to ${draft.to}`);
+        await markPending(session.id, "send_email", call.id);
+        return; // resolved by the inbox route or the chat send route
+      }
+
       case "checkpoint": {
         const cp = input as unknown as CheckpointInput;
         const verdict = autoApprove(cp);
         if (verdict.ok) return reply(`APPROVED (${verdict.reason}). Proceed exactly as described.`);
-        if (channel === "email") {
-          const live = m.browserbase_session_id ? await liveViewUrl(m.browserbase_session_id).catch(() => undefined) : undefined;
-          await replyInThread({
-            threadId: m.gmail_thread_id,
-            subject: m.gmail_subject ?? "Task",
-            inReplyTo: m.last_gmail_message_id_header || undefined,
-            body: formatCheckpointEmail(cp, live),
-          });
-        }
-        await setMeta(session.id, {
-          pending_kind: "checkpoint",
-          pending_event_id: call.id,
-          pending_since: new Date().toISOString(),
-          pending_deadline: "",
-        });
-        return; // resolved by the inbox route or the chat send route
+        const live = m.browserbase_session_id ? await liveViewUrl(m.browserbase_session_id).catch(() => undefined) : undefined;
+        await notifyOwner(session, formatCheckpointEmail(cp, live), `Approval needed: ${cp.summary}`);
+        await markPending(session.id, "checkpoint", call.id);
+        return;
       }
 
       case "ask_user": {
         const questions = (input.questions as Array<{ question: string; default: string }>) ?? [];
         const hours = env.policy.askUserDeadlineHours();
-        if (channel === "email") {
-          await replyInThread({
-            threadId: m.gmail_thread_id,
-            subject: m.gmail_subject ?? "Task",
-            inReplyTo: m.last_gmail_message_id_header || undefined,
-            body: formatQuestionsEmail(questions, hours),
-          });
-        }
-        await setMeta(session.id, {
-          pending_kind: "ask_user",
-          pending_event_id: call.id,
-          pending_since: new Date().toISOString(),
-          // In chat the user is present; do not time out on them.
-          pending_deadline: channel === "email" ? new Date(Date.now() + hours * 3_600_000).toISOString() : "",
-        });
-        return; // resolved by the inbox route (reply or deadline) or the chat send route
+        await notifyOwner(session, formatQuestionsEmail(questions, hours), "Quick questions");
+        // In chat the user is present; do not time out on them.
+        const deadline = channel === "email" ? new Date(Date.now() + hours * 3_600_000).toISOString() : "";
+        await markPending(session.id, "ask_user", call.id, deadline);
+        return;
       }
 
       default:
@@ -119,20 +164,39 @@ export async function handleCustomTool(session: Session, call: CustomToolUse): P
   }
 }
 
-/** Called when the owner replies while a checkpoint or question is pending. */
+/** Called when the owner replies while a checkpoint, question, or outbound email is pending. */
 export async function resolvePending(session: Session, userText: string, approved: boolean | null): Promise<void> {
   const m = meta(session);
   if (!m.pending_event_id) return;
   let text: string;
+  let isError = false;
   if (m.pending_kind === "checkpoint") {
     text = approved
       ? "APPROVED by the user. Proceed exactly as described in the checkpoint."
       : `DENIED. The user replied:\n\n${userText}\n\nTreat this as new instructions. Do not perform the checkpointed action as described.`;
+  } else if (m.pending_kind === "send_email") {
+    if (approved) {
+      const events = await listAllEvents(session.id);
+      const call = events.find((e) => e.type === "agent.custom_tool_use" && e.id === m.pending_event_id);
+      if (call && call.type === "agent.custom_tool_use") {
+        try {
+          text = await deliverEmail(session, call.input as unknown as SendEmailInput);
+        } catch (err) {
+          text = `Approved, but sending failed: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+      } else {
+        text = "Approved, but the original email draft could not be found. Compose it again.";
+        isError = true;
+      }
+    } else {
+      text = `NOT SENT. The user replied:\n\n${userText}\n\nRevise per their instructions or drop it.`;
+    }
   } else {
     text = `The user answered:\n\n${userText}`;
   }
-  await sendToolResult(session.id, m.pending_event_id, text);
-  await setMeta(session.id, { pending_kind: null, pending_event_id: null, pending_since: null, pending_deadline: null });
+  await sendToolResult(session.id, m.pending_event_id, text, isError);
+  await clearPending(session.id);
 }
 
 /** Called by the inbox cron: unanswered questions past their deadline proceed with defaults. */
@@ -141,6 +205,6 @@ export async function expirePending(session: Session): Promise<boolean> {
   if (m.pending_kind !== "ask_user" || !m.pending_deadline || !m.pending_event_id) return false;
   if (new Date(m.pending_deadline).getTime() > Date.now()) return false;
   await sendToolResult(session.id, m.pending_event_id, "NO_REPLY: the user did not answer before the deadline. Proceed with the defaults you stated.");
-  await setMeta(session.id, { pending_kind: null, pending_event_id: null, pending_since: null, pending_deadline: null });
+  await clearPending(session.id);
   return true;
 }

@@ -41,6 +41,17 @@ export function formatCheckpointEmail(input: CheckpointInput, liveViewUrl?: stri
   return lines.join("\n");
 }
 
+export function formatEmailApproval(draft: { to: string; cc?: string; subject: string; body: string; attachments?: string[]; purpose?: string }): string {
+  const lines = [`I'd like to send this email. Reply "yes" to send it as written, or tell me what to change.`, ``];
+  if (draft.purpose) lines.push(`Why: ${draft.purpose}`, ``);
+  lines.push(`To: ${draft.to}`);
+  if (draft.cc) lines.push(`Cc: ${draft.cc}`);
+  lines.push(`Subject: ${draft.subject}`);
+  if (draft.attachments?.length) lines.push(`Attachments: ${draft.attachments.join(", ")}`);
+  lines.push(``, `---`, draft.body, `---`);
+  return lines.join("\n");
+}
+
 export function formatQuestionsEmail(questions: Array<{ question: string; default: string }>, deadlineHours: number): string {
   const lines = [`Quick questions before I continue. If I do not hear back within ${deadlineHours} hours I will go with the defaults.`, ``];
   questions.forEach((q, i) => {

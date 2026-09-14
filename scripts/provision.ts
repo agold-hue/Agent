@@ -48,11 +48,14 @@ async function memoryStore(): Promise<string> {
     id = created.id;
   }
   const seedDir = path.join(process.cwd(), "agent", "memory-seed");
-  for (const file of fs.readdirSync(seedDir)) {
-    const content = fs.readFileSync(path.join(seedDir, file), "utf8");
+  for (const file of fs.readdirSync(seedDir, { recursive: true, encoding: "utf8" })) {
+    const abs = path.join(seedDir, file);
+    if (fs.statSync(abs).isDirectory()) continue;
+    const content = fs.readFileSync(abs, "utf8");
+    const memPath = "/" + file.split(path.sep).join("/");
     try {
-      await client.beta.memoryStores.memories.create(id, { path: `/${file}`, content });
-      console.log(`seeded /${file}`);
+      await client.beta.memoryStores.memories.create(id, { path: memPath, content });
+      console.log(`seeded ${memPath}`);
     } catch (err) {
       const status = (err as { status?: number }).status;
       if (status !== 409) throw err; // 409 = already exists; keep the user's edits
