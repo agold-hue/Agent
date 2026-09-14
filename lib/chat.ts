@@ -1,29 +1,21 @@
-import { createSession, listRecentSessions, meta, type Session, type SessionEvent } from "./anthropic.js";
+import { createSession, latestAgentReport, listAllEvents, type SessionEvent } from "./anthropic.js";
+import { latestChatSession, recentProactiveSessions, type SessionRow } from "./sessions.js";
 import { stampMessage } from "./transcript.js";
+import type { Tenant } from "./tenant.js";
 
-function maxAgeHours(): number {
-  return Number(process.env.CHAT_SESSION_MAX_AGE_HOURS || "12");
+export async function currentChatSession(t: Tenant): Promise<SessionRow | undefined> {
+  return latestChatSession(t.id, Number(t.settings.chat_session_max_age_hours ?? 12));
 }
 
-/** The current chat session: the newest live one started recently, otherwise none. */
-export async function currentChatSession(): Promise<Session | undefined> {
-  const cutoff = Date.now() - maxAgeHours() * 3_600_000;
-  const candidates = (await listRecentSessions())
-    .filter((s) => meta(s).channel === "chat" && s.status !== "terminated")
-    .filter((s) => new Date(s.created_at).getTime() > cutoff)
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  return candidates[0];
-}
-
-export async function startChatSession(firstMessage: string): Promise<Session> {
-  return createSession({
+export async function startChatSession(t: Tenant, firstMessage: string): Promise<SessionRow> {
+  return createSession(t, {
     channel: "chat",
+    kind: "chat",
     title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
-    text: stampMessage(firstMessage, "chat"),
+    text: stampMessage(t, firstMessage, "chat"),
   });
 }
 
-/** Shape the chat UI renders. Built from the event list (history) or the live stream. */
 export type ChatItem =
   | { kind: "user"; id: string; text: string; at: string }
   | { kind: "agent"; id: string; text: string; at: string; notice?: string }
@@ -37,7 +29,11 @@ export function toChatItems(events: SessionEvent[]): ChatItem[] {
     const at = "processed_at" in e && e.processed_at ? e.processed_at : new Date().toISOString();
     switch (e.type) {
       case "user.message": {
-        const text = e.content.map((b) => ("text" in b ? b.text : "")).join("\n").replace(/^\[[^\]]+\]\n/, "");
+        const text = e.content
+          .map((b) => ("text" in b ? b.text : ""))
+          .join("\n")
+          .replace(/^MEMORY=\S+\n/, "")
+          .replace(/^\[[^\]]+\]\n/, "");
         items.push({ kind: "user", id: e.id, text, at });
         break;
       }
@@ -67,28 +63,17 @@ export function toChatItems(events: SessionEvent[]): ChatItem[] {
   return items;
 }
 
-/**
- * Heads-ups: reports from sessions the agent started on its own (daily review, timers and
- * watches, mail triage, third-party replies) so they show in chat as well as email.
- */
-export async function recentNotices(limit = 10): Promise<ChatItem[]> {
-  const { listRecentSessions, listAllEvents, latestAgentReport, meta: metaOf } = await import("./anthropic.js");
-  const sessions = (await listRecentSessions())
-    .filter((s) => {
-      const m = metaOf(s);
-      return (m.proactive === "1" || m.correspondent) && s.status !== "running";
-    })
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    .slice(0, limit);
+/** Heads-ups from sessions the agent started on its own, so they show in chat as well as email. */
+export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> {
   const out: ChatItem[] = [];
-  for (const s of sessions) {
-    const events = await listAllEvents(s.id);
+  for (const s of await recentProactiveSessions(t.id, limit)) {
+    const events = await listAllEvents(s.id).catch(() => [] as SessionEvent[]);
     const report = latestAgentReport(events);
     if (!report || /^NO_REPORT\b/.test(report.trim())) continue;
-    const m = metaOf(s);
-    const label = m.review_day ? "Morning brief" : m.weekly_day ? "Week ahead" : m.digest ? "Heads-ups" : m.followup_id ? "Follow-up" : m.triage_count ? "From your mail" : m.correspondent ? `Reply from ${m.correspondent}` : "Heads-up";
+    const label =
+      s.kind === "review" ? "Morning brief" : s.kind === "weekly" ? "Week ahead" : s.kind === "digest" ? "Heads-ups" : s.kind === "followup" ? "Follow-up" : s.kind === "triage" ? "From your mail" : s.correspondent ? `Reply from ${s.correspondent}` : "Heads-up";
     const last = [...events].reverse().find((e) => e.type === "agent.message");
-    out.push({ kind: "agent", id: `notice-${s.id}`, text: report, at: last && "processed_at" in last ? last.processed_at : s.created_at, notice: label });
+    out.push({ kind: "agent", id: `notice-${s.id}`, text: report, at: last && "processed_at" in last ? last.processed_at : new Date(s.created_at).toISOString(), notice: label });
   }
   return out;
 }

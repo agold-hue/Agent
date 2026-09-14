@@ -4,17 +4,21 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 export const AGENT_NAME = "Personal Web Agent";
 export const ENVIRONMENT_NAME = "personal-web-agent-env";
-export const MEMORY_STORE_NAME = "personal-web-agent-memory";
+/** Every customer's memory store is named <prefix><slug>, mounted at /mnt/memory/<that name>. */
+export const MEMORY_STORE_NAME_PREFIX = "pwa-memory-";
 
 /** Paths inside the sandbox. Keep in sync with the system prompt. */
 export const SANDBOX_TOOLS_MOUNT = "/workspace/tools/browser.mjs";
-export const MEMORY_MOUNT = `/mnt/memory/${MEMORY_STORE_NAME}`;
 
+/**
+ * One agent definition serves every customer. The memory mount differs per customer, so the prompt
+ * refers to it as $MEMORY and the first message of every session states the real path.
+ */
 export function loadSystemPrompt(): string {
   const p = path.join(process.cwd(), "agent", "system-prompt.md");
   return fs
     .readFileSync(p, "utf8")
-    .replaceAll("{{MEMORY_MOUNT}}", MEMORY_MOUNT)
+    .replaceAll("{{MEMORY_MOUNT}}", "$MEMORY")
     .replaceAll("{{SANDBOX_TOOLS_MOUNT}}", SANDBOX_TOOLS_MOUNT);
 }
 

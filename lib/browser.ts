@@ -1,6 +1,7 @@
 import Browserbase from "@browserbasehq/sdk";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { env } from "./env.js";
+import type { Tenant } from "./tenant.js";
 
 let bb: Browserbase | undefined;
 export function browserbase(): Browserbase {
@@ -14,14 +15,15 @@ export interface BrowserHandle {
   liveViewUrl: string;
 }
 
-/** Create a hosted browser on the user's persistent profile (cookies and logins survive between tasks). */
-export async function createBrowser(): Promise<BrowserHandle> {
+/** Create a hosted browser on this tenant's persistent profile (cookies and logins survive between tasks). */
+export async function createBrowser(t: Tenant): Promise<BrowserHandle> {
+  if (!t.browserbaseContextId) throw new Error("tenant has no browser profile yet");
   const session = await browserbase().sessions.create({
     projectId: env.browserbase.projectId(),
     keepAlive: true,
     proxies: true,
     browserSettings: {
-      context: { id: env.browserbase.contextId(), persist: true },
+      context: { id: t.browserbaseContextId, persist: true },
       solveCaptchas: true,
       viewport: { width: 1366, height: 900 },
     },

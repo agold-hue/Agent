@@ -1,6 +1,10 @@
 import Anthropic, { toFile } from "@anthropic-ai/sdk";
 import { env } from "./env.js";
-import { MEMORY_STORE_NAME, SANDBOX_TOOLS_MOUNT } from "./agent-config.js";
+import { SANDBOX_TOOLS_MOUNT } from "./agent-config.js";
+import { randomToken } from "./crypto.js";
+import { insertSession, type SessionRow } from "./sessions.js";
+import { ensureProvisioned, memoryMount, type Tenant } from "./tenant.js";
+import { one, q } from "./db.js";
 
 let client: Anthropic | undefined;
 export function anthropic(): Anthropic {
@@ -10,52 +14,6 @@ export function anthropic(): Anthropic {
 
 export type SessionEvent = Anthropic.Beta.Sessions.BetaManagedAgentsSessionEvent;
 export type CustomToolUse = Anthropic.Beta.Sessions.BetaManagedAgentsAgentCustomToolUseEvent;
-export type Session = Anthropic.Beta.Sessions.BetaManagedAgentsSession;
-
-/**
- * Session metadata is our only state store. Keys (max 16, values <= 512 chars):
- *   channel (chat | email),
- *   gmail_thread_id (owner-facing thread), gmail_subject, last_gmail_message_id, last_gmail_message_id_header,
- *   correspondent, correspondent_thread_id, correspondent_subject (a reply from a third party),
- *   review_day (the daily project review session),
- *   browserbase_session_id,
- *   pending_kind (checkpoint | ask_user), pending_event_id, pending_since, pending_deadline,
- *   last_replied_idle_id
- */
-export type Meta = Record<string, string>;
-
-export function meta(session: Session): Meta {
-  return (session.metadata ?? {}) as Meta;
-}
-
-export function channelOf(session: Session): "chat" | "email" | undefined {
-  const m = meta(session);
-  if (m.channel === "chat" || m.channel === "email") return m.channel;
-  if (m.gmail_thread_id) return "email";
-  return undefined;
-}
-
-export async function setMeta(sessionId: string, patch: Record<string, string | null>): Promise<void> {
-  const session = await anthropic().beta.sessions.retrieve(sessionId);
-  const merged: Record<string, string> = { ...meta(session) };
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === null) delete merged[k];
-    else merged[k] = v.slice(0, 512);
-  }
-  await anthropic().beta.sessions.update(sessionId, { metadata: merged });
-}
-
-export async function listRecentSessions(): Promise<Session[]> {
-  const page = await anthropic().beta.sessions.list({ agent_id: env.anthropic.agentId(), limit: 100 });
-  return page.data;
-}
-
-export async function findSessionByThread(threadId: string): Promise<Session | undefined> {
-  for (const s of await listRecentSessions()) {
-    if (meta(s).gmail_thread_id === threadId && s.status !== "terminated") return s;
-  }
-  return undefined;
-}
 
 export interface SessionFile {
   filename: string;
@@ -63,60 +21,82 @@ export interface SessionFile {
   content: Buffer;
 }
 
-export async function createSession(opts: {
-  channel: "chat" | "email";
-  title: string;
-  metadata?: Record<string, string>;
-  text: string;
-  /** Files (e.g. email attachments) mounted at /workspace/inbox/<filename> before the first turn. */
-  files?: SessionFile[];
-}): Promise<Session> {
+/** Monthly spend so far for a tenant, in cents. */
+export async function monthUsageCents(t: Tenant): Promise<number> {
+  const r = await one<{ cost_cents: string }>("select cost_cents::text from usage where user_id = $1 and month = date_trunc('month', now())::date", [t.id]);
+  return Number(r?.cost_cents ?? 0);
+}
+
+export class UsageCapError extends Error {}
+
+/**
+ * Start a session for a tenant: their memory store mounted, the shared sandbox CLI, a per-session
+ * budget, and our own row for routing. Refuses when the plan's monthly cap is spent.
+ */
+export async function createSession(
+  t: Tenant,
+  opts: {
+    channel: "chat" | "email";
+    kind: string;
+    title: string;
+    text: string;
+    files?: SessionFile[];
+    row?: Partial<SessionRow>;
+  },
+): Promise<SessionRow> {
+  const cap = env.plans.monthlyCapUsd(t.plan) * 100;
+  if (cap > 0 && (await monthUsageCents(t)) >= cap) {
+    throw new UsageCapError(`This month's usage cap ($${(cap / 100).toFixed(0)}) is reached. It resets on the 1st, or upgrade the plan.`);
+  }
+  await ensureProvisioned(t);
+
   const resources: Anthropic.Beta.Sessions.SessionCreateParams["resources"] = [
     {
       type: "memory_store",
-      memory_store_id: env.anthropic.memoryStoreId(),
+      memory_store_id: t.memoryStoreId!,
       access: "read_write",
-      instructions:
-        "The owner's standing instructions, calendar, facts, preferences, per-site notes, task history and the full " +
-        "conversation log. Read standing_instructions.md and calendar.md before starting; grep conversations/ to recall anything.",
+      instructions: `This user's memory. It is mounted at ${memoryMount(t)}; treat that as $MEMORY. Read standing_instructions.md and the matching playbook before starting.`,
     },
   ];
   const toolsFile = env.anthropic.sandboxToolsFileId();
   if (toolsFile) resources.push({ type: "file", file_id: toolsFile, mount_path: SANDBOX_TOOLS_MOUNT });
 
-  const budget = env.policy.sessionBudgetUsd();
+  const budget = env.plans.sessionBudgetUsd();
+  const text = `MEMORY=${memoryMount(t)}\n${opts.text}`;
   const session = await anthropic().beta.sessions.create({
     agent: env.anthropic.agentId(),
     environment_id: env.anthropic.environmentId(),
     title: opts.title.slice(0, 120) || "Task",
     resources,
-    metadata: {
-      channel: opts.channel,
-      memory_mount: `/mnt/memory/${MEMORY_STORE_NAME}`,
-      ...(opts.metadata ?? {}),
-    },
-    // Budget amount is minor units (cents) as an integer string, per the API.
+    metadata: { user_id: t.id, channel: opts.channel, kind: opts.kind },
     ...(budget > 0 ? { budget: { type: "limit" as const, max_list_cost: { amount: String(Math.round(budget * 100)), currency: "USD" as const } } } : {}),
-    ...(opts.files?.length ? {} : { initial_events: [{ type: "user.message" as const, content: [{ type: "text" as const, text: opts.text }] }] }),
+    ...(opts.files?.length ? {} : { initial_events: [{ type: "user.message" as const, content: [{ type: "text" as const, text }] }] }),
   });
+  const row = await insertSession({
+    id: session.id,
+    user_id: t.id,
+    channel: opts.channel,
+    kind: opts.kind,
+    title: opts.title.slice(0, 200),
+    status: "running",
+    reply_tag: `s_${randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, "")}`,
+    ...(opts.row ?? {}),
+  });
+  await q("insert into usage (user_id, month, sessions) values ($1, date_trunc('month', now())::date, 1) on conflict (user_id, month) do update set sessions = usage.sessions + 1", [t.id]);
   if (opts.files?.length) {
-    // Files can only be attached before the turn that needs them, so mount first, then start.
     for (const f of opts.files) await addFileToSession(session.id, f);
-    await sendUserMessage(session.id, opts.text);
+    await sendUserMessage(session.id, text);
   }
-  return session;
+  return row;
 }
 
 export async function addFileToSession(sessionId: string, f: SessionFile): Promise<string> {
-  const uploaded = await anthropic().beta.files.upload({
-    file: await toFile(f.content, f.filename, { type: f.mimeType }),
-  });
+  const uploaded = await anthropic().beta.files.upload({ file: await toFile(f.content, f.filename, { type: f.mimeType }) });
   const safe = f.filename.replace(/[^A-Za-z0-9._-]/g, "_");
   await anthropic().beta.sessions.resources.add(sessionId, { type: "file", file_id: uploaded.id, mount_path: `/workspace/inbox/${safe}` });
   return `/workspace/inbox/${safe}`;
 }
 
-/** Files the agent wrote to /mnt/session/outputs/ during this session. */
 export async function listSessionOutputs(sessionId: string): Promise<Array<{ id: string; filename: string; mimeType: string }>> {
   const out: Array<{ id: string; filename: string; mimeType: string }> = [];
   for await (const f of anthropic().beta.files.list({ scope_id: sessionId, betas: ["managed-agents-2026-04-01"] })) {
@@ -130,23 +110,13 @@ export async function downloadFile(fileId: string): Promise<Buffer> {
   return Buffer.from(await resp.arrayBuffer());
 }
 
-
 export async function sendUserMessage(sessionId: string, text: string): Promise<void> {
-  await anthropic().beta.sessions.events.send(sessionId, {
-    events: [{ type: "user.message", content: [{ type: "text", text }] }],
-  });
+  await anthropic().beta.sessions.events.send(sessionId, { events: [{ type: "user.message", content: [{ type: "text", text }] }] });
 }
 
 export async function sendToolResult(sessionId: string, toolUseEventId: string, text: string, isError = false) {
   await anthropic().beta.sessions.events.send(sessionId, {
-    events: [
-      {
-        type: "user.custom_tool_result",
-        custom_tool_use_id: toolUseEventId,
-        content: [{ type: "text", text }],
-        is_error: isError,
-      },
-    ],
+    events: [{ type: "user.custom_tool_result", custom_tool_use_id: toolUseEventId, content: [{ type: "text", text }], is_error: isError }],
   });
 }
 
@@ -156,7 +126,21 @@ export async function listAllEvents(sessionId: string): Promise<SessionEvent[]> 
   return out;
 }
 
-/** Text of every agent.message after the last user.message (i.e. the report for the latest turn). */
+/** Record a session's cost so far against the tenant's month. Idempotent per session. */
+export async function recordSessionCost(t: Tenant, sessionId: string): Promise<void> {
+  const s = await anthropic().beta.sessions.retrieve(sessionId).catch(() => undefined);
+  const amount = (s as { usage?: { list_cost?: { amount?: string } } } | undefined)?.usage?.list_cost?.amount;
+  if (!amount) return;
+  const cents = Number(amount);
+  if (!Number.isFinite(cents)) return;
+  const prev = await one<{ cost_cents: string }>("select cost_cents::text from session_costs where session_id = $1", [sessionId]);
+  const delta = cents - Number(prev?.cost_cents ?? 0);
+  if (delta <= 0) return;
+  await q("insert into session_costs (session_id, cost_cents) values ($1, $2) on conflict (session_id) do update set cost_cents = $2", [sessionId, cents]);
+  await q("insert into usage (user_id, month, cost_cents) values ($1, date_trunc('month', now())::date, $2) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2", [t.id, delta]);
+}
+
+/** Text of every agent.message after the last user.message. */
 export function latestAgentReport(events: SessionEvent[]): string {
   let lastUser = -1;
   events.forEach((e, i) => {
@@ -164,9 +148,7 @@ export function latestAgentReport(events: SessionEvent[]): string {
   });
   const parts: string[] = [];
   for (const e of events.slice(lastUser + 1)) {
-    if (e.type === "agent.message") {
-      for (const b of e.content) if (b.type === "text") parts.push(b.text);
-    }
+    if (e.type === "agent.message") for (const b of e.content) if (b.type === "text") parts.push(b.text);
   }
   return parts.join("\n\n").trim();
 }
@@ -179,13 +161,10 @@ export function lastIdleEvent(events: SessionEvent[]) {
   return undefined;
 }
 
-/** Custom tool calls the session is blocked on right now. */
 export function pendingCustomToolUses(events: SessionEvent[]): CustomToolUse[] {
   const idle = lastIdleEvent(events);
   if (!idle || idle.stop_reason.type !== "requires_action") return [];
-  const answered = new Set(
-    events.filter((e) => e.type === "user.custom_tool_result").map((e) => e.custom_tool_use_id),
-  );
+  const answered = new Set(events.filter((e) => e.type === "user.custom_tool_result").map((e) => e.custom_tool_use_id));
   const byId = new Map(events.map((e) => [e.id, e] as const));
   const out: CustomToolUse[] = [];
   for (const id of idle.stop_reason.event_ids) {

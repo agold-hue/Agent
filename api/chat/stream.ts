@@ -1,18 +1,18 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { chatAuthorized } from "../../lib/chat-auth.js";
+import { requireTenant } from "../../lib/auth.js";
 import { anthropic } from "../../lib/anthropic.js";
 import { toChatItems } from "../../lib/chat.js";
+import { getSession } from "../../lib/sessions.js";
 
-const MAX_MS = 280_000; // stay under the function's max duration; the client reconnects
+const MAX_MS = 280_000;
 
-/**
- * GET ?session=sesn_... -> Server-Sent Events. Forwards the session's live events, including
- * token-by-token previews of the agent's reply, in the ChatItem shape the UI already renders.
- */
+/** GET ?session=sesn_... -> Server-Sent Events for one of the tenant's own sessions. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!chatAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
+  const t = await requireTenant(req, res);
+  if (!t) return;
   const sessionId = typeof req.query.session === "string" ? req.query.session : "";
-  if (!sessionId) return res.status(400).json({ error: "session required" });
+  const row = sessionId ? await getSession(sessionId) : undefined;
+  if (!row || row.user_id !== t.id) return res.status(404).json({ error: "no such session" });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",

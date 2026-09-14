@@ -1,29 +1,30 @@
 import { Readable } from "node:stream";
 import { google, type calendar_v3, type drive_v3, type gmail_v1 } from "googleapis";
 import { env } from "./env.js";
-import { addressOf, stripQuoted } from "./gmail.js";
+import { stripQuoted } from "./mail.js";
+import type { Tenant } from "./tenant.js";
 
 /**
- * The OWNER's Google account (calendar, own inbox, Drive), separate from the agent's mailbox.
- * Authorized once with a refresh token; every action here runs as the owner.
- * Scopes: calendar, gmail.modify (read/label/draft; the agent never sends as the owner), drive.file.
+ * A customer's own Google account (calendar, own inbox, Drive), connected once through OAuth on the
+ * settings page. Every action here runs as that customer.
+ * Scopes: calendar, gmail.modify (read/label/draft; the agent never sends as the customer), drive.file.
  */
-function ownerAuth() {
-  const token = process.env.OWNER_GOOGLE_REFRESH_TOKEN;
-  if (!token) throw new Error("OWNER_GOOGLE_REFRESH_TOKEN is not set; the owner's Google account is not connected.");
-  const auth = new google.auth.OAuth2(env.gmail.clientId(), env.gmail.clientSecret());
-  auth.setCredentials({ refresh_token: token });
+export const GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/drive.file"];
+
+export function oauthClient(redirectUri?: string) {
+  return new google.auth.OAuth2(env.google.clientId(), env.google.clientSecret(), redirectUri);
+}
+
+function ownerAuth(t: Tenant) {
+  if (!t.googleRefreshToken) throw new Error("This user has not connected their Google account (Settings > Connect Google).");
+  const auth = oauthClient();
+  auth.setCredentials({ refresh_token: t.googleRefreshToken });
   return auth;
 }
 
-let cal: calendar_v3.Calendar | undefined;
-let mail: gmail_v1.Gmail | undefined;
-let drv: drive_v3.Drive | undefined;
-const calendar = () => (cal ??= google.calendar({ version: "v3", auth: ownerAuth() }));
-const ownerGmail = () => (mail ??= google.gmail({ version: "v1", auth: ownerAuth() }));
-const drive = () => (drv ??= google.drive({ version: "v3", auth: ownerAuth() }));
-
-const tz = () => process.env.OWNER_TIMEZONE || "America/New_York";
+const calendarFor = (t: Tenant): calendar_v3.Calendar => google.calendar({ version: "v3", auth: ownerAuth(t) });
+const gmailFor = (t: Tenant): gmail_v1.Gmail => google.gmail({ version: "v1", auth: ownerAuth(t) });
+const driveFor = (t: Tenant): drive_v3.Drive => google.drive({ version: "v3", auth: ownerAuth(t) });
 
 // ---------------------------------------------------------------- Calendar
 
@@ -57,7 +58,9 @@ function eventSummary(e: calendar_v3.Schema$Event) {
   };
 }
 
-export async function runCalendar(input: CalendarInput): Promise<unknown> {
+export async function runCalendar(t: Tenant, input: CalendarInput): Promise<unknown> {
+  const calendar = () => calendarFor(t);
+  const tz = () => t.timezone;
   const calendarId = input.calendar_id || "primary";
   const now = new Date();
   switch (input.action) {
@@ -162,8 +165,8 @@ function decodeBody(part: gmail_v1.Schema$MessagePart | undefined): string {
   return text.trim() || html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-export async function runOwnerInbox(input: OwnerInboxInput): Promise<unknown> {
-  const g = ownerGmail();
+export async function runOwnerInbox(t: Tenant, input: OwnerInboxInput): Promise<unknown> {
+  const g = gmailFor(t);
   switch (input.action) {
     case "search": {
       const { data } = await g.users.messages.list({ userId: "me", q: input.query ?? "in:inbox", maxResults: Math.min(input.max ?? 20, 50) });
@@ -275,10 +278,6 @@ async function labelIds(g: gmail_v1.Gmail, names: string[]): Promise<Record<stri
   return out;
 }
 
-export function isFamilySender(address: string): boolean {
-  const fam = (process.env.FAMILY_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-  return fam.includes(addressOf(address));
-}
 
 // ---------------------------------------------------------------- Drive
 
@@ -291,8 +290,8 @@ export interface DriveInput {
   file_id?: string;
 }
 
-async function folderId(name?: string): Promise<string | undefined> {
-  const root = process.env.DRIVE_FOLDER_ID || undefined;
+async function folderId(drive: () => drive_v3.Drive, name?: string): Promise<string | undefined> {
+  const root = await rootFolder(drive);
   if (!name) return root;
   const q = `name = '${name.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${root ? ` and '${root}' in parents` : ""}`;
   const { data } = await drive().files.list({ q, fields: "files(id,name)", pageSize: 1 });
@@ -304,8 +303,17 @@ async function folderId(name?: string): Promise<string | undefined> {
   return created.id ?? undefined;
 }
 
-export async function driveSave(opts: { filename: string; mimeType: string; content: Buffer; folder?: string }): Promise<{ id: string; link: string }> {
-  const parent = await folderId(opts.folder);
+/** Everything the agent files lives under one "Assistant" folder in the customer's Drive. */
+async function rootFolder(drive: () => drive_v3.Drive): Promise<string | undefined> {
+  const { data } = await drive().files.list({ q: "name = 'Assistant' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and 'root' in parents", fields: "files(id)", pageSize: 1 });
+  if (data.files?.[0]?.id) return data.files[0].id;
+  const { data: created } = await drive().files.create({ requestBody: { name: "Assistant", mimeType: "application/vnd.google-apps.folder" }, fields: "id" });
+  return created.id ?? undefined;
+}
+
+export async function driveSave(t: Tenant, opts: { filename: string; mimeType: string; content: Buffer; folder?: string }): Promise<{ id: string; link: string }> {
+  const drive = () => driveFor(t);
+  const parent = await folderId(drive, opts.folder);
   const { data } = await drive().files.create({
     requestBody: { name: opts.filename, parents: parent ? [parent] : undefined },
     media: { mimeType: opts.mimeType, body: Readable.from(opts.content) },
@@ -314,8 +322,9 @@ export async function driveSave(opts: { filename: string; mimeType: string; cont
   return { id: data.id!, link: data.webViewLink ?? "" };
 }
 
-export async function driveList(opts: { folder?: string; query?: string }): Promise<Array<{ id: string; name: string; modified: string; link: string }>> {
-  const parent = await folderId(opts.folder);
+export async function driveList(t: Tenant, opts: { folder?: string; query?: string }): Promise<Array<{ id: string; name: string; modified: string; link: string }>> {
+  const drive = () => driveFor(t);
+  const parent = await folderId(drive, opts.folder);
   const parts = ["trashed = false"];
   if (parent) parts.push(`'${parent}' in parents`);
   if (opts.query) parts.push(`fullText contains '${opts.query.replace(/'/g, "\\'")}'`);
@@ -323,7 +332,8 @@ export async function driveList(opts: { folder?: string; query?: string }): Prom
   return (data.files ?? []).map((f) => ({ id: f.id!, name: f.name!, modified: f.modifiedTime ?? "", link: f.webViewLink ?? "" }));
 }
 
-export async function driveRead(fileId: string): Promise<{ name: string; mimeType: string; content: Buffer }> {
+export async function driveRead(t: Tenant, fileId: string): Promise<{ name: string; mimeType: string; content: Buffer }> {
+  const drive = () => driveFor(t);
   const { data: metaData } = await drive().files.get({ fileId, fields: "name,mimeType" });
   const mimeType = metaData.mimeType ?? "application/octet-stream";
   if (mimeType.startsWith("application/vnd.google-apps.")) {

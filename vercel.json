@@ -1,14 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/inbox.ts": { "maxDuration": 300 },
+    "api/cron.ts": { "maxDuration": 300 },
     "api/anthropic-webhook.ts": { "maxDuration": 300 },
+    "api/mail-inbound.ts": { "maxDuration": 120 },
+    "api/stripe-webhook.ts": { "maxDuration": 30 },
     "api/chat/send.ts": { "maxDuration": 60 },
     "api/chat/history.ts": { "maxDuration": 60 },
     "api/chat/upload.ts": { "maxDuration": 60 },
     "api/chat/stream.ts": { "maxDuration": 300 }
   },
   "crons": [
-    { "path": "/api/inbox", "schedule": "* * * * *" }
+    { "path": "/api/cron", "schedule": "* * * * *" }
   ]
 }

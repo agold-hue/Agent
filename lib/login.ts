@@ -1,7 +1,8 @@
 import type { Page } from "playwright-core";
 import { attach } from "./browser.js";
-import { findCredential, registrableDomain } from "./onepassword.js";
-import { findRecentCodes } from "./gmail.js";
+import { findCredential, registrableDomain } from "./credentials.js";
+import { recentCodes } from "./inbound.js";
+import type { Tenant } from "./tenant.js";
 
 export type LoginResult =
   | { status: "logged_in"; url: string; title: string; account: string }
@@ -95,13 +96,13 @@ async function fillOtp(page: Page, code: string) {
 /**
  * Host-side login. The sandbox only ever learns the outcome; the password never leaves this process.
  */
-export async function loginToSite(opts: {
+export async function loginToSite(t: Tenant, opts: {
   connectUrl: string;
   domain: string;
   accountHint?: string;
 }): Promise<LoginResult> {
   const domain = registrableDomain(opts.domain);
-  const cred = await findCredential(domain, opts.accountHint);
+  const cred = await findCredential(t, domain, opts.accountHint);
   if (!cred) return { status: "no_credentials", domain };
 
   const { browser, page } = await attach(opts.connectUrl, domain);
@@ -145,15 +146,15 @@ export async function loginToSite(opts: {
     if (await firstVisible(page, OTP_SELECTORS)) {
       let code = cred.totp;
       if (!code) {
-        // Fall back to a code emailed to the user; give the site a moment to send it.
+        // Fall back to a code the user auto-forwards to their agent address; give the site a moment to send it.
         for (let attempt = 0; attempt < 6 && !code; attempt++) {
           await page.waitForTimeout(10_000);
-          const found = await findRecentCodes({ senderHint: domain, sinceMinutes: 3 });
+          const found = await recentCodes(t, { senderHint: domain, sinceMinutes: 3 });
           code = found.find((f) => f.codes.length > 0)?.codes[0];
         }
       }
       if (!code) {
-        return { status: "needs_user", reason: "Site asked for a verification code that is not in the password manager or email (SMS?).", url: page.url() };
+        return { status: "needs_user", reason: "Site asked for a verification code that is not in the vault (add the authenticator seed) or in forwarded mail (SMS?).", url: page.url() };
       }
       await fillOtp(page, code);
     }

@@ -1,4 +1,4 @@
-import { env } from "./env.js";
+import type { Tenant } from "./tenant.js";
 
 export interface CheckpointInput {
   action_type: string;
@@ -10,22 +10,22 @@ export interface CheckpointInput {
   recommendation?: string;
 }
 
-/** Hard floor. The agent's standing instructions can be stricter, never looser. */
-export function autoApprove(input: CheckpointInput): { ok: boolean; reason: string } {
+/** Hard floor per tenant. The agent's standing instructions can be stricter, never looser. */
+export function autoApprove(t: Tenant, input: CheckpointInput): { ok: boolean; reason: string } {
   const type = String(input.action_type ?? "other").toLowerCase();
-  if (env.policy.autoApproveTypes().includes(type)) return { ok: true, reason: `action type '${type}' is on the auto-approve list` };
+  const types = (t.settings.auto_approve_types ?? []).map((s) => s.toLowerCase());
+  if (types.includes(type)) return { ok: true, reason: `action type '${type}' is on your auto-approve list` };
   const amount = Number(input.amount_usd ?? 0);
-  const ceiling = env.policy.autoApproveMaxUsd();
-  const moneyTypes = ["purchase", "payment"];
-  if (moneyTypes.includes(type) && ceiling > 0 && amount > 0 && amount <= ceiling) {
-    return { ok: true, reason: `$${amount.toFixed(2)} is within the $${ceiling.toFixed(2)} no-approval ceiling` };
+  const ceiling = Number(t.settings.auto_approve_max_usd ?? 0);
+  if (["purchase", "payment"].includes(type) && ceiling > 0 && amount > 0 && amount <= ceiling) {
+    return { ok: true, reason: `$${amount.toFixed(2)} is within your $${ceiling.toFixed(2)} no-approval ceiling` };
   }
   return { ok: false, reason: "requires the user's approval" };
 }
 
 export function isApprovalReply(text: string): boolean {
   const first = text.trim().split(/\r?\n/)[0]?.trim().toLowerCase() ?? "";
-  return /^(yes|y|yes please|approve|approved|ok|okay|go|go ahead|do it|confirm|confirmed|proceed|👍)\b/.test(first);
+  return /^(yes|y|yes please|approve|approved|ok|okay|go|go ahead|do it|confirm|confirmed|proceed|send it|👍)\b/.test(first);
 }
 
 export function formatCheckpointEmail(input: CheckpointInput, liveViewUrl?: string): string {

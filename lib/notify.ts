@@ -1,105 +1,71 @@
-import { env } from "./env.js";
-import { replyInThread, sendMail } from "./gmail.js";
-import { anthropic, channelOf, meta, setMeta, type Session } from "./anthropic.js";
-import { stamp } from "./transcript.js";
+import { q } from "./db.js";
+import { sendAgentMail } from "./mail.js";
+import { updateSession, type SessionRow } from "./sessions.js";
+import { localClock } from "./transcript.js";
+import type { Tenant } from "./tenant.js";
 
 /**
  * Deliver a message to the person who should hear it.
  * - chat: nothing to send; the chat UI reads agent messages and tool cards from the stream.
- * - email with a thread: reply there. Family members who emailed a request get the reply, not the owner.
- * - email without one (a third-party reply, a proactive session): new thread to the owner, remembered so
- *   the owner's answer routes back to this session.
+ * - email: reply to whoever asked (the owner, or a family member) with a Reply-To that routes their
+ *   answer back to this session.
  */
-export async function notifyOwner(session: Session, body: string, subjectHint?: string): Promise<void> {
-  if (channelOf(session) !== "email") return;
-  const m = meta(session);
-  if (m.gmail_thread_id) {
-    await replyInThread({
-      threadId: m.gmail_thread_id,
-      to: m.requester || undefined,
-      subject: m.gmail_subject ?? subjectHint ?? "Update",
-      inReplyTo: m.last_gmail_message_id_header || undefined,
-      body,
-    });
-    return;
-  }
-  const subject = subjectHint ?? m.correspondent_subject ?? session.title ?? "Update from your assistant";
-  const sent = await sendMail({ to: env.gmail.ownerEmail(), subject, body });
-  await setMeta(session.id, { gmail_thread_id: sent.threadId, gmail_subject: subject.slice(0, 200) });
+export async function notifyOwner(t: Tenant, row: SessionRow, body: string, subjectHint?: string): Promise<void> {
+  if (row.channel !== "email") return;
+  const subject = row.email_subject ? (/^re:/i.test(row.email_subject) ? row.email_subject : `Re: ${row.email_subject}`) : subjectHint ?? "Update from your assistant";
+  await sendAgentMail(t, {
+    to: row.requester || t.email,
+    subject,
+    body,
+    inReplyTo: row.last_message_id || undefined,
+    replyTag: row.reply_tag ?? undefined,
+  });
+  if (!row.email_subject) await updateSession(row.id, { email_subject: subject.replace(/^re:\s*/i, "").slice(0, 200) });
 }
 
-// ---------------------------------------------------------------- Quiet hours & batching
+// ---------------------------------------------------------------- Quiet hours & batching (per tenant)
 
-/** "22-7" -> owner-local hours during which non-urgent heads-ups wait. */
-function quietHours(): [number, number] | null {
-  const m = (process.env.QUIET_HOURS ?? "").match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+function quietHours(t: Tenant): [number, number] | null {
+  const m = (t.settings.quiet_hours ?? "").match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
   return m ? [Number(m[1]), Number(m[2])] : null;
 }
 
-/** "12:30,18:00" -> the times of day when a digest of deferred heads-ups goes out. */
-export function batchTimes(): Array<{ h: number; m: number }> {
-  return (process.env.BATCH_TIMES ?? "")
+export function batchTimes(t: Tenant): Array<{ h: number; m: number }> {
+  return (t.settings.batch_times ?? "")
     .split(",")
     .map((s) => s.trim().match(/^(\d{1,2}):(\d{2})$/))
     .filter((x): x is RegExpMatchArray => !!x)
     .map((x) => ({ h: Number(x[1]), m: Number(x[2]) }));
 }
 
-function ownerNow(): { h: number; m: number } {
-  const s = stamp();
-  return { h: Number(s.slice(15, 17)), m: Number(s.slice(18, 20)) };
-}
-
-/**
- * Should this proactive message wait for the next batch? Urgent ones (the agent starts them with
- * "URGENT:") never wait. With no BATCH_TIMES configured nothing waits, except during quiet hours.
- */
-export function shouldDefer(report: string): boolean {
+/** Should this proactive message wait for the next batch? "URGENT:" never waits. */
+export function shouldDefer(t: Tenant, report: string): boolean {
   if (/^\s*URGENT\b/i.test(report)) return false;
-  const { h } = ownerNow();
-  const q = quietHours();
-  if (q) {
-    const [start, end] = q;
+  const { h } = localClock(t.timezone);
+  const qh = quietHours(t);
+  if (qh) {
+    const [start, end] = qh;
     const inQuiet = start > end ? h >= start || h < end : h >= start && h < end;
     if (inQuiet) return true;
   }
-  return batchTimes().length > 0;
+  return batchTimes(t).length > 0;
 }
 
-const DIGEST_PATH = "/digest-pending.md";
-
-async function findDigest() {
-  const storeId = env.anthropic.memoryStoreId();
-  for await (const item of anthropic().beta.memoryStores.memories.list(storeId, { path_prefix: "/", depth: 1, limit: 1000 })) {
-    if (item.type === "memory" && item.path === DIGEST_PATH) return { storeId, id: item.id };
-  }
-  return { storeId, id: undefined as string | undefined };
+export async function deferToDigest(t: Tenant, label: string, body: string): Promise<void> {
+  await q("insert into digest_entries (user_id, label, body) values ($1, $2, $3)", [t.id, label, body.trim()]);
 }
 
-export async function deferToDigest(label: string, report: string): Promise<void> {
-  const { storeId, id } = await findDigest();
-  const entry = `\n## ${stamp()} · ${label}\n${report.trim()}\n`;
-  if (!id) {
-    await anthropic().beta.memoryStores.memories.create(storeId, { path: DIGEST_PATH, content: `# Pending heads-ups\n${entry}` });
-    return;
-  }
-  const cur = await anthropic().beta.memoryStores.memories.retrieve(id, { memory_store_id: storeId });
-  await anthropic().beta.memoryStores.memories.update(id, { memory_store_id: storeId, content: (cur.content ?? "") + entry });
+/** Everything waiting for this tenant, marked flushed. Empty string when nothing is pending. */
+export async function takeDigest(t: Tenant): Promise<string> {
+  const rows = await q<{ id: string; label: string; body: string; created_at: Date }>(
+    "update digest_entries set flushed_at = now() where user_id = $1 and flushed_at is null returning id, label, body, created_at",
+    [t.id],
+  );
+  if (!rows.length) return "";
+  return rows.map((r) => `## ${new Date(r.created_at).toISOString()} · ${r.label}\n${r.body}`).join("\n\n");
 }
 
-/** Take everything waiting in the digest (and clear it). Empty string when nothing is pending. */
-export async function takeDigest(): Promise<string> {
-  const { storeId, id } = await findDigest();
-  if (!id) return "";
-  const cur = await anthropic().beta.memoryStores.memories.retrieve(id, { memory_store_id: storeId });
-  const content = (cur.content ?? "").trim();
-  if (!/^## /m.test(content)) return "";
-  await anthropic().beta.memoryStores.memories.update(id, { memory_store_id: storeId, content: "# Pending heads-ups\n" });
-  return content;
-}
-
-/** True during the one minute of the day that matches a batch time. */
-export function isBatchMinute(): boolean {
-  const now = ownerNow();
-  return batchTimes().some((t) => t.h === now.h && t.m === now.m);
+export function isBatchMinute(t: Tenant): boolean {
+  const now = localClock(t.timezone);
+  return batchTimes(t).some((b) => b.h === now.h && b.m === now.m);
 }

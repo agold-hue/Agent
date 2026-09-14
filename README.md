@@ -1,99 +1,63 @@
-# Personal Web Agent
+# Secretary (multi-tenant service)
 
-A secretary you chat with or email. It remembers everything you have told it, keeps your calendar straight, runs multi-step projects over days or weeks (research, shortlist, get your go-ahead, write to your broker or realtor, chase replies), opens a hosted browser that holds your own logins, and reports back. Nothing runs on your machine.
+A subscription service where each customer gets their own AI secretary: chat and email front doors, a memory that never forgets, a persistent hosted browser with their own logins, outbound email under their name, projects that run for weeks, proactive follow-ups, and approval gates before anything big. Built on Anthropic Managed Agents. One deployment serves every customer; nothing is tied to the operator's personal accounts.
 
 ```
-you ──chat──▶ public/index.html ──▶ api/chat/send ──┐
-you ──email──▶ Gmail ──cron/push──▶ api/inbox ──────┴─▶ Anthropic Managed Agents session
-                                                        │  (agent loop + sandbox, Anthropic-hosted)
-                                                        │  memory store: standing instructions, calendar, facts,
-                                                        │                per-site notes, full conversation log
-                                                        │  drives ▶ Browserbase (hosted browser, your persistent profile)
-                                                        ▼
-chat ◀── api/chat/stream (live) ── / ── email ◀── api/anthropic-webhook ◀── session idle / needs a tool
-                    │
-                    ├─ login ........ 1Password ▶ fills the form in the hosted browser (password never reaches the agent)
-                    ├─ checkpoint ... auto-approve under your rules, else email you and wait for "yes"
-                    ├─ ask_user ..... one batched question with defaults + deadline
-                    ├─ send_email ... to anyone, from the assistant mailbox; held for your yes unless auto-approved
-                    ├─ schedule_follow_up ... the agent's own timers ("if no reply by 3pm, escalate"), fired by api/inbox
-                    │                 replies from those people come back through api/inbox as new tasks
-                    └─ get_email_code / save_login / browser_session
+customer ──chat──▶ app.html ──▶ api/chat/*  ──┐
+customer ──email─▶ <slug>@MAIL_DOMAIN ─▶ api/mail-inbound ─┴─▶ Managed Agents session (per-customer memory store and browser profile)
+                                                               │  custom tools run here, server-side:
+                                                               │   login (vault) · send_email · checkpoint · ask_user · schedule_follow_up
+                                                               │   calendar / owner_inbox / drive (customer's own Google, optional)
+customer ◀── chat stream / email ◀── api/anthropic-webhook ◀───┘
+api/cron (every minute): due timers and watches, digests at check-in times, daily and weekly reviews, mail triage
+api/stripe-webhook: subscription status → access
 ```
 
-## Pieces
+## What's in the box
 
-| Piece | Where it runs | What it does |
+| Area | Where | Notes |
 | --- | --- | --- |
-| Agent (`lib/agent-config.ts`, `agent/system-prompt.md`) | Anthropic Managed Agents | Claude Opus 5, versioned config, memory store mounted at `/mnt/memory/personal-web-agent-memory` |
-| Sandbox browser CLI (`sandbox/browser.mjs`) | Inside the session sandbox | `goto`, `snapshot`, `click`, `type`, `screenshot`... over CDP to the hosted browser |
-| Hosted browser | Browserbase | Persistent context (cookies survive), residential proxy, captcha solving, live-view URL for you |
-| Chat page (`public/index.html`) + `api/chat/*` | Vercel | Password-protected chat with live streaming replies, approval cards, file attachments, basic dictation |
-| Inbox route (`api/inbox.ts`) | Vercel, every minute | Unread mail from you → new session or follow-up; resolves approvals and answers; expires unanswered questions |
-| Webhook route (`api/anthropic-webhook.ts`) | Vercel | Runs the custom tools, emails the final report |
-| Passwords | 1Password service account | Looked up by website URL; TOTP handled; new accounts saved back |
-| Memory | Anthropic memory store | `standing_instructions.md`, `calendar.md`, `facts.md`, `contacts.md`, `preferences.md`, `projects/<slug>.md`, `sites/<domain>.md`, `history/…`, `conversations/YYYY-MM-DD.md` |
-| Proactive lanes | `api/inbox.ts` | Morning review (projects, next 7 days, watchlist), timers and recurring watches the agent sets itself, triage of your auto-forwarded mail (`OBSERVE_FORWARDED_MAIL`), replies from people it wrote to. Each texts you only if something matters; heads-ups show in chat and email |
+| Accounts | `lib/auth.ts`, `api/auth/*`, `api/me.ts` | Email-code login, signed HttpOnly cookie, settings per customer |
+| Billing | `lib/billing.ts`, `api/billing/*`, `api/stripe-webhook.ts` | Stripe Checkout, trial, customer portal; access gated on active/trialing; monthly usage cap per plan |
+| Tenancy | `lib/tenant.ts`, `db/schema.sql` | One row per customer: slug, timezone, settings, memory store id, browser profile id, encrypted Google token |
+| Memory | Anthropic memory store per customer | Seeded from `agent/memory-seed/` (standing instructions, profile, playbooks) on first use |
+| Logins vault | `lib/credentials.ts`, `api/vault.ts` | AES-256-GCM per record with `MASTER_KEY`; TOTP seeds supported; only the login step decrypts |
+| Browser | Browserbase context per customer | Cookies persist between tasks; live-view link for takeover |
+| Mail | Postmark, `lib/mail.ts` | `<slug>@MAIL_DOMAIN` inbound; replies route via `<slug>+<tag>@` back to the right session |
+| Agent runtime | `lib/anthropic.ts`, `lib/tools.ts`, `agent/system-prompt.md` | Shared agent definition; `$MEMORY` resolved per session |
+| Proactive | `api/cron.ts`, `lib/followups.ts`, `lib/notify.ts` | Database-driven: one query per concern, not one API scan per customer |
+| Web app | `public/index.html`, `public/app.html` | Landing and login; chat, settings, logins, billing tabs |
 
-State lives in session metadata (Gmail thread id, pending approval, browser session id). No database.
+## Deploy
 
-## Setup
+1. **Postgres** (Neon, Vercel Postgres, any). Set `DATABASE_URL`, run `npm run db:migrate`.
+2. **Anthropic**: API key with Managed Agents. `npm run setup` creates the shared environment and agent and uploads the sandbox CLI; paste the printed ids. Register a webhook in the Console pointing at `https://APP_URL/api/anthropic-webhook` for `session.status_idled`, `session.status_run_started`, `session.status_terminated`.
+3. **Browserbase**: API key and project id (contexts and keepAlive on the plan).
+4. **Postmark**: one server; add `MAIL_DOMAIN` as a sending domain and enable inbound on it (MX record per Postmark's instructions); set the inbound webhook to `https://APP_URL/api/mail-inbound?token=INBOUND_WEBHOOK_TOKEN`.
+5. **Stripe**: a recurring price; webhook endpoint `https://APP_URL/api/stripe-webhook` subscribed to `customer.subscription.*` and `checkout.session.completed`. Optionally set `plan` in the price's metadata and `PLAN_CAP_USD_<PLAN>` env vars for per-plan usage caps.
+6. **Google (optional)**: an OAuth client with redirect `https://APP_URL/api/google/callback` and the calendar, gmail.modify, drive.file scopes; publish the consent screen so customers can connect.
+7. Fill `.env.example` into Vercel and deploy. The cron in `vercel.json` runs every minute (Pro plan).
 
-1. **Anthropic**: API key with Managed Agents access. In the Console, register a webhook (Manage → Webhooks) pointing at `https://<your-vercel-app>/api/anthropic-webhook`, subscribed to `session.status_idled` and `session.status_terminated`. Copy the signing key.
-2. **Browserbase**: API key and project id. Plan with `keepAlive` and contexts.
-3. **1Password**: create a vault for the agent's logins, a service account with read (and write, if it may save new accounts) access to it. Note the vault id.
-4. **Gmail**: a dedicated Google account for the agent. Create OAuth client credentials, obtain a refresh token with the `https://www.googleapis.com/auth/gmail.modify` scope (the OAuth Playground works). You email this address from `OWNER_EMAIL`.
-5. Copy `.env.example` to `.env`, fill in the keys above, then:
+## How a customer uses it
 
-```bash
-npm install
-npm run provision      # creates environment, agent, memory store, browser profile; uploads the sandbox CLI
-```
+Sign up with an email code, start the trial or subscription, then chat at `/app.html` or email their agent address. Settings: name, time zone, approval ceiling and auto-approve types, family senders, quiet hours, check-in times, morning and weekly review, Google connect. Logins: the sites the agent may use, with optional authenticator seeds. Every purchase, payment, message to an outsider, agreement, dispute, or cancellation waits for their yes unless they loosen the rules.
 
-Paste the printed `AGENT_ID`, `ENVIRONMENT_ID`, `MEMORY_STORE_ID`, `SANDBOX_TOOLS_FILE_ID`, `BROWSERBASE_CONTEXT_ID` into `.env` and into the Vercel project's environment variables along with everything else in `.env.example`.
+## Costs and caps
 
-5b. **Your own Google account** (optional but unlocks most playbooks): with the same OAuth client, obtain a refresh token for your own account with the calendar, `gmail.modify`, and `drive.file` scopes and set `OWNER_GOOGLE_REFRESH_TOKEN`.
-6. Deploy to Vercel (`vercel --prod`). The cron in `vercel.json` runs every minute, which needs a Pro plan. On Hobby, point a Gmail Pub/Sub watch (or any external pinger) at `POST /api/inbox?token=<CRON_SECRET>` instead.
-7. **Fill in your defaults**: open the memory store in the Anthropic Console (or edit via API) and complete `standing_instructions.md`. This is what stops the back-and-forth.
-8. **First logins**: send a task that touches a site. If the password manager has no entry, the agent offers to sign up; if a site demands SMS, open the live-view link from the email and enter the code once. The persistent profile keeps you signed in after that.
-
-## Using it
-
-**Chat**: open your Vercel URL, enter `CHAT_PASSWORD`. Replies stream in. A chat session stays warm for `CHAT_SESSION_MAX_AGE_HOURS`; after that a fresh session starts, but memory carries over, so nothing is forgotten. Approval requests and questions appear as cards; "yes" or the Approve button approves, anything else is taken as new instructions.
-
-**Memory of everything**: every chat and email, both directions, is appended by the host to `conversations/YYYY-MM-DD.md` in the memory store. The agent greps it when you refer to something from the past. Dated commitments you mention ("appointment in FL next Wednesday") go into `calendar.md` and are checked before it schedules any delivery, pickup or appointment. Every message is stamped with the current time in `OWNER_TIMEZONE` so relative dates resolve correctly.
-
-**Projects** ("buy me a house, 3 bed, under $650k, Bucks County"): the agent writes a project file, researches in the browser, shows you a shortlist with a recommendation and one question. On your yes it emails your mortgage broker from `contacts.md` for a pre-approval letter, logs that it is waiting, and when the reply lands (attachments included) it drafts the offer email to your realtor with the letter attached and holds it for your approval. Fill in `contacts.md` so "my broker" resolves to a real address. Every outbound email to an outsider is held for your yes unless you put `message` in `AUTO_APPROVE_TYPES`.
-
-**Problems** ("get me a refund for the broken dish set", "the power is out, deal with the utility"): the agent gathers the facts, builds the escalation ladder for that counterparty (self-service, live chat, written complaint, the seller or the city or the regulator, a formal claim or dispute), posts the plan, then works down the ladder, logging every attempt and case number. It holds a live support chat using the `watch` command, sets its own timers with `schedule_follow_up` so "if they have not replied in two hours, email the city" happens without you, asks you once for photos if a company needs evidence (attach them in chat with the paperclip, or reply by email), and stops for your yes before any big move: accepting less than you asked for, agreeing to send an item back, filing a claim or dispute, cancelling anything. Each approval card shows the offer, the options it considered, and its recommendation.
-
-**Proactive**: it comes to you. A morning brief covers what moved, what is coming in the next week, and what needs a decision. It sets its own timers and recurring watches ("check ticket availability every 30 minutes until Friday"), keeps a watchlist, and if you auto-forward receipts, bills and shipping mail from your own inbox to its address it triages them: calendar updates, watches for due dates, a text when a bill is due or a package lands. Heads-ups appear in the chat with a label and by email. Silence means nothing needs you.
-
-**Your own Google account** (optional, `OWNER_GOOGLE_REFRESH_TOKEN`): the agent gets your real calendar (read, write, free-slot search, invites), your own inbox (search, read, label, archive, and drafts in your voice for one-tap send; it can never send as you), and Drive filing. This unlocks scheduling with other people, inbox triage and delegation, meeting prep, travel itineraries, receipts filed by year, and the rest of the playbooks.
-
-**Playbooks**: `agent/memory-seed/playbooks/` holds one short file per domain, calendar, inbox, money, shopping, home, health, travel, paperwork, people, research, work (the 9-5 owner), executive (a CEO), and kids. They cover forty secretary duties: bills and subscriptions on autopilot, receipts and expenses, renewals and deadlines, health admin, travel end to end, PTO planning, forms and filing, relationship memory and occasions, meeting prep and one-on-ones, research with a recommendation, a signals digest, calendar defense, delegation and action-item chasing, board and investor cadence, contracts, hiring pipeline, school mail and activities, and more. The agent reads the relevant one before a task and refines it after. Edit them to taste.
-
-**Household**: `FAMILY_EMAILS` lets other people email requests; replies go to them, and anything that spends your money or commits you still waits for your yes.
-
-**Interruptions**: `QUIET_HOURS` and `BATCH_TIMES` hold non-urgent heads-ups for your check-ins (say, lunch and end of day) and deliver them as one text. Urgent items (money leaving, same-day deadlines, fraud, family) come straight through. `WEEKLY_REVIEW` adds a Sunday-evening week-ahead with one or two questions that let it do more without asking.
-
-**Email**: email the agent from your address. Subject is the task title, body is the task. Optional `TASK_PASSPHRASE` gates new tasks. Replies in the same thread continue the same session, so "yes" approves a checkpoint and a numbered list answers its questions.
-
-Policy knobs: `AUTO_APPROVE_MAX_USD`, `AUTO_APPROVE_TYPES`, `ASK_USER_DEADLINE_HOURS`, `SESSION_BUDGET_USD`. The agent's standing instructions can be stricter than these, never looser.
-
-## Editing the agent
-
-Change `agent/system-prompt.md` or the tools in `lib/agent-config.ts`, then `npm run update-agent`. If `sandbox/browser.mjs` changed, update `SANDBOX_TOOLS_FILE_ID` with the printed id.
+Each session carries a hard budget (`SESSION_BUDGET_USD`). Each customer has a monthly cap by plan (`PLAN_CAP_USD_DEFAULT`, `PLAN_CAP_USD_<PLAN>`); usage is recorded from session cost snapshots and new sessions are refused past the cap with a clear message. Browserbase minutes and Postmark volume are the other variable costs.
 
 ## Security notes
 
-- Site passwords are read by the Vercel function and typed into the hosted browser. The sandbox and the model only ever see "logged_in". Prompt injection on a web page cannot reach them.
-- The Browserbase connect URL handed to the sandbox is scoped to the current browser session. Rotate the Browserbase key if a session is ever compromised.
-- Anything that moves money or speaks as you goes through `checkpoint`; the host policy is the floor.
-- The agent's memory must never hold secrets (system prompt forbids it, and memory versions are auditable and redactable in the Console).
+- Passwords, TOTP seeds and Google refresh tokens are encrypted with `MASTER_KEY` and the customer id as associated data. Move `MASTER_KEY` to a KMS before scale.
+- The model and the sandbox never see a password. Prompt injection on a web page cannot reach the vault.
+- Third-party mail and forwarded mail are marked as information, never instructions, and every consequential action goes through the approval gate.
+- Memory stores are per customer; sessions are looked up in our database, so one customer can never reach another's session, memory, or browser.
+- The cron and inbound routes require secrets; the Stripe and Anthropic webhooks verify signatures.
 
-## Roadmap
+## Developing
 
-- Voice front door: the chat page already has browser dictation; a phone number (Twilio) or an always-on voice app would post transcripts to `api/chat/send` and read replies from `api/chat/stream`.
-- SMS 2FA via a Twilio number wired into `lib/login.ts` next to the email-code fallback.
-- Per-site notes seeded from the first few runs.
+`npm run typecheck`. Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`, then `npm run setup` to publish a new agent version. Existing customers' memory files are not overwritten; new seed files reach existing customers only through a migration script you write against their stores.
+
+## Not yet
+
+SMS and WhatsApp in, phone calls out, native push notifications, an admin dashboard, per-customer analytics. The chat page has browser dictation as a start on voice.
