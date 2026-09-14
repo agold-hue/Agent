@@ -13,6 +13,7 @@
  *   node browser.mjs scroll down|up
  *   node browser.mjs text                # page text (trimmed)
  *   node browser.mjs screenshot [file]   # default /workspace/shot.png
+ *   node browser.mjs watch [seconds]     # wait until the page text changes (live support chats), then print what's new
  *   node browser.mjs tabs | tab <n> | back | url | wait <ms> | eval "<js>"
  *
  * Requires playwright-core in /workspace/node_modules (npm i playwright-core).
@@ -203,6 +204,31 @@ try {
       await page.waitForTimeout(Number(args[0] || 1000));
       console.log("ok");
       break;
+    case "watch": {
+      // Live chats reply asynchronously. Poll the page text until it changes or the time is up.
+      const limit = Math.min(Number(args[0] || 60), 240) * 1000;
+      const grab = () => page.evaluate(() => document.body.innerText).catch(() => "");
+      const before = await grab();
+      const start = Date.now();
+      let after = before;
+      while (Date.now() - start < limit) {
+        await page.waitForTimeout(2000);
+        after = await grab();
+        if (after !== before) {
+          await page.waitForTimeout(1500); // let a multi-line reply finish
+          after = await grab();
+          break;
+        }
+      }
+      if (after === before) {
+        console.log(`no change after ${Math.round(limit / 1000)}s`);
+      } else {
+        const oldLines = new Set(before.split("\n"));
+        const fresh = after.split("\n").filter((l) => l.trim() && !oldLines.has(l));
+        console.log(fresh.length ? fresh.join("\n").slice(0, MAX_TEXT) : "(page changed; run 'text' to read it)");
+      }
+      break;
+    }
     case "eval": {
       const result = await page.evaluate(args.join(" "));
       console.log(typeof result === "string" ? result : JSON.stringify(result, null, 1));

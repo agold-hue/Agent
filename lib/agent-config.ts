@@ -114,23 +114,31 @@ export const customTools: Anthropic.Beta.Agents.AgentCreateParams["tools"] = [
     type: "custom",
     name: "checkpoint",
     description:
-      "REQUIRED before any irreversible action: paying, placing an order, sending a message or post as the user, " +
-      "deleting something, changing account settings, or creating an account. Describe exactly what is about to " +
-      "happen. The host either auto-approves under the user's standing rules or asks the user by email. " +
-      "Returns APPROVED or DENIED with a reason. Never perform the action without APPROVED.",
+      "REQUIRED before any big move: paying, ordering, sending a message or post as the user, deleting, changing " +
+      "account settings, creating an account, accepting an offer or settlement (a partial refund, a credit, a " +
+      "replacement instead of a refund), agreeing to return an item, filing a claim or dispute, cancelling " +
+      "anything. Describe exactly what is about to happen, the options you considered, and why you recommend this " +
+      "one. The host either auto-approves under the user's standing rules or asks the user. Returns APPROVED or " +
+      "DENIED with a reason. Never perform the action without APPROVED.",
     input_schema: obj(
       {
         action_type: {
           type: "string",
-          enum: ["purchase", "payment", "message", "account_change", "delete", "signup", "other"],
+          enum: ["purchase", "payment", "message", "account_change", "delete", "signup", "agreement", "dispute", "cancellation", "other"],
         },
-        summary: { type: "string", description: "One sentence, e.g. 'Place order for 2x paper towels'." },
+        summary: { type: "string", description: "One sentence, e.g. 'Accept $42 partial refund on the dish set'." },
         amount_usd: { type: "number", description: "Total money that will move, if any." },
-        merchant: { type: "string", description: "Site or payee." },
+        merchant: { type: "string", description: "Site, payee or counterparty." },
         details: {
           type: "string",
-          description: "Items, totals, payment method, shipping address, recipient: whatever the user needs to judge it.",
+          description: "Items, totals, payment method, shipping address, recipient, the offer on the table: whatever the user needs to judge it.",
         },
+        options_considered: {
+          type: "array",
+          items: { type: "string" },
+          description: "The other routes available right now and why you are not recommending them.",
+        },
+        recommendation: { type: "string", description: "What you would do and why, in one or two sentences." },
       },
       ["action_type", "summary", "details"],
     ),

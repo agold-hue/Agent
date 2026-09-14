@@ -58,6 +58,8 @@
 <main hidden id="log"></main>
 <form hidden id="composer">
   <textarea id="text" rows="1" placeholder="Message… (Enter to send, Shift+Enter for a new line)" autofocus></textarea>
+  <input type="file" id="file" multiple hidden>
+  <button type="button" id="attach" title="Attach photos or documents">📎</button>
   <button type="button" id="mic" title="Dictate">🎤</button>
   <button class="primary" type="submit" id="send">Send</button>
 </form>
@@ -109,7 +111,9 @@
       if (item.name === "checkpoint") {
         const i = item.input;
         h.textContent = "Approval needed";
-        body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}`;
+        body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}`
+          + (i.recommendation ? `\n\nMy recommendation: ${i.recommendation}` : "")
+          + ((i.options_considered || []).length ? `\n\nOther options:\n` + i.options_considered.map((o) => "• " + o).join("\n") : "");
       } else if (item.name === "send_email") {
         const i = item.input;
         h.textContent = "Email ready to send";
@@ -190,6 +194,25 @@
     } catch (e) { optimistic.textContent += "\n(failed to send)"; }
     finally { $("send").disabled = false; $("text").focus(); }
   }
+
+  // Attachments (photos of a broken item, a PDF) go straight into the agent's sandbox.
+  $("attach").onclick = () => $("file").click();
+  $("file").addEventListener("change", async () => {
+    const files = Array.from($("file").files || []); $("file").value = "";
+    for (const f of files) {
+      if (f.size > 4 * 1024 * 1024) { alert(`${f.name} is over 4 MB; email it instead.`); continue; }
+      const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(f); });
+      const note = bubble("user"); note.textContent = `Uploading ${f.name}…`;
+      try {
+        const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: f.name, mimeType: f.type || "application/octet-stream", data }) });
+        const out = await r.json();
+        if (!r.ok) throw new Error(out.error || r.status);
+        note.textContent = `Attached ${f.name}`;
+        if (out.session_id && out.session_id !== sessionId) { sessionId = out.session_id; openStream(); }
+      } catch (e) { note.textContent = `Could not attach ${f.name}: ${e.message}`; }
+    }
+    scroll();
+  });
 
   function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 160) + "px"; }
   $("text").addEventListener("input", autosize);

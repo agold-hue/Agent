@@ -6,6 +6,8 @@ export interface CheckpointInput {
   amount_usd?: number;
   merchant?: string;
   details: string;
+  options_considered?: string[];
+  recommendation?: string;
 }
 
 /** Hard floor. The agent's standing instructions can be stricter, never looser. */
@@ -36,7 +38,10 @@ export function formatCheckpointEmail(input: CheckpointInput, liveViewUrl?: stri
   ];
   if (input.merchant) lines.push(`Where: ${input.merchant}`);
   if (input.amount_usd != null) lines.push(`Amount: $${Number(input.amount_usd).toFixed(2)}`);
-  lines.push(``, `Details:`, input.details, ``, `Reply "yes" to approve. Anything else and I will stop and treat your reply as instructions.`);
+  lines.push(``, `Details:`, input.details);
+  if (input.recommendation) lines.push(``, `My recommendation: ${input.recommendation}`);
+  if (input.options_considered?.length) lines.push(``, `Other options I considered:`, ...input.options_considered.map((o) => `  - ${o}`));
+  lines.push(``, `Reply "yes" to approve. Anything else and I will stop and treat your reply as instructions.`);
   if (liveViewUrl) lines.push(``, `Watch or take over the browser: ${liveViewUrl}`);
   return lines.join("\n");
 }

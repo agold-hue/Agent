@@ -27,7 +27,7 @@ chat ◀── api/chat/stream (live) ── / ── email ◀── api/anthro
 | Agent (`lib/agent-config.ts`, `agent/system-prompt.md`) | Anthropic Managed Agents | Claude Opus 5, versioned config, memory store mounted at `/mnt/memory/personal-web-agent-memory` |
 | Sandbox browser CLI (`sandbox/browser.mjs`) | Inside the session sandbox | `goto`, `snapshot`, `click`, `type`, `screenshot`... over CDP to the hosted browser |
 | Hosted browser | Browserbase | Persistent context (cookies survive), residential proxy, captcha solving, live-view URL for you |
-| Chat page (`public/index.html`) + `api/chat/*` | Vercel | Password-protected chat with live streaming replies, approval buttons, basic dictation |
+| Chat page (`public/index.html`) + `api/chat/*` | Vercel | Password-protected chat with live streaming replies, approval cards, file attachments, basic dictation |
 | Inbox route (`api/inbox.ts`) | Vercel, every minute | Unread mail from you → new session or follow-up; resolves approvals and answers; expires unanswered questions |
 | Webhook route (`api/anthropic-webhook.ts`) | Vercel | Runs the custom tools, emails the final report |
 | Passwords | 1Password service account | Looked up by website URL; TOTP handled; new accounts saved back |
@@ -62,6 +62,8 @@ Paste the printed `AGENT_ID`, `ENVIRONMENT_ID`, `MEMORY_STORE_ID`, `SANDBOX_TOOL
 **Memory of everything**: every chat and email, both directions, is appended by the host to `conversations/YYYY-MM-DD.md` in the memory store. The agent greps it when you refer to something from the past. Dated commitments you mention ("appointment in FL next Wednesday") go into `calendar.md` and are checked before it schedules any delivery, pickup or appointment. Every message is stamped with the current time in `OWNER_TIMEZONE` so relative dates resolve correctly.
 
 **Projects** ("buy me a house, 3 bed, under $650k, Bucks County"): the agent writes a project file, researches in the browser, shows you a shortlist with a recommendation and one question. On your yes it emails your mortgage broker from `contacts.md` for a pre-approval letter, logs that it is waiting, and when the reply lands (attachments included) it drafts the offer email to your realtor with the letter attached and holds it for your approval. Fill in `contacts.md` so "my broker" resolves to a real address. Every outbound email to an outsider is held for your yes unless you put `message` in `AUTO_APPROVE_TYPES`.
+
+**Problems** ("get me a refund for the broken dish set"): the agent reads the order, posts its plan (self-service, support chat, seller message, buyer-protection claim, return label, card dispute), then works down the ladder, logging every attempt and case number. It holds a live support chat using the `watch` command, asks you once for photos if a company needs evidence (attach them in chat with the paperclip, or reply by email), and stops for your yes before any big move: accepting less than you asked for, agreeing to send an item back, filing a claim or dispute, cancelling anything. Each approval card shows the offer, the options it considered, and its recommendation.
 
 **Email**: email the agent from your address. Subject is the task title, body is the task. Optional `TASK_PASSPHRASE` gates new tasks. Replies in the same thread continue the same session, so "yes" approves a checkpoint and a numbered list answers its questions.
 
