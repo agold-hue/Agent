@@ -39,6 +39,17 @@ Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwi
 | Proactive | `api/cron.ts`, `lib/followups.ts`, `lib/notify.ts` | Database-driven; one query per concern |
 | Web app | `public/index.html`, `public/app.html` | Landing and login; chat, settings, logins, billing |
 
+## Ownership boundary
+
+This product is its own thing, so it can be run, sold, or shut down without touching anything else you operate:
+
+- **Code**: this repository only (`agold-hue/Agent`). No shared packages, no imports from other projects.
+- **Hosting**: deploy it as its own Vercel project, ideally in its own Vercel team so billing and access are separate from other sites. Nothing in `vercel.json` references another project.
+- **Accounts it needs, all its own**: a Postgres database, a model-provider key (OpenRouter and/or direct providers), a Browserbase project, a Postmark server and sending domain, a Stripe account or at least a separate Stripe product, and optionally a Google OAuth client. Create each under the product's name, not under a personal or another business's account.
+- **Domain**: its own domain for the app and `MAIL_DOMAIN` for agent addresses.
+
+Keep customer data (memories, vault, mail log) in this product's database only.
+
 ## Deploy
 
 1. **Postgres**. Set `DATABASE_URL`, run `npm run db:migrate`.
