@@ -18,7 +18,9 @@ api/stripe-webhook: subscription status → access
 
 Three tiers, each any model id the provider accepts (`MODEL_CHAT`, `MODEL_TASK`, `MODEL_HARD`, optional per-plan overrides). The router picks a tier from the request; the agent can `escalate_model` when a site or a support agent defeats it. Defaults are cheap-first: a Gemini Flash-Lite class model for chat, a Gemini Flash class model for routine browser work, Claude Sonnet for refunds, negotiations and projects. On OpenRouter every request asks for the cheapest healthy provider of the chosen model with fallbacks.
 
-Cost is computed per call from a price table (`lib/llm.ts`, extend with `MODEL_PRICES`), recorded per session and per customer per month. `SESSION_BUDGET_USD` caps a task; `PLAN_CAP_USD_<PLAN>` caps a customer's month. Context is kept under `CONTEXT_TOKEN_BUDGET` by trimming old tool output, so long browser tasks do not balloon.
+Cost is taken from the provider's own usage report when it sends one (OpenRouter does), otherwise computed from a price table (`lib/llm.ts`, extend with `MODEL_PRICES`) with cached input discounted per model family. It is recorded per session and per customer per month, with the month's cache hit rate on `/api/me`.
+
+**Prompt caching.** On Claude models the client places two cache breakpoints (after the system prompt, which also covers the tool definitions, and on the newest message), so each step of a long task re-reads the conversation from cache at a tenth of the price. Gemini, DeepSeek and OpenAI cache stable prefixes without markers. Context compaction drops to 60% of the budget in one pass so the prefix then stays stable for many steps. `PROMPT_CACHE=off` disables the markers. `SESSION_BUDGET_USD` caps a task; `PLAN_CAP_USD_<PLAN>` caps a customer's month. Context is kept under `CONTEXT_TOKEN_BUDGET` by trimming old tool output, so long browser tasks do not balloon.
 
 Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwise the agent works from text snapshots, which is the cheap default anyway.
 

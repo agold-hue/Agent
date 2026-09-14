@@ -12,7 +12,8 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
-export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+export type CacheControl = { type: "ephemeral" };
+export type ContentPart = { type: "text"; text: string; cache_control?: CacheControl } | { type: "image_url"; image_url: { url: string } };
 
 export interface ChatMessage {
   role: Role;
@@ -31,6 +32,8 @@ export interface Usage {
   prompt_tokens: number;
   completion_tokens: number;
   cached_tokens?: number;
+  /** Exact charge reported by the provider (OpenRouter returns it); wins over the price table. */
+  cost_usd?: number;
 }
 
 export interface Completion {
@@ -77,6 +80,44 @@ export class LLMError extends Error {
   }
 }
 
+// ---------------------------------------------------------------- Prompt caching
+
+/** Models that need explicit cache breakpoints. Gemini, DeepSeek and OpenAI cache stable prefixes on their own. */
+function wantsCacheMarkers(model: string): boolean {
+  return /claude|anthropic/i.test(model) && process.env.PROMPT_CACHE !== "off";
+}
+
+/**
+ * Two breakpoints, the pattern Anthropic recommends for agents: one after the system prompt (which
+ * also covers the tool definitions in front of it) and one on the newest message, so the next call
+ * reads the whole conversation so far from cache instead of paying full price for it again.
+ * Cached input costs a tenth of the normal rate. Returns copies; the stored messages are untouched.
+ */
+export function withCacheMarkers(messages: ChatMessage[], level: "full" | "system" | "none"): ChatMessage[] {
+  if (level === "none") return messages;
+  const out = messages.map((m) => ({ ...m }));
+  const mark = (m: ChatMessage) => {
+    if (typeof m.content === "string") m.content = [{ type: "text", text: m.content, cache_control: { type: "ephemeral" } }];
+    else if (Array.isArray(m.content) && m.content.length) {
+      const parts = m.content.map((p) => ({ ...p }));
+      const last = parts[parts.length - 1];
+      if (last.type === "text") last.cache_control = { type: "ephemeral" };
+      else parts.push({ type: "text", text: " ", cache_control: { type: "ephemeral" } });
+      m.content = parts;
+    }
+  };
+  if (out[0]?.role === "system") mark(out[0]);
+  if (level === "full") {
+    for (let i = out.length - 1; i > 0; i--) {
+      if ((out[i].role === "user" || out[i].role === "tool") && out[i].content) {
+        mark(out[i]);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export async function complete(opts: {
   model: string;
   messages: ChatMessage[];
@@ -87,9 +128,10 @@ export async function complete(opts: {
 }): Promise<Completion> {
   const { provider, model } = resolveModel(opts.model);
   const isOpenRouter = () => provider.baseUrl.includes("openrouter.ai");
+  let cacheLevel: "full" | "system" | "none" = wantsCacheMarkers(model) ? "full" : "none";
   const body: Record<string, unknown> = {
     model,
-    messages: opts.messages,
+    messages: withCacheMarkers(opts.messages, cacheLevel),
     temperature: opts.temperature ?? 0.2,
     max_tokens: opts.maxTokens ?? 4000,
   };
@@ -117,11 +159,21 @@ export async function complete(opts: {
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
       continue;
     }
-    if (!res.ok) throw new LLMError(`${res.status} ${await res.text().catch(() => "")}`.slice(0, 1000), res.status, false);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      // A provider that rejects cache markers gets the same request with fewer of them, then none.
+      if (res.status === 400 && cacheLevel !== "none" && /cache_control|content|invalid/i.test(text)) {
+        cacheLevel = cacheLevel === "full" ? "system" : "none";
+        body.messages = withCacheMarkers(opts.messages, cacheLevel);
+        attempt--;
+        continue;
+      }
+      throw new LLMError(`${res.status} ${text}`.slice(0, 1000), res.status, false);
+    }
     const data = (await res.json()) as {
       model?: string;
       choices?: Array<{ message: ChatMessage; finish_reason?: string }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number; prompt_tokens_details?: { cached_tokens?: number }; cache_read_input_tokens?: number };
       error?: { message?: string };
     };
     if (data.error) throw new LLMError(data.error.message ?? "provider error", 200, false);
@@ -139,7 +191,8 @@ export async function complete(opts: {
       usage: {
         prompt_tokens: data.usage?.prompt_tokens ?? 0,
         completion_tokens: data.usage?.completion_tokens ?? 0,
-        cached_tokens: data.usage?.prompt_tokens_details?.cached_tokens,
+        cached_tokens: data.usage?.prompt_tokens_details?.cached_tokens ?? data.usage?.cache_read_input_tokens ?? 0,
+        cost_usd: typeof data.usage?.cost === "number" ? data.usage.cost : undefined,
       },
       model: data.model ?? opts.model,
       finish_reason: choice.finish_reason ?? "stop",
@@ -178,9 +231,21 @@ export function priceFor(modelId: string): { in: number; out: number } {
   return key ? table[key] : { in: 2, out: 10 }; // unknown model: assume Sonnet-class so caps still bite
 }
 
+/** What a cached input token costs relative to a fresh one, per model family. */
+function cacheDiscount(model: string): number {
+  const m = model.toLowerCase();
+  if (/claude|anthropic|deepseek/.test(m)) return 0.1;
+  if (/gemini|google/.test(m)) return 0.25;
+  if (/gpt|openai/.test(m)) return 0.5;
+  return 1;
+}
+
 export function costCents(model: string, usage: Usage): number {
+  if (usage.cost_usd != null && usage.cost_usd >= 0) return usage.cost_usd * 100;
   const p = priceFor(model);
-  const cents = ((usage.prompt_tokens * p.in + usage.completion_tokens * p.out) / 1_000_000) * 100;
+  const cached = Math.min(usage.cached_tokens ?? 0, usage.prompt_tokens);
+  const fresh = usage.prompt_tokens - cached;
+  const cents = ((fresh * p.in + cached * p.in * cacheDiscount(model) + usage.completion_tokens * p.out) / 1_000_000) * 100;
   return Math.round(cents * 1000) / 1000;
 }
 

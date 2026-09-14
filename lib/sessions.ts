@@ -36,6 +36,7 @@ export interface SessionRow {
   error: string | null;
   cost_cents: number;
   prompt_tokens: number;
+  cached_tokens?: number;
   completion_tokens: number;
   created_at: Date;
   updated_at: Date;

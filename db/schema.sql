@@ -202,3 +202,8 @@ create table if not exists receipts (
   created_at timestamptz not null default now()
 );
 create index if not exists receipts_user on receipts(user_id, created_at desc);
+
+-- Cache accounting (idempotent adds for existing databases)
+alter table agent_sessions add column if not exists cached_tokens bigint not null default 0;
+alter table usage add column if not exists prompt_tokens bigint not null default 0;
+alter table usage add column if not exists cached_tokens bigint not null default 0;

@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../lib/auth.js";
 import { monthUsageCents } from "../lib/sessions.js";
 import { env } from "../lib/env.js";
+import { one } from "../lib/db.js";
 import { sttConfigured } from "../lib/stt.js";
 import { agentAddress, updateSettings, type TenantSettings } from "../lib/tenant.js";
 
@@ -43,6 +44,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const used = await monthUsageCents(t).catch(() => 0);
+  const tok = await one<{ prompt_tokens: string; cached_tokens: string }>("select prompt_tokens::text, cached_tokens::text from usage where user_id = $1 and month = date_trunc('month', now())::date", [t.id]).catch(() => undefined);
+  const cacheRate = tok && Number(tok.prompt_tokens) > 0 ? Number(tok.cached_tokens) / Number(tok.prompt_tokens) : 0;
   return res.status(200).json({
     email: t.email,
     name: t.name,
@@ -55,6 +58,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     current_period_end: t.currentPeriodEnd,
     google_connected: !!t.googleRefreshToken,
     voice_notes: sttConfigured(),
-    usage: { month_cents: used, cap_cents: env.plans.monthlyCapUsd(t.plan) * 100 },
+    usage: { month_cents: used, cap_cents: env.plans.monthlyCapUsd(t.plan) * 100, cache_hit_rate: Math.round(cacheRate * 100) / 100 },
   });
 }

@@ -15,7 +15,9 @@ import { executeTool } from "./tools.js";
  * every turn, so any worker can pick it up.
  */
 const MAX_TURNS = Number(process.env.MAX_TURNS_PER_SESSION ?? 120);
-const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 60_000);
+const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 40_000);
+// Compact down to this share of the budget so the prefix then stays stable (and cached) for many turns.
+const COMPACT_TARGET = 0.6;
 
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
 
@@ -44,9 +46,13 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
       row.prompt_tokens = Number(row.prompt_tokens) + completion.usage.prompt_tokens;
       row.completion_tokens = Number(row.completion_tokens) + completion.usage.completion_tokens;
+      row.cached_tokens = Number(row.cached_tokens ?? 0) + (completion.usage.cached_tokens ?? 0);
       row.turns += 1;
       row.messages.push(completion.message);
-      await q("insert into usage (user_id, month, cost_cents) values ($1, date_trunc('month', now())::date, $2) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2", [t.id, cost.toFixed(3)]);
+      await q(
+        "insert into usage (user_id, month, cost_cents, prompt_tokens, cached_tokens) values ($1, date_trunc('month', now())::date, $2, $3, $4) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2, prompt_tokens = usage.prompt_tokens + $3, cached_tokens = usage.cached_tokens + $4",
+        [t.id, cost.toFixed(3), completion.usage.prompt_tokens, completion.usage.cached_tokens ?? 0],
+      );
 
       const calls = completion.message.tool_calls ?? [];
       if (!calls.length) {
@@ -65,7 +71,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         const out = await executeTool(t, row, call.function.name, args, call.id);
         if (out.pending) {
           row.status = "waiting";
-          await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, status: "waiting", pending_kind: out.pending, pending_event_id: call.id, lease_until: null });
+          await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status: "waiting", pending_kind: out.pending, pending_event_id: call.id, lease_until: null });
           return "waiting";
         }
         row.messages.push({ role: "tool", tool_call_id: call.id, content: out.text || "(ok)" });
@@ -79,7 +85,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the notes above.)` });
         }
       }
-      await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, model: row.model });
+      await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model });
     }
     // Out of time for this invocation; a follow-up kick continues it.
     await updateSession(row.id, { lease_until: null });
@@ -94,7 +100,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 async function finish(t: Tenant, row: SessionRow, report: string, status: "idle" | "error"): Promise<RunOutcome> {
   const proactive = ["review", "weekly", "followup", "triage", "digest"].includes(row.kind);
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
-  await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
+  await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
   if (report && !silent) {
     const holdable = ["followup", "triage"].includes(row.kind);
     if (holdable && shouldDefer(t, report)) await deferToDigest(t, row.kind === "followup" ? "Follow-up" : "From your mail", report);
@@ -131,7 +137,8 @@ function compact(messages: ChatMessage[]): void {
   }
   if (estimateTokens(messages) < CONTEXT_TOKENS) return;
   // Still too big: drop the oldest middle turns entirely, keeping system + first user message.
-  while (estimateTokens(messages) >= CONTEXT_TOKENS && messages.length > keepTail + 2) {
+  // Go well under the budget in one pass: every drop changes the prefix and invalidates the cache.
+  while (estimateTokens(messages) >= CONTEXT_TOKENS * COMPACT_TARGET && messages.length > keepTail + 2) {
     const victim = messages[2];
     messages.splice(2, 1);
     // Never leave a dangling tool result without its call, or a call without its result.
