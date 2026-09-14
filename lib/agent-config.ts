@@ -114,15 +114,18 @@ export const customTools: Anthropic.Beta.Agents.AgentCreateParams["tools"] = [
     type: "custom",
     name: "schedule_follow_up",
     description:
-      "Set a timer for yourself. At the given time a new session starts with your note as its instructions, so " +
-      "you can escalate or check back without the user reminding you: 'if the utility has not replied by 3pm, " +
-      "email the city'. Say what to check and what to do in each case. Cancel by id if the wait resolves early.",
+      "Set a timer or a recurring watch for yourself. At the given time a new session starts with your note as " +
+      "its instructions, so you can escalate, check back, or keep an eye on something without the user asking: " +
+      "'if the utility has not replied by 3pm, email the city', 'every 30m check if tickets are on sale, stop " +
+      "Friday', 'every morning check the flight price'. Cancel by id when it is no longer needed.",
     input_schema: obj(
       {
         when: { type: "string", description: "ISO 8601 time, or a duration like '2h', '45m', '1d'." },
-        what: { type: "string", description: "Instructions for your future self: what to check, and what to do if it is or is not resolved." },
+        what: { type: "string", description: "Instructions for your future self: what to check, and what to do in each case. Say when to stop watching." },
+        repeat: { type: "string", description: "Make it recurring: re-arm this long after each firing, e.g. '30m', '1d', '1w'. Minimum 15m." },
+        until: { type: "string", description: "ISO 8601 time after which a recurring watch stops." },
         project: { type: "string", description: "Project slug this belongs to, if any." },
-        cancel_id: { type: "string", description: "Instead of scheduling, cancel the follow-up with this id." },
+        cancel_id: { type: "string", description: "Instead of scheduling, cancel the follow-up or watch with this id." },
       },
       ["what"],
     ),

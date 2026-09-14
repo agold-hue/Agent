@@ -26,7 +26,7 @@ export async function startChatSession(firstMessage: string): Promise<Session> {
 /** Shape the chat UI renders. Built from the event list (history) or the live stream. */
 export type ChatItem =
   | { kind: "user"; id: string; text: string; at: string }
-  | { kind: "agent"; id: string; text: string; at: string }
+  | { kind: "agent"; id: string; text: string; at: string; notice?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean }
   | { kind: "status"; id: string; status: "running" | "idle" | "terminated"; stop?: string; at: string };
 
@@ -65,4 +65,30 @@ export function toChatItems(events: SessionEvent[]): ChatItem[] {
     }
   }
   return items;
+}
+
+/**
+ * Heads-ups: reports from sessions the agent started on its own (daily review, timers and
+ * watches, mail triage, third-party replies) so they show in chat as well as email.
+ */
+export async function recentNotices(limit = 10): Promise<ChatItem[]> {
+  const { listRecentSessions, listAllEvents, latestAgentReport, meta: metaOf } = await import("./anthropic.js");
+  const sessions = (await listRecentSessions())
+    .filter((s) => {
+      const m = metaOf(s);
+      return (m.proactive === "1" || m.correspondent) && s.status !== "running";
+    })
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, limit);
+  const out: ChatItem[] = [];
+  for (const s of sessions) {
+    const events = await listAllEvents(s.id);
+    const report = latestAgentReport(events);
+    if (!report || /^NO_REPORT\b/.test(report.trim())) continue;
+    const m = metaOf(s);
+    const label = m.review_day ? "Morning brief" : m.followup_id ? "Follow-up" : m.triage_count ? "From your mail" : m.correspondent ? `Reply from ${m.correspondent}` : "Heads-up";
+    const last = [...events].reverse().find((e) => e.type === "agent.message");
+    out.push({ kind: "agent", id: `notice-${s.id}`, text: report, at: last && "processed_at" in last ? last.processed_at : s.created_at, notice: label });
+  }
+  return out;
 }

@@ -12,6 +12,11 @@ export interface FollowUp {
   what: string; // instruction to the future session
   project?: string;
   created: string;
+  /** Recurring watch: re-arm this long after each firing ("30m", "1d"). */
+  repeat?: string;
+  /** Stop repeating after this ISO time. */
+  until?: string;
+  fired?: number;
 }
 
 const PATH = "/followups.json";
@@ -58,10 +63,30 @@ export async function cancelFollowUps(pred: (f: FollowUp) => boolean): Promise<n
   return list.length - keep.length;
 }
 
-/** Remove and return every follow-up whose time has come. */
+export function durationMs(d: string): number | null {
+  const m = d.trim().match(/^(\d+(?:\.\d+)?)\s*(m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|w|weeks?)$/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const u = m[2].toLowerCase();
+  return u.startsWith("m") ? n * 60_000 : u.startsWith("h") ? n * 3_600_000 : u.startsWith("d") ? n * 86_400_000 : n * 7 * 86_400_000;
+}
+
+/**
+ * Return every follow-up whose time has come. One-shots are removed; recurring watches are
+ * re-armed for their next slot (or dropped once past `until`).
+ */
 export async function takeDueFollowUps(now = new Date()): Promise<FollowUp[]> {
   const list = await readFollowUps();
   const due = list.filter((f) => new Date(f.due).getTime() <= now.getTime());
-  if (due.length) await writeFollowUps(list.filter((f) => !due.includes(f)));
+  if (!due.length) return [];
+  const keep: FollowUp[] = list.filter((f) => !due.includes(f));
+  for (const f of due) {
+    const step = f.repeat ? durationMs(f.repeat) : null;
+    if (!step) continue;
+    const next = new Date(Math.max(now.getTime(), new Date(f.due).getTime()) + step);
+    if (f.until && next.getTime() > new Date(f.until).getTime()) continue;
+    keep.push({ ...f, due: next.toISOString(), fired: (f.fired ?? 0) + 1 });
+  }
+  await writeFollowUps(keep);
   return due;
 }

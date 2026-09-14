@@ -139,6 +139,21 @@ export async function listUnreadCorrespondence(): Promise<InboundMail[]> {
   return out;
 }
 
+/**
+ * Mail that simply arrived at the agent's address: the owner's auto-forwarded receipts, bills,
+ * shipping notices, appointment confirmations. Not from the owner, not a reply to the agent.
+ * These are observations for the proactive lane, never instructions.
+ */
+export async function listUnreadObservations(max = 15): Promise<InboundMail[]> {
+  const candidates = await search(`is:unread -from:${env.gmail.ownerEmail()} -from:${env.gmail.agentEmail()} newer_than:3d -in:spam -in:trash`, max * 2);
+  const out: InboundMail[] = [];
+  for (const mail of candidates) {
+    if (out.length >= max) break;
+    if (!(await threadStartedByAgent(mail.threadId))) out.push(mail);
+  }
+  return out;
+}
+
 async function threadStartedByAgent(threadId: string): Promise<boolean> {
   const { data } = await gmail().users.threads.get({ userId: "me", id: threadId, format: "metadata", metadataHeaders: ["From"] });
   const first = data.messages?.[0];

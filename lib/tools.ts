@@ -1,7 +1,7 @@
 import { createBrowser, liveViewUrl, reuseBrowser } from "./browser.js";
 import { env } from "./env.js";
 import { findRecentCodes, sendMail, type OutboundAttachment } from "./gmail.js";
-import { addFollowUp, cancelFollowUps } from "./followups.js";
+import { addFollowUp, cancelFollowUps, durationMs } from "./followups.js";
 import { loginToSite } from "./login.js";
 import { notifyOwner } from "./notify.js";
 import { saveCredential, registrableDomain } from "./onepassword.js";
@@ -157,8 +157,18 @@ export async function handleCustomTool(session: Session, call: CustomToolUse): P
         }
         const due = parseWhen(String(input.when ?? ""));
         if (!due) return reply("Could not parse 'when'. Use ISO 8601 or a duration like '2h', '45m', '1d'.", true);
-        const item = await addFollowUp({ due: due.toISOString(), what: String(input.what ?? ""), project: input.project ? String(input.project) : undefined });
-        return reply(JSON.stringify({ scheduled: true, id: item.id, due: item.due, note: "A new session will start then with your note. Record it in the project file too." }));
+        const repeat = input.repeat ? String(input.repeat) : undefined;
+        const step = repeat ? durationMs(repeat) : null;
+        if (repeat && step == null) return reply("Could not parse 'repeat'. Use a duration like '30m', '1d', '1w'.", true);
+        if (step != null && step < 15 * 60_000) return reply("Watches may not repeat more often than every 15 minutes.", true);
+        const item = await addFollowUp({
+          due: due.toISOString(),
+          what: String(input.what ?? ""),
+          project: input.project ? String(input.project) : undefined,
+          repeat,
+          until: input.until ? String(input.until) : undefined,
+        });
+        return reply(JSON.stringify({ scheduled: true, id: item.id, due: item.due, repeat: item.repeat ?? null, note: "A new session will start then with your note. Record it in watchlist.md or the project file too." }));
       }
 
       case "checkpoint": {
