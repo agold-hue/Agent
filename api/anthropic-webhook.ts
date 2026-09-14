@@ -63,7 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       report = `I hit a platform error and could not finish.\n\n${report}`;
     }
     // The daily review says NO_REPORT when nothing needs the owner; stay silent then.
-    const silent = /^NO_REPORT\b/.test(report.trim()) && !!m.review_day;
+    const silent = /^NO_REPORT\b/.test(report.trim()) && !!(m.review_day || m.followup_id);
     if (report && !silent) {
       await notifyOwner(session, report, m.review_day ? `Daily review ${m.review_day}` : undefined);
       await appendTranscript({ channel, role: "agent", text: report }).catch(() => {});

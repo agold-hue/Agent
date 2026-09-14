@@ -112,6 +112,23 @@ export const customTools: Anthropic.Beta.Agents.AgentCreateParams["tools"] = [
   },
   {
     type: "custom",
+    name: "schedule_follow_up",
+    description:
+      "Set a timer for yourself. At the given time a new session starts with your note as its instructions, so " +
+      "you can escalate or check back without the user reminding you: 'if the utility has not replied by 3pm, " +
+      "email the city'. Say what to check and what to do in each case. Cancel by id if the wait resolves early.",
+    input_schema: obj(
+      {
+        when: { type: "string", description: "ISO 8601 time, or a duration like '2h', '45m', '1d'." },
+        what: { type: "string", description: "Instructions for your future self: what to check, and what to do if it is or is not resolved." },
+        project: { type: "string", description: "Project slug this belongs to, if any." },
+        cancel_id: { type: "string", description: "Instead of scheduling, cancel the follow-up with this id." },
+      },
+      ["what"],
+    ),
+  },
+  {
+    type: "custom",
     name: "checkpoint",
     description:
       "REQUIRED before any big move: paying, ordering, sending a message or post as the user, deleting, changing " +

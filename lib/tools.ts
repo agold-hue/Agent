@@ -1,6 +1,7 @@
 import { createBrowser, liveViewUrl, reuseBrowser } from "./browser.js";
 import { env } from "./env.js";
 import { findRecentCodes, sendMail, type OutboundAttachment } from "./gmail.js";
+import { addFollowUp, cancelFollowUps } from "./followups.js";
 import { loginToSite } from "./login.js";
 import { notifyOwner } from "./notify.js";
 import { saveCredential, registrableDomain } from "./onepassword.js";
@@ -25,6 +26,20 @@ export interface SendEmailInput {
   attachments?: string[];
   mode?: "send" | "send_to_owner";
   purpose?: string;
+}
+
+/** "2h", "45m", "1d", or an ISO timestamp -> Date (null if unparseable or in the past by more than a minute). */
+export function parseWhen(when: string, now = new Date()): Date | null {
+  const dur = when.trim().match(/^(\d+(?:\.\d+)?)\s*(m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)$/i);
+  if (dur) {
+    const n = Number(dur[1]);
+    const unit = dur[2].toLowerCase();
+    const ms = unit.startsWith("m") ? n * 60_000 : unit.startsWith("h") ? n * 3_600_000 : n * 86_400_000;
+    return new Date(now.getTime() + ms);
+  }
+  const t = new Date(when);
+  if (Number.isNaN(t.getTime())) return null;
+  return t.getTime() < now.getTime() - 60_000 ? null : t;
 }
 
 async function markPending(sessionId: string, kind: "checkpoint" | "ask_user" | "send_email", eventId: string, deadline = "") {
@@ -133,6 +148,17 @@ export async function handleCustomTool(session: Session, call: CustomToolUse): P
         await notifyOwner(session, formatEmailApproval(draft), `Approve email to ${draft.to}`);
         await markPending(session.id, "send_email", call.id);
         return; // resolved by the inbox route or the chat send route
+      }
+
+      case "schedule_follow_up": {
+        if (input.cancel_id) {
+          const n = await cancelFollowUps((f) => f.id === String(input.cancel_id));
+          return reply(JSON.stringify({ cancelled: n }));
+        }
+        const due = parseWhen(String(input.when ?? ""));
+        if (!due) return reply("Could not parse 'when'. Use ISO 8601 or a duration like '2h', '45m', '1d'.", true);
+        const item = await addFollowUp({ due: due.toISOString(), what: String(input.what ?? ""), project: input.project ? String(input.project) : undefined });
+        return reply(JSON.stringify({ scheduled: true, id: item.id, due: item.due, note: "A new session will start then with your note. Record it in the project file too." }));
       }
 
       case "checkpoint": {

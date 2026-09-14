@@ -16,6 +16,7 @@ chat ◀── api/chat/stream (live) ── / ── email ◀── api/anthro
                     ├─ checkpoint ... auto-approve under your rules, else email you and wait for "yes"
                     ├─ ask_user ..... one batched question with defaults + deadline
                     ├─ send_email ... to anyone, from the assistant mailbox; held for your yes unless auto-approved
+                    ├─ schedule_follow_up ... the agent's own timers ("if no reply by 3pm, escalate"), fired by api/inbox
                     │                 replies from those people come back through api/inbox as new tasks
                     └─ get_email_code / save_login / browser_session
 ```
@@ -63,7 +64,7 @@ Paste the printed `AGENT_ID`, `ENVIRONMENT_ID`, `MEMORY_STORE_ID`, `SANDBOX_TOOL
 
 **Projects** ("buy me a house, 3 bed, under $650k, Bucks County"): the agent writes a project file, researches in the browser, shows you a shortlist with a recommendation and one question. On your yes it emails your mortgage broker from `contacts.md` for a pre-approval letter, logs that it is waiting, and when the reply lands (attachments included) it drafts the offer email to your realtor with the letter attached and holds it for your approval. Fill in `contacts.md` so "my broker" resolves to a real address. Every outbound email to an outsider is held for your yes unless you put `message` in `AUTO_APPROVE_TYPES`.
 
-**Problems** ("get me a refund for the broken dish set"): the agent reads the order, posts its plan (self-service, support chat, seller message, buyer-protection claim, return label, card dispute), then works down the ladder, logging every attempt and case number. It holds a live support chat using the `watch` command, asks you once for photos if a company needs evidence (attach them in chat with the paperclip, or reply by email), and stops for your yes before any big move: accepting less than you asked for, agreeing to send an item back, filing a claim or dispute, cancelling anything. Each approval card shows the offer, the options it considered, and its recommendation.
+**Problems** ("get me a refund for the broken dish set", "the power is out, deal with the utility"): the agent gathers the facts, builds the escalation ladder for that counterparty (self-service, live chat, written complaint, the seller or the city or the regulator, a formal claim or dispute), posts the plan, then works down the ladder, logging every attempt and case number. It holds a live support chat using the `watch` command, sets its own timers with `schedule_follow_up` so "if they have not replied in two hours, email the city" happens without you, asks you once for photos if a company needs evidence (attach them in chat with the paperclip, or reply by email), and stops for your yes before any big move: accepting less than you asked for, agreeing to send an item back, filing a claim or dispute, cancelling anything. Each approval card shows the offer, the options it considered, and its recommendation.
 
 **Email**: email the agent from your address. Subject is the task title, body is the task. Optional `TASK_PASSPHRASE` gates new tasks. Replies in the same thread continue the same session, so "yes" approves a checkpoint and a numbered list answers its questions.
 

@@ -3,6 +3,7 @@ import { env } from "../lib/env.js";
 import { downloadAttachment, listUnreadCorrespondence, listUnreadFromOwner, markRead, stripQuoted, type InboundMail } from "../lib/gmail.js";
 import { createSession, findSessionByThread, listRecentSessions, meta, sendUserMessage, setMeta, type SessionFile } from "../lib/anthropic.js";
 import { expirePending, resolvePending } from "../lib/tools.js";
+import { takeDueFollowUps } from "../lib/followups.js";
 import { isApprovalReply } from "../lib/policy.js";
 import { appendTranscript, dayKey, stamp, stampMessage } from "../lib/transcript.js";
 
@@ -120,7 +121,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const review = await maybeStartDailyReview(sessions);
 
-  return res.status(200).json({ processed: results.length, expired, review, results });
+  // Timers the agent set for itself ("if no reply by 3pm, escalate").
+  const fired: string[] = [];
+  for (const f of await takeDueFollowUps()) {
+    const session = await createSession({
+      channel: "email",
+      title: `Follow-up: ${f.what.slice(0, 80)}`,
+      metadata: { followup_id: f.id, ...(f.project ? { project: f.project.slice(0, 200) } : {}), gmail_subject: `Follow-up${f.project ? `: ${f.project}` : ""}` },
+      text: stampMessage(
+        [
+          `This is a follow-up you scheduled on ${f.created}${f.project ? ` for project '${f.project}'` : ""}. Your note:`,
+          ``,
+          f.what,
+          ``,
+          `Read the project file and conversations/ for what has happened since (a reply may have arrived). Then do what the note says. Report to the owner only if something changed or needs them; otherwise reply with exactly NO_REPORT.`,
+        ].join("\n"),
+        "email",
+      ),
+    });
+    fired.push(session.id);
+  }
+
+  return res.status(200).json({ processed: results.length, expired, review, followups: fired, results });
 }
 
 async function collectAttachments(mail: InboundMail): Promise<SessionFile[]> {
