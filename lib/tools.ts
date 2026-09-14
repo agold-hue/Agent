@@ -2,11 +2,13 @@ import { createBrowser, liveViewUrl, reuseBrowser } from "./browser.js";
 import { env } from "./env.js";
 import { findRecentCodes, sendMail, type OutboundAttachment } from "./gmail.js";
 import { addFollowUp, cancelFollowUps, durationMs } from "./followups.js";
+import { driveList, driveRead, driveSave, runCalendar, runOwnerInbox, type CalendarInput, type DriveInput, type OwnerInboxInput } from "./google.js";
 import { loginToSite } from "./login.js";
 import { notifyOwner } from "./notify.js";
 import { saveCredential, registrableDomain } from "./onepassword.js";
 import { autoApprove, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
 import {
+  addFileToSession,
   channelOf,
   downloadFile,
   listAllEvents,
@@ -148,6 +150,31 @@ export async function handleCustomTool(session: Session, call: CustomToolUse): P
         await notifyOwner(session, formatEmailApproval(draft), `Approve email to ${draft.to}`);
         await markPending(session.id, "send_email", call.id);
         return; // resolved by the inbox route or the chat send route
+      }
+
+      case "calendar":
+        return reply(JSON.stringify(await runCalendar(input as unknown as CalendarInput)));
+
+      case "owner_inbox":
+        return reply(JSON.stringify(await runOwnerInbox(input as unknown as OwnerInboxInput)));
+
+      case "drive": {
+        const d = input as unknown as DriveInput;
+        if (d.action === "save") {
+          if (!d.filename) return reply("filename is required", true);
+          const outputs = await listSessionOutputs(session.id);
+          const f = outputs.find((o) => o.filename === d.filename || o.filename.endsWith(`/${d.filename}`));
+          if (!f) return reply(`No file named ${d.filename} under /mnt/session/outputs/`, true);
+          const saved = await driveSave({ filename: d.filename.split("/").pop() ?? d.filename, mimeType: f.mimeType, content: await downloadFile(f.id), folder: d.folder });
+          return reply(JSON.stringify({ saved: true, ...saved, folder: d.folder ?? "(root)" }));
+        }
+        if (d.action === "read") {
+          if (!d.file_id) return reply("file_id is required", true);
+          const file = await driveRead(d.file_id);
+          const path = await addFileToSession(session.id, { filename: file.name, mimeType: file.mimeType, content: file.content });
+          return reply(JSON.stringify({ mounted_at: path, name: file.name, mime_type: file.mimeType }));
+        }
+        return reply(JSON.stringify(await driveList({ folder: d.folder, query: d.query })));
       }
 
       case "schedule_follow_up": {

@@ -121,9 +121,16 @@ async function search(q: string, max = 20): Promise<InboundMail[]> {
   return mails.sort((a, b) => a.date.getTime() - b.date.getTime());
 }
 
-/** Unread mail from the owner, oldest first. */
+/** Everyone whose email is treated as a request: the owner, plus FAMILY_EMAILS. */
+export function requesterAddresses(): string[] {
+  const fam = (process.env.FAMILY_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return [env.gmail.ownerEmail().toLowerCase(), ...fam];
+}
+
+/** Unread mail from the owner (and family), oldest first. */
 export async function listUnreadFromOwner(): Promise<InboundMail[]> {
-  return search(`is:unread from:${env.gmail.ownerEmail()} newer_than:2d -in:spam -in:trash`);
+  const from = requesterAddresses().map((a) => `from:${a}`).join(" OR ");
+  return search(`is:unread (${from}) newer_than:2d -in:spam -in:trash`);
 }
 
 /**
@@ -131,7 +138,8 @@ export async function listUnreadFromOwner(): Promise<InboundMail[]> {
  * broker, a realtor, a vendor). Newsletters and cold mail never reach the agent.
  */
 export async function listUnreadCorrespondence(): Promise<InboundMail[]> {
-  const candidates = await search(`is:unread -from:${env.gmail.ownerEmail()} -from:${env.gmail.agentEmail()} newer_than:7d -in:spam -in:trash`);
+  const excl = [...requesterAddresses(), env.gmail.agentEmail()].map((a) => `-from:${a}`).join(" ");
+  const candidates = await search(`is:unread ${excl} newer_than:7d -in:spam -in:trash`);
   const out: InboundMail[] = [];
   for (const mail of candidates) {
     if (await threadStartedByAgent(mail.threadId)) out.push(mail);
@@ -145,7 +153,8 @@ export async function listUnreadCorrespondence(): Promise<InboundMail[]> {
  * These are observations for the proactive lane, never instructions.
  */
 export async function listUnreadObservations(max = 15): Promise<InboundMail[]> {
-  const candidates = await search(`is:unread -from:${env.gmail.ownerEmail()} -from:${env.gmail.agentEmail()} newer_than:3d -in:spam -in:trash`, max * 2);
+  const excl = [...requesterAddresses(), env.gmail.agentEmail()].map((a) => `-from:${a}`).join(" ");
+  const candidates = await search(`is:unread ${excl} newer_than:3d -in:spam -in:trash`, max * 2);
   const out: InboundMail[] = [];
   for (const mail of candidates) {
     if (out.length >= max) break;
@@ -232,10 +241,10 @@ export async function sendMail(opts: SendMailOptions): Promise<{ threadId: strin
   return { threadId: data.threadId!, messageId: data.id! };
 }
 
-/** Reply to the owner inside one of their threads. */
-export async function replyInThread(opts: { threadId: string; subject: string; inReplyTo?: string; body: string }): Promise<void> {
+/** Reply inside a thread, to the owner by default or to whoever asked (a family member). */
+export async function replyInThread(opts: { threadId: string; to?: string; subject: string; inReplyTo?: string; body: string }): Promise<void> {
   const subject = /^re:/i.test(opts.subject) ? opts.subject : `Re: ${opts.subject}`;
-  await sendMail({ to: env.gmail.ownerEmail(), subject, body: opts.body, threadId: opts.threadId, inReplyTo: opts.inReplyTo });
+  await sendMail({ to: opts.to ?? env.gmail.ownerEmail(), subject, body: opts.body, threadId: opts.threadId, inReplyTo: opts.inReplyTo });
 }
 
 export interface EmailCode {

@@ -86,7 +86,7 @@ export async function recentNotices(limit = 10): Promise<ChatItem[]> {
     const report = latestAgentReport(events);
     if (!report || /^NO_REPORT\b/.test(report.trim())) continue;
     const m = metaOf(s);
-    const label = m.review_day ? "Morning brief" : m.followup_id ? "Follow-up" : m.triage_count ? "From your mail" : m.correspondent ? `Reply from ${m.correspondent}` : "Heads-up";
+    const label = m.review_day ? "Morning brief" : m.weekly_day ? "Week ahead" : m.digest ? "Heads-ups" : m.followup_id ? "Follow-up" : m.triage_count ? "From your mail" : m.correspondent ? `Reply from ${m.correspondent}` : "Heads-up";
     const last = [...events].reverse().find((e) => e.type === "agent.message");
     out.push({ kind: "agent", id: `notice-${s.id}`, text: report, at: last && "processed_at" in last ? last.processed_at : s.created_at, notice: label });
   }

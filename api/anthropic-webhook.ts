@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { env } from "../lib/env.js";
 import { anthropic, channelOf, lastIdleEvent, latestAgentReport, listAllEvents, meta, pendingCustomToolUses, setMeta } from "../lib/anthropic.js";
-import { notifyOwner } from "../lib/notify.js";
+import { deferToDigest, notifyOwner, shouldDefer } from "../lib/notify.js";
 import { releaseBrowser } from "../lib/browser.js";
 import { handleCustomTool } from "../lib/tools.js";
 import { appendTranscript } from "../lib/transcript.js";
@@ -65,7 +65,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // The daily review says NO_REPORT when nothing needs the owner; stay silent then.
     const silent = /^NO_REPORT\b/.test(report.trim()) && m.proactive === "1";
     if (report && !silent) {
-      await notifyOwner(session, report, m.review_day ? `Daily review ${m.review_day}` : undefined);
+      // Proactive, non-urgent heads-ups wait for the owner's next batch time (or the end of quiet hours);
+      // the digest session itself, the reviews, and anything the owner asked for go out immediately.
+      const holdable = m.proactive === "1" && !m.digest && !m.review_day && !m.weekly_day;
+      if (holdable && shouldDefer(report)) {
+        const label = m.followup_id ? "Follow-up" : m.triage_count ? "From your mail" : "Heads-up";
+        await deferToDigest(label, report);
+      } else {
+        await notifyOwner(session, report, m.review_day ? `Daily review ${m.review_day}` : m.weekly_day ? `Week ahead ${m.weekly_day}` : undefined);
+      }
       await appendTranscript({ channel, role: "agent", text: report }).catch(() => {});
     }
     await setMeta(session.id, { last_replied_idle_id: idle.id });

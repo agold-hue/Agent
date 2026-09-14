@@ -6,6 +6,7 @@ import { expirePending, resolvePending } from "../lib/tools.js";
 import { takeDueFollowUps } from "../lib/followups.js";
 import { isApprovalReply } from "../lib/policy.js";
 import { appendTranscript, dayKey, stamp, stampMessage } from "../lib/transcript.js";
+import { isBatchMinute, takeDigest } from "../lib/notify.js";
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
@@ -54,11 +55,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           results.push({ id: mail.id, action: "follow_up", session: existing.id });
         }
       } else {
-        const body = [`Subject: ${mail.subject}`, ``, text || "(no body)"].join("\n");
+        const family = mail.fromAddress !== env.gmail.ownerEmail().toLowerCase();
+        const body = [
+          ...(family ? [`(Request from a family member, ${mail.from}. Reply to them. Standing instructions and the owner's approval rules still apply; anything that spends money or commits the owner needs the owner's yes.)`, ``] : []),
+          `Subject: ${mail.subject}`,
+          ``,
+          text || "(no body)",
+        ].join("\n");
         const session = await createSession({
           channel: "email",
           title: mail.subject,
           metadata: {
+            ...(family ? { requester: mail.fromAddress.slice(0, 200) } : {}),
             gmail_thread_id: mail.threadId,
             gmail_subject: mail.subject.slice(0, 200),
             last_gmail_message_id: mail.id,
@@ -168,6 +176,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (await expirePending(s)) expired++;
   }
   const review = await maybeStartDailyReview(sessions);
+  const weekly = await maybeStartWeeklyReview(sessions);
+  const digest = await maybeFlushDigest(sessions);
 
   // Timers the agent set for itself ("if no reply by 3pm, escalate").
   const fired: string[] = [];
@@ -190,7 +200,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     fired.push(session.id);
   }
 
-  return res.status(200).json({ processed: results.length, observed, expired, review, followups: fired, results });
+  return res.status(200).json({ processed: results.length, observed, expired, review, weekly, digest, followups: fired, results });
 }
 
 async function collectAttachments(mail: InboundMail): Promise<SessionFile[]> {
@@ -225,6 +235,58 @@ async function maybeStartDailyReview(sessions: Awaited<ReturnType<typeof listRec
         `Look ahead 7 days in calendar.md: travel that needs bookings or check-ins, appointments that need prep or a reminder, deliveries or pickups that collide with where the owner will be. Handle what you can; set schedule_follow_up for the rest.`,
         `Walk watchlist.md: anything due, expiring, renewing, or worth checking today.`,
         `Then text the owner a short morning brief: what moved, what is coming, what needs their decision. If there is truly nothing, reply with exactly NO_REPORT.`,
+      ].join("\n"),
+      "email",
+    ),
+  });
+  return session.id;
+}
+
+/**
+ * Once a week (WEEKLY_REVIEW="Sun 18", owner time): five minutes with the owner. What is on the
+ * week, what is waiting, decisions needed, and what the agent learned about preferences.
+ */
+async function maybeStartWeeklyReview(sessions: Awaited<ReturnType<typeof listRecentSessions>>): Promise<string | null> {
+  const m = (process.env.WEEKLY_REVIEW ?? "").match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})$/i);
+  if (!m) return null;
+  const now = stamp();
+  if (now.slice(11, 14).toLowerCase() !== m[1].toLowerCase() || Number(now.slice(15, 17)) !== Number(m[2])) return null;
+  const today = dayKey();
+  if (sessions.some((s) => meta(s).weekly_day === today)) return null;
+  const session = await createSession({
+    channel: "email",
+    title: `Weekly review ${today}`,
+    metadata: { proactive: "1", weekly_day: today, gmail_subject: `Week ahead ${today}` },
+    text: stampMessage(
+      [
+        `Weekly review with the owner. Read calendar (the calendar tool, next 14 days), projects/, watchlist.md, renewals.md, actions.md, and this week's conversations/.`,
+        `Write a short week-ahead text: what is booked, what you will handle, what is waiting on others, decisions the owner needs to make, and one or two things you noticed about their preferences so they can correct you.`,
+        `Then ask at most two questions whose answers would let you do more without asking next week. Keep the whole thing under 12 lines.`,
+      ].join("\n"),
+      "email",
+    ),
+  });
+  return session.id;
+}
+
+/**
+ * At each BATCH_TIMES minute, everything deferred since the last batch goes out as one message.
+ */
+async function maybeFlushDigest(sessions: Awaited<ReturnType<typeof listRecentSessions>>): Promise<string | null> {
+  if (!isBatchMinute()) return null;
+  const key = `${dayKey()} ${stamp().slice(15, 20)}`;
+  if (sessions.some((s) => meta(s).digest_key === key)) return null;
+  const pending = await takeDigest();
+  if (!pending) return null;
+  const session = await createSession({
+    channel: "email",
+    title: `Heads-ups ${key}`,
+    metadata: { proactive: "1", digest: "1", digest_key: key, gmail_subject: "Heads-ups" },
+    text: stampMessage(
+      [
+        `These heads-ups were held for the owner's next check-in. Combine them into one short text: most important first, one line each, drop anything now stale or already handled. No preamble.`,
+        ``,
+        pending,
       ].join("\n"),
       "email",
     ),
