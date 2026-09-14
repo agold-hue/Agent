@@ -14,7 +14,8 @@ export type Session = Anthropic.Beta.Sessions.BetaManagedAgentsSession;
 
 /**
  * Session metadata is our only state store. Keys (max 16, values <= 512 chars):
- *   gmail_thread_id, gmail_subject, last_gmail_message_id,
+ *   channel (chat | email),
+ *   gmail_thread_id, gmail_subject, last_gmail_message_id, last_gmail_message_id_header,
  *   browserbase_session_id,
  *   pending_kind (checkpoint | ask_user), pending_event_id, pending_since, pending_deadline,
  *   last_replied_idle_id
@@ -23,6 +24,13 @@ export type Meta = Record<string, string>;
 
 export function meta(session: Session): Meta {
   return (session.metadata ?? {}) as Meta;
+}
+
+export function channelOf(session: Session): "chat" | "email" | undefined {
+  const m = meta(session);
+  if (m.channel === "chat" || m.channel === "email") return m.channel;
+  if (m.gmail_thread_id) return "email";
+  return undefined;
 }
 
 export async function setMeta(sessionId: string, patch: Record<string, string | null>): Promise<void> {
@@ -35,23 +43,22 @@ export async function setMeta(sessionId: string, patch: Record<string, string | 
   await anthropic().beta.sessions.update(sessionId, { metadata: merged });
 }
 
-export async function findSessionByThread(threadId: string): Promise<Session | undefined> {
-  const page = await anthropic().beta.sessions.list({ agent_id: env.anthropic.agentId(), limit: 100 });
-  for (const s of page.data) {
-    if (meta(s).gmail_thread_id === threadId && s.status !== "terminated") return s;
-  }
-  return undefined;
-}
-
 export async function listRecentSessions(): Promise<Session[]> {
   const page = await anthropic().beta.sessions.list({ agent_id: env.anthropic.agentId(), limit: 100 });
   return page.data;
 }
 
-export async function createTaskSession(opts: {
-  threadId: string;
-  subject: string;
-  messageId: string;
+export async function findSessionByThread(threadId: string): Promise<Session | undefined> {
+  for (const s of await listRecentSessions()) {
+    if (meta(s).gmail_thread_id === threadId && s.status !== "terminated") return s;
+  }
+  return undefined;
+}
+
+export async function createSession(opts: {
+  channel: "chat" | "email";
+  title: string;
+  metadata?: Record<string, string>;
   text: string;
 }): Promise<Session> {
   const resources: Anthropic.Beta.Sessions.SessionCreateParams["resources"] = [
@@ -60,7 +67,8 @@ export async function createTaskSession(opts: {
       memory_store_id: env.anthropic.memoryStoreId(),
       access: "read_write",
       instructions:
-        "The user's standing instructions, preferences, per-site notes and task history. Read standing_instructions.md before starting.",
+        "The owner's standing instructions, calendar, facts, preferences, per-site notes, task history and the full " +
+        "conversation log. Read standing_instructions.md and calendar.md before starting; grep conversations/ to recall anything.",
     },
   ];
   const toolsFile = env.anthropic.sandboxToolsFileId();
@@ -70,13 +78,12 @@ export async function createTaskSession(opts: {
   return anthropic().beta.sessions.create({
     agent: env.anthropic.agentId(),
     environment_id: env.anthropic.environmentId(),
-    title: opts.subject.slice(0, 120) || "Email task",
+    title: opts.title.slice(0, 120) || "Task",
     resources,
     metadata: {
-      gmail_thread_id: opts.threadId,
-      gmail_subject: opts.subject.slice(0, 200),
-      last_gmail_message_id: opts.messageId,
+      channel: opts.channel,
       memory_mount: `/mnt/memory/${MEMORY_STORE_NAME}`,
+      ...(opts.metadata ?? {}),
     },
     // Budget amount is minor units (cents) as an integer string, per the API.
     ...(budget > 0 ? { budget: { type: "limit" as const, max_list_cost: { amount: String(Math.round(budget * 100)), currency: "USD" as const } } } : {}),

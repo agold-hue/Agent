@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Secretary</title>
+<meta name="theme-color" content="#111318">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --panel:#fff; --ink:#15171c; --muted:#6b7280; --me:#1f5eff; --me-ink:#fff; --tool:#fff7e6; --tool-edge:#f5b200; --edge:#e5e7eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111318; --panel:#1a1d24; --ink:#ececf1; --muted:#9aa0ad; --me:#3b6cff; --tool:#2a2411; --tool-edge:#c99700; --edge:#2a2f3a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); height:100dvh; display:flex; flex-direction:column; }
+  header { padding: 10px 16px; display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--edge); background:var(--panel); }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  #status { font-size:12px; color:var(--muted); margin-left:auto; }
+  #status::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; background:#9ca3af; margin-right:6px; vertical-align:middle; }
+  #status.running::before { background:#f59e0b; animation: pulse 1s infinite; }
+  #status.idle::before { background:#22c55e; }
+  @keyframes pulse { 50% { opacity:.3; } }
+  main { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width: min(78%, 720px); padding:10px 14px; border-radius:16px; white-space:pre-wrap; word-wrap:break-word; background:var(--panel); border:1px solid var(--edge); }
+  .msg.user { align-self:flex-end; background:var(--me); color:var(--me-ink); border-color:transparent; border-bottom-right-radius:4px; }
+  .msg.agent { align-self:flex-start; border-bottom-left-radius:4px; }
+  .msg.agent.streaming::after { content:"▍"; animation: pulse 1s infinite; }
+  .msg.tool { align-self:flex-start; background:var(--tool); border-color:var(--tool-edge); }
+  .msg.tool h4 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; }
+  .msg.tool .actions { margin-top:10px; display:flex; gap:8px; }
+  .msg.tool.resolved { opacity:.6; }
+  .msg.tool.resolved .actions { display:none; }
+  .time { font-size:11px; color:var(--muted); margin-top:4px; }
+  .msg.user .time { color:rgba(255,255,255,.75); }
+  button { font:inherit; border:1px solid var(--edge); background:var(--panel); color:var(--ink); border-radius:10px; padding:8px 12px; cursor:pointer; }
+  button.primary { background:var(--me); color:var(--me-ink); border-color:transparent; }
+  button:disabled { opacity:.5; cursor:default; }
+  form { display:flex; gap:8px; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); border-top:1px solid var(--edge); background:var(--panel); }
+  textarea { flex:1; resize:none; font:inherit; padding:10px 12px; border-radius:12px; border:1px solid var(--edge); background:var(--bg); color:var(--ink); max-height:160px; }
+  #gate { position:fixed; inset:0; background:var(--bg); display:flex; align-items:center; justify-content:center; padding:24px; }
+  #gate form { flex-direction:column; border:1px solid var(--edge); border-radius:16px; padding:24px; width:min(360px, 100%); }
+  #gate input { font:inherit; padding:10px 12px; border-radius:10px; border:1px solid var(--edge); background:var(--bg); color:var(--ink); }
+  .hint { font-size:12px; color:var(--muted); text-align:center; padding:4px 0 0; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div id="gate">
+  <form id="gateForm">
+    <h1 style="font-size:18px;margin:0 0 4px">Secretary</h1>
+    <p class="hint" style="text-align:left;margin:0 0 6px">Enter the chat password.</p>
+    <input id="pw" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button class="primary" type="submit">Open chat</button>
+  </form>
+</div>
+
+<header hidden id="top">
+  <h1>Secretary</h1>
+  <span id="status">connecting</span>
+</header>
+<main hidden id="log"></main>
+<form hidden id="composer">
+  <textarea id="text" rows="1" placeholder="Message… (Enter to send, Shift+Enter for a new line)" autofocus></textarea>
+  <button type="button" id="mic" title="Dictate">🎤</button>
+  <button class="primary" type="submit" id="send">Send</button>
+</form>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let token = "";
+  try { token = localStorage.getItem("secretary.token") || ""; } catch {}
+  let sessionId = null;
+  let streamAbort = null;
+  const rendered = new Map(); // event id -> element
+
+  const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(opts.headers || {}) } });
+
+  function fmtTime(iso) {
+    try { return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch { return ""; }
+  }
+  function scroll() { const m = $("log"); m.scrollTop = m.scrollHeight; }
+  function setStatus(s, label) { const el = $("status"); el.className = s; el.textContent = label || s; }
+
+  function bubble(cls, id) {
+    let el = id && rendered.get(id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = `msg ${cls}`;
+      $("log").appendChild(el);
+      if (id) rendered.set(id, el);
+    }
+    return el;
+  }
+
+  function render(item) {
+    if (item.kind === "user" || item.kind === "agent") {
+      const el = bubble(item.kind, item.id);
+      el.classList.remove("streaming");
+      el.textContent = item.text;
+      const t = document.createElement("div"); t.className = "time"; t.textContent = fmtTime(item.at); el.appendChild(t);
+    } else if (item.kind === "delta") {
+      const el = bubble("agent streaming", item.id);
+      el.classList.add("streaming");
+      el.textContent += item.text;
+    } else if (item.kind === "tool") {
+      const el = bubble("tool", item.id);
+      el.classList.toggle("resolved", !!item.resolved);
+      el.innerHTML = "";
+      const h = document.createElement("h4");
+      const body = document.createElement("div");
+      if (item.name === "checkpoint") {
+        const i = item.input;
+        h.textContent = "Approval needed";
+        body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}`;
+      } else {
+        h.textContent = "Quick questions";
+        body.textContent = (item.input.questions || []).map((q, n) => `${n + 1}. ${q.question}\n   Default: ${q.default}`).join("\n");
+      }
+      el.append(h, body);
+      const actions = document.createElement("div"); actions.className = "actions";
+      if (item.name === "checkpoint") {
+        const yes = document.createElement("button"); yes.className = "primary"; yes.textContent = "Approve";
+        yes.onclick = () => send("yes");
+        const no = document.createElement("button"); no.textContent = "Change…";
+        no.onclick = () => $("text").focus();
+        actions.append(yes, no);
+      } else {
+        const hint = document.createElement("span"); hint.className = "time"; hint.textContent = "Answer in the box below.";
+        actions.append(hint);
+      }
+      el.appendChild(actions);
+    } else if (item.kind === "tool_resolved") {
+      const el = rendered.get(item.id); if (el) el.classList.add("resolved");
+    } else if (item.kind === "status") {
+      if (item.status === "running") setStatus("running", "working…");
+      else if (item.status === "idle") setStatus("idle", item.stop === "requires_action" ? "waiting for you" : "ready");
+      else if (item.status === "terminated") { setStatus("", "session ended"); sessionId = null; }
+    }
+    scroll();
+  }
+
+  async function loadHistory() {
+    const r = await api("/api/chat/history");
+    if (r.status === 401) { forget(); return; }
+    const data = await r.json();
+    $("log").innerHTML = ""; rendered.clear();
+    sessionId = data.session_id;
+    for (const item of data.items) render(item);
+    setStatus(data.status === "running" ? "running" : "idle", data.status === "none" ? "ready" : data.pending ? "waiting for you" : data.status === "running" ? "working…" : "ready");
+    if (sessionId) openStream();
+  }
+
+  async function openStream() {
+    if (!sessionId) return;
+    if (streamAbort) streamAbort.abort();
+    const ctl = new AbortController(); streamAbort = ctl;
+    try {
+      const r = await fetch(`/api/chat/stream?session=${encodeURIComponent(sessionId)}`, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal });
+      const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      while (true) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+          for (const line of chunk.split("\n")) if (line.startsWith("data: ")) {
+            const item = JSON.parse(line.slice(6));
+            if (item.kind === "bye") throw new Error("stream ended");
+            if (item.kind !== "hello") render(item);
+          }
+        }
+      }
+    } catch {}
+    if (streamAbort === ctl && sessionId) setTimeout(loadHistory, 1000); // reconnect: history covers the gap
+  }
+
+  async function send(text) {
+    text = (text || $("text").value).trim(); if (!text) return;
+    $("send").disabled = true;
+    const optimistic = bubble("user"); optimistic.textContent = text;
+    $("text").value = ""; autosize(); scroll();
+    try {
+      const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text }) });
+      if (r.status === 401) { forget(); return; }
+      const data = await r.json();
+      if (data.session_id !== sessionId) { sessionId = data.session_id; openStream(); }
+      setStatus("running", "working…");
+    } catch (e) { optimistic.textContent += "\n(failed to send)"; }
+    finally { $("send").disabled = false; $("text").focus(); }
+  }
+
+  function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 160) + "px"; }
+  $("text").addEventListener("input", autosize);
+  $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+  $("composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+
+  // Basic dictation via the browser's speech recognition (Chrome/Safari). A real voice front door comes later.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) $("mic").hidden = true;
+  else $("mic").onclick = () => {
+    const rec = new SR(); rec.lang = navigator.language || "en-US"; rec.interimResults = false;
+    $("mic").textContent = "●";
+    rec.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); };
+    rec.onend = () => { $("mic").textContent = "🎤"; };
+    rec.start();
+  };
+
+  function forget() { token = ""; try { localStorage.removeItem("secretary.token"); } catch {} show(false); }
+  function show(ok) {
+    $("gate").hidden = ok; $("top").hidden = !ok; $("log").hidden = !ok; $("composer").hidden = !ok;
+    if (ok) loadHistory();
+  }
+  $("gateForm").addEventListener("submit", (e) => {
+    e.preventDefault(); token = $("pw").value; try { localStorage.setItem("secretary.token", token); } catch {}
+    show(true);
+  });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && token) loadHistory(); });
+  show(!!token);
+})();
+</script>
+</body>
+</html>

@@ -1,9 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { env } from "../lib/env.js";
-import { anthropic, lastIdleEvent, latestAgentReport, listAllEvents, meta, pendingCustomToolUses, setMeta } from "../lib/anthropic.js";
+import { anthropic, channelOf, lastIdleEvent, latestAgentReport, listAllEvents, meta, pendingCustomToolUses, setMeta } from "../lib/anthropic.js";
 import { replyInThread } from "../lib/gmail.js";
 import { releaseBrowser } from "../lib/browser.js";
 import { handleCustomTool } from "../lib/tools.js";
+import { appendTranscript } from "../lib/transcript.js";
 
 export const config = { api: { bodyParser: false } };
 
@@ -22,7 +23,8 @@ function headerMap(req: VercelRequest): Record<string, string> {
 /**
  * Anthropic -> us. Subscribe this endpoint (Console -> Manage -> Webhooks) to
  * session.status_idled and session.status_terminated. Payloads are thin, so we fetch the session
- * and its events and act on the current state.
+ * and its events and act on the current state. Works for both channels: tools run the same way;
+ * the final report goes out by email for email sessions and is picked up by the chat stream otherwise.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).end();
@@ -40,7 +42,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const session = await anthropic().beta.sessions.retrieve(data.id).catch(() => undefined);
   if (!session) return res.status(204).end();
   const m = meta(session);
-  if (!m.gmail_thread_id) return res.status(204).end(); // not one of ours
+  const channel = channelOf(session);
+  if (!channel) return res.status(204).end(); // not one of ours
 
   if (data.type === "session.status_idled") {
     const events = await listAllEvents(session.id);
@@ -60,12 +63,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       report = `I hit a platform error and could not finish.\n\n${report}`;
     }
     if (report) {
-      await replyInThread({
-        threadId: m.gmail_thread_id,
-        subject: m.gmail_subject ?? "Task",
-        inReplyTo: m.last_gmail_message_id_header || undefined,
-        body: report,
-      });
+      if (channel === "email") {
+        await replyInThread({
+          threadId: m.gmail_thread_id,
+          subject: m.gmail_subject ?? "Task",
+          inReplyTo: m.last_gmail_message_id_header || undefined,
+          body: report,
+        });
+      }
+      await appendTranscript({ channel, role: "agent", text: report }).catch(() => {});
     }
     await setMeta(session.id, { last_replied_idle_id: idle.id });
     return res.status(200).json({ handled: "reported" });

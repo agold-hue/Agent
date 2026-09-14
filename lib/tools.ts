@@ -4,14 +4,19 @@ import { findRecentCodes, replyInThread } from "./gmail.js";
 import { loginToSite } from "./login.js";
 import { saveCredential, registrableDomain } from "./onepassword.js";
 import { autoApprove, formatCheckpointEmail, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
-import { meta, sendToolResult, setMeta, type CustomToolUse, type Session } from "./anthropic.js";
+import { channelOf, meta, sendToolResult, setMeta, type CustomToolUse, type Session } from "./anthropic.js";
 
 /**
  * Executes one custom tool call. Everything that touches secrets or the user's money happens here,
  * on our side, never in the sandbox.
+ *
+ * checkpoint and ask_user leave the tool call pending: on the email channel we send a mail and the
+ * inbox route resolves it from the reply; on the chat channel the UI renders the pending tool call
+ * and the next chat message resolves it.
  */
 export async function handleCustomTool(session: Session, call: CustomToolUse): Promise<void> {
   const m = meta(session);
+  const channel = channelOf(session);
   const input = call.input as Record<string, unknown>;
   const reply = (text: string, isError = false) => sendToolResult(session.id, call.id, text, isError);
 
@@ -66,38 +71,43 @@ export async function handleCustomTool(session: Session, call: CustomToolUse): P
         const cp = input as unknown as CheckpointInput;
         const verdict = autoApprove(cp);
         if (verdict.ok) return reply(`APPROVED (${verdict.reason}). Proceed exactly as described.`);
-        const live = m.browserbase_session_id ? await liveViewUrl(m.browserbase_session_id).catch(() => undefined) : undefined;
-        await replyInThread({
-          threadId: m.gmail_thread_id,
-          subject: m.gmail_subject ?? "Task",
-          inReplyTo: m.last_gmail_message_id_header || undefined,
-          body: formatCheckpointEmail(cp, live),
-        });
+        if (channel === "email") {
+          const live = m.browserbase_session_id ? await liveViewUrl(m.browserbase_session_id).catch(() => undefined) : undefined;
+          await replyInThread({
+            threadId: m.gmail_thread_id,
+            subject: m.gmail_subject ?? "Task",
+            inReplyTo: m.last_gmail_message_id_header || undefined,
+            body: formatCheckpointEmail(cp, live),
+          });
+        }
         await setMeta(session.id, {
           pending_kind: "checkpoint",
           pending_event_id: call.id,
           pending_since: new Date().toISOString(),
           pending_deadline: "",
         });
-        return; // resolved later by the inbox route when the user replies
+        return; // resolved by the inbox route or the chat send route
       }
 
       case "ask_user": {
         const questions = (input.questions as Array<{ question: string; default: string }>) ?? [];
         const hours = env.policy.askUserDeadlineHours();
-        await replyInThread({
-          threadId: m.gmail_thread_id,
-          subject: m.gmail_subject ?? "Task",
-          inReplyTo: m.last_gmail_message_id_header || undefined,
-          body: formatQuestionsEmail(questions, hours),
-        });
+        if (channel === "email") {
+          await replyInThread({
+            threadId: m.gmail_thread_id,
+            subject: m.gmail_subject ?? "Task",
+            inReplyTo: m.last_gmail_message_id_header || undefined,
+            body: formatQuestionsEmail(questions, hours),
+          });
+        }
         await setMeta(session.id, {
           pending_kind: "ask_user",
           pending_event_id: call.id,
           pending_since: new Date().toISOString(),
-          pending_deadline: new Date(Date.now() + hours * 3_600_000).toISOString(),
+          // In chat the user is present; do not time out on them.
+          pending_deadline: channel === "email" ? new Date(Date.now() + hours * 3_600_000).toISOString() : "",
         });
-        return; // resolved by the inbox route (reply or deadline)
+        return; // resolved by the inbox route (reply or deadline) or the chat send route
       }
 
       default:
@@ -109,7 +119,7 @@ export async function handleCustomTool(session: Session, call: CustomToolUse): P
   }
 }
 
-/** Called by the inbox route when the owner replies while a checkpoint or question is pending. */
+/** Called when the owner replies while a checkpoint or question is pending. */
 export async function resolvePending(session: Session, userText: string, approved: boolean | null): Promise<void> {
   const m = meta(session);
   if (!m.pending_event_id) return;

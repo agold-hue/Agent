@@ -1,9 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { env } from "../lib/env.js";
 import { listUnreadFromOwner, markRead, stripQuoted } from "../lib/gmail.js";
-import { createTaskSession, findSessionByThread, listRecentSessions, meta, sendUserMessage, setMeta } from "../lib/anthropic.js";
+import { createSession, findSessionByThread, listRecentSessions, meta, sendUserMessage, setMeta } from "../lib/anthropic.js";
 import { expirePending, resolvePending } from "../lib/tools.js";
 import { isApprovalReply } from "../lib/policy.js";
+import { appendTranscript, stampMessage } from "../lib/transcript.js";
 
 /**
  * Email front door. Runs every minute from Vercel cron, and can also be the push target of a
@@ -42,20 +43,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           await resolvePending(existing, text, null);
           results.push({ id: mail.id, action: "question_answered", session: existing.id });
         } else {
-          await sendUserMessage(existing.id, text || mail.subject);
+          await sendUserMessage(existing.id, stampMessage(text || mail.subject, "email"));
           results.push({ id: mail.id, action: "follow_up", session: existing.id });
         }
       } else {
         const body = [`Subject: ${mail.subject}`, ``, text || "(no body)"].join("\n");
-        const session = await createTaskSession({
-          threadId: mail.threadId,
-          subject: mail.subject,
-          messageId: mail.id,
-          text: body,
+        const session = await createSession({
+          channel: "email",
+          title: mail.subject,
+          metadata: {
+            gmail_thread_id: mail.threadId,
+            gmail_subject: mail.subject.slice(0, 200),
+            last_gmail_message_id: mail.id,
+            last_gmail_message_id_header: mail.messageIdHeader,
+          },
+          text: stampMessage(body, "email"),
         });
-        await setMeta(session.id, { last_gmail_message_id_header: mail.messageIdHeader });
         results.push({ id: mail.id, action: "task_started", session: session.id });
       }
+      await appendTranscript({ channel: "email", role: "user", text: `${mail.subject}\n${text}` }).catch(() => {});
       await markRead(mail.id);
     } catch (err) {
       results.push({ id: mail.id, action: "error", error: err instanceof Error ? err.message : String(err) });
