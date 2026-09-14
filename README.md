@@ -77,7 +77,11 @@ Sign up with an email code, start the trial, chat at `/app.html` or email their 
 
 ## Developing
 
-`npm run typecheck`. Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`. New seed files reach existing customers only through a migration you write against the `memories` table.
+`npm run typecheck`. Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`.
+
+### Shipping changes to existing customers
+
+Everything is shared and takes effect for every customer on the next deploy: code, tools, the system prompt, the web app, and the playbooks (served live from `agent/memory-seed/playbooks/`; a customer's own notes are stored separately and appended on read). Schema changes go in `db/schema.sql` as idempotent statements and are applied with `npm run db:migrate` before the deploy. The only files that do not update in place are the per-customer data templates (`profile.md`, `contacts.md`, `renewals.md`, ...), copied once at signup and owned by the customer from then on; a new template file is only picked up by new customers, so if an existing customer needs it, add it with a one-off script against the `memories` table.
 
 ## Known limits
 
