@@ -26,7 +26,10 @@ async function connect(): Promise<Queryable> {
       end: () => lite.close(),
     };
   }
-  const pool = new pg.Pool({ connectionString: url, max: 5, ssl: /localhost|127\.0\.0\.1|\/tmp/.test(url) ? undefined : { rejectUnauthorized: false } });
+  // TLS is decided here, not by the URL: strip sslmode so pg does not warn on every cold start.
+  const local = /localhost|127\.0\.0\.1|\/tmp/.test(url);
+  const clean = url.replace(/([?&])sslmode=[^&]*&?/, "$1").replace(/[?&]$/, "");
+  const pool = new pg.Pool({ connectionString: clean, max: 5, ssl: local ? undefined : { rejectUnauthorized: false } });
   return { query: (text, params) => pool.query(text, params), end: () => pool.end() };
 }
 
