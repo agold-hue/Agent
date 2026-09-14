@@ -29,39 +29,33 @@ export function isApprovalReply(text: string): boolean {
 }
 
 export function formatCheckpointEmail(input: CheckpointInput, liveViewUrl?: string): string {
-  const lines = [
-    `I need your approval before I do this:`,
-    ``,
-    `  ${input.summary}`,
-    ``,
-    `Type: ${input.action_type}`,
-  ];
-  if (input.merchant) lines.push(`Where: ${input.merchant}`);
-  if (input.amount_usd != null) lines.push(`Amount: $${Number(input.amount_usd).toFixed(2)}`);
-  lines.push(``, `Details:`, input.details);
-  if (input.recommendation) lines.push(``, `My recommendation: ${input.recommendation}`);
-  if (input.options_considered?.length) lines.push(``, `Other options I considered:`, ...input.options_considered.map((o) => `  - ${o}`));
-  lines.push(``, `Reply "yes" to approve. Anything else and I will stop and treat your reply as instructions.`);
-  if (liveViewUrl) lines.push(``, `Watch or take over the browser: ${liveViewUrl}`);
+  const lines = [`Need your ok: ${input.summary}`];
+  const meta = [input.merchant, input.amount_usd != null ? `$${Number(input.amount_usd).toFixed(2)}` : ""].filter(Boolean).join(", ");
+  if (meta) lines.push(meta);
+  if (input.details?.trim()) lines.push(input.details.trim());
+  if (input.recommendation) lines.push(`I'd ${input.recommendation.replace(/^(I would|I'd|I recommend to|I recommend)\s*/i, "")}`);
+  if (input.options_considered?.length) lines.push(`Other options: ${input.options_considered.join("; ")}`);
+  lines.push(`Reply "yes" to go ahead, or tell me what to change.`);
+  if (liveViewUrl) lines.push(`Watch/take over: ${liveViewUrl}`);
   return lines.join("\n");
 }
 
 export function formatEmailApproval(draft: { to: string; cc?: string; subject: string; body: string; attachments?: string[]; purpose?: string }): string {
-  const lines = [`I'd like to send this email. Reply "yes" to send it as written, or tell me what to change.`, ``];
-  if (draft.purpose) lines.push(`Why: ${draft.purpose}`, ``);
-  lines.push(`To: ${draft.to}`);
-  if (draft.cc) lines.push(`Cc: ${draft.cc}`);
-  lines.push(`Subject: ${draft.subject}`);
-  if (draft.attachments?.length) lines.push(`Attachments: ${draft.attachments.join(", ")}`);
-  lines.push(``, `---`, draft.body, `---`);
+  const lines = [draft.purpose ? `Want to send this to ${draft.to}: ${draft.purpose}` : `Want to send this to ${draft.to}.`];
+  if (draft.cc) lines.push(`Cc ${draft.cc}`);
+  if (draft.attachments?.length) lines.push(`Attaching ${draft.attachments.join(", ")}`);
+  lines.push(``, `Subject: ${draft.subject}`, draft.body.trim(), ``, `"yes" sends it, or tell me what to change.`);
   return lines.join("\n");
 }
 
 export function formatQuestionsEmail(questions: Array<{ question: string; default: string }>, deadlineHours: number): string {
-  const lines = [`Quick questions before I continue. If I do not hear back within ${deadlineHours} hours I will go with the defaults.`, ``];
-  questions.forEach((q, i) => {
-    lines.push(`${i + 1}. ${q.question}`, `   Default: ${q.default}`, ``);
-  });
-  lines.push(`Reply with your answers in one email (numbered is easiest).`);
+  const lines: string[] = [];
+  if (questions.length === 1) {
+    lines.push(questions[0].question, `If I don't hear back in ${deadlineHours}h I'll go with: ${questions[0].default}`);
+  } else {
+    lines.push(`Quick ones before I continue:`);
+    questions.forEach((q, i) => lines.push(`${i + 1}. ${q.question} (default: ${q.default})`));
+    lines.push(`No answer in ${deadlineHours}h and I'll use the defaults.`);
+  }
   return lines.join("\n");
 }

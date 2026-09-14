@@ -199,7 +199,7 @@ export async function resolvePending(session: Session, userText: string, approve
   if (m.pending_kind === "checkpoint") {
     text = approved
       ? "APPROVED by the user. Proceed exactly as described in the checkpoint."
-      : `DENIED. The user replied:\n\n${userText}\n\nTreat this as new instructions. Do not perform the checkpointed action as described.`;
+      : `DENIED. The user replied:\n\n${userText}\n\nTreat this as new instructions. Do not perform the checkpointed action as described. Answer briefly.`;
   } else if (m.pending_kind === "send_email") {
     if (approved) {
       const events = await listAllEvents(session.id);

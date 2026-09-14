@@ -110,17 +110,18 @@
       const body = document.createElement("div");
       if (item.name === "checkpoint") {
         const i = item.input;
-        h.textContent = "Approval needed";
+        h.textContent = "Need your ok";
         body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}`
-          + (i.recommendation ? `\n\nMy recommendation: ${i.recommendation}` : "")
-          + ((i.options_considered || []).length ? `\n\nOther options:\n` + i.options_considered.map((o) => "• " + o).join("\n") : "");
+          + (i.recommendation ? `\n\n${i.recommendation}` : "")
+          + ((i.options_considered || []).length ? `\nOther options: ` + i.options_considered.join("; ") : "");
       } else if (item.name === "send_email") {
         const i = item.input;
-        h.textContent = "Email ready to send";
+        h.textContent = "Ok to send?";
         body.textContent = `${i.purpose ? i.purpose + "\n\n" : ""}To: ${i.to}${i.cc ? "\nCc: " + i.cc : ""}\nSubject: ${i.subject}${(i.attachments || []).length ? "\nAttachments: " + i.attachments.join(", ") : ""}\n\n${i.body}`;
       } else {
-        h.textContent = "Quick questions";
-        body.textContent = (item.input.questions || []).map((q, n) => `${n + 1}. ${q.question}\n   Default: ${q.default}`).join("\n");
+        h.textContent = "Quick question";
+        const qs = item.input.questions || [];
+        body.textContent = qs.length === 1 ? `${qs[0].question}\n(no answer = ${qs[0].default})` : qs.map((q, n) => `${n + 1}. ${q.question} (default: ${q.default})`).join("\n");
       }
       el.append(h, body);
       const actions = document.createElement("div"); actions.className = "actions";

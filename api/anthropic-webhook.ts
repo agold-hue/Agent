@@ -58,9 +58,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (m.last_replied_idle_id === idle.id) return res.status(200).json({ handled: "duplicate" });
     let report = latestAgentReport(events);
     if (idle.stop_reason.type === "budget_reached") {
-      report = `I stopped because this task reached its spend cap ($${env.policy.sessionBudgetUsd()}). Reply if you want me to continue.\n\n${report}`;
+      report = `Hit the $${env.policy.sessionBudgetUsd()} cap for this task, so I paused. Say "continue" if you want me to keep going.\n\n${report}`;
     } else if (idle.stop_reason.type === "retries_exhausted") {
-      report = `I hit a platform error and could not finish.\n\n${report}`;
+      report = `Something broke on my side and I couldn't finish. Here's where I got to:\n\n${report}`;
     }
     // The daily review says NO_REPORT when nothing needs the owner; stay silent then.
     const silent = /^NO_REPORT\b/.test(report.trim()) && !!(m.review_day || m.followup_id);
