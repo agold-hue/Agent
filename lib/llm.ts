@@ -65,13 +65,27 @@ function providers(): Record<string, { base_url: string; api_key: string }> {
   }
 }
 
+export const GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+
+/** True when the default provider is Google's own Gemini endpoint (GEMINI_API_KEY shortcut or LLM_BASE_URL). */
+export function geminiDirect(): boolean {
+  if (process.env.LLM_API_KEY) return (process.env.LLM_BASE_URL ?? "").includes("generativelanguage.googleapis.com");
+  return !!process.env.GEMINI_API_KEY;
+}
+
 export function resolveModel(model: string): { provider: Provider; model: string } {
   for (const [prefix, p] of Object.entries(providers())) {
     if (model.startsWith(prefix)) return { provider: { baseUrl: p.base_url.replace(/\/$/, ""), apiKey: p.api_key }, model: model.slice(prefix.length) };
   }
+  // Shortcut: GEMINI_API_KEY alone routes everything to Google's OpenAI-compatible endpoint.
+  if (!process.env.LLM_API_KEY && process.env.GEMINI_API_KEY) {
+    return { provider: { baseUrl: GEMINI_OPENAI_URL, apiKey: process.env.GEMINI_API_KEY }, model: model.replace(/^google\//, "") };
+  }
   const k = process.env.LLM_API_KEY;
-  if (!k) throw new Error("LLM_API_KEY is not set");
-  return { provider: { baseUrl: (process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, ""), apiKey: k }, model };
+  if (!k) throw new Error("LLM_API_KEY (or GEMINI_API_KEY) is not set");
+  const baseUrl = (process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
+  // Google's endpoint wants bare ids ("gemini-2.5-flash"), OpenRouter wants "google/gemini-2.5-flash".
+  return { provider: { baseUrl, apiKey: k }, model: baseUrl.includes("generativelanguage.googleapis.com") ? model.replace(/^google\//, "") : model };
 }
 
 export class LLMError extends Error {
@@ -138,7 +152,8 @@ export async function complete(opts: {
   if (opts.tools?.length) {
     body.tools = opts.tools;
     body.tool_choice = "auto";
-    body.parallel_tool_calls = false;
+    // Only OpenAI-style endpoints know this flag; Google's compatibility layer may reject unknown fields.
+    if (isOpenRouter() || provider.baseUrl.includes("api.openai.com")) body.parallel_tool_calls = false;
   }
   if (isOpenRouter()) {
     // Cheapest healthy provider for the chosen model; fall back to others if it fails.
@@ -209,6 +224,8 @@ const DEFAULT_PRICES: Record<string, { in: number; out: number }> = {
   "deepseek/deepseek-flash": { in: 0.3, out: 1.2 },
   "deepseek/deepseek-v4-pro": { in: 1.32, out: 3.96 },
   "google/gemini-2.5-flash-lite": { in: 0.1, out: 0.4 },
+  "google/gemini-2.5-flash": { in: 0.3, out: 2.5 },
+  "google/gemini-2.5-pro": { in: 1.25, out: 10 },
   "google/gemini-3.1-flash-lite": { in: 0.25, out: 1.5 },
   "google/gemini-3.8-flash": { in: 0.75, out: 3.75 },
   "anthropic/claude-haiku-4.5": { in: 1, out: 5 },

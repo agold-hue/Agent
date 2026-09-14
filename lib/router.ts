@@ -1,3 +1,4 @@
+import { geminiDirect } from "./llm.js";
 import type { Tenant } from "./tenant.js";
 
 /**
@@ -14,7 +15,9 @@ export function modelFor(tier: Tier, t?: Tenant): string {
   const plan = (t?.plan ?? "starter").toUpperCase();
   const perPlan = process.env[`MODEL_${tier.toUpperCase()}_${plan}`];
   if (perPlan) return perPlan;
-  const def = { chat: "google/gemini-2.5-flash-lite", task: "google/gemini-3.8-flash", hard: "anthropic/claude-sonnet-5" }[tier];
+  const def = geminiDirect()
+    ? { chat: "gemini-2.5-flash-lite", task: "gemini-2.5-flash", hard: "gemini-2.5-pro" }[tier] // Google-only: Pro takes the hard tier
+    : { chat: "google/gemini-2.5-flash-lite", task: "google/gemini-3.8-flash", hard: "anthropic/claude-sonnet-5" }[tier];
   return process.env[`MODEL_${tier.toUpperCase()}`] || def;
 }
 
