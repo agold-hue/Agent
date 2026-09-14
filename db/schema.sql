@@ -129,3 +129,32 @@ create table if not exists inbound_attachments (
   mime_type text not null,
   content bytea not null
 );
+
+-- ---------------------------------------------------------------- Provider-agnostic runtime
+-- Each customer's memory: small text files by path (standing instructions, playbooks, calendar,
+-- conversations/...). Seeded from agent/memory-seed on first use.
+create table if not exists memories (
+  user_id uuid not null references users(id) on delete cascade,
+  path text not null,
+  content text not null default '',
+  updated_at timestamptz not null default now(),
+  primary key (user_id, path)
+);
+
+-- The agent loop's state lives with the session: the OpenAI-style message array, the model in
+-- use, and a lease so only one worker runs a session at a time.
+alter table agent_sessions add column if not exists model text;
+alter table agent_sessions add column if not exists messages jsonb not null default '[]'::jsonb;
+alter table agent_sessions add column if not exists turns int not null default 0;
+alter table agent_sessions add column if not exists lease_until timestamptz;
+alter table agent_sessions add column if not exists last_report text;
+alter table agent_sessions add column if not exists error text;
+alter table agent_sessions add column if not exists cost_cents bigint not null default 0;
+alter table agent_sessions add column if not exists prompt_tokens bigint not null default 0;
+alter table agent_sessions add column if not exists completion_tokens bigint not null default 0;
+create index if not exists agent_sessions_runnable on agent_sessions(status) where status = 'running';
+
+-- Fractional cents: a single cheap-model call can cost 0.1 cent.
+alter table agent_sessions alter column cost_cents type numeric(14,3);
+alter table usage alter column cost_cents type numeric(14,3);
+alter table session_costs alter column cost_cents type numeric(14,3);

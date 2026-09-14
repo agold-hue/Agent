@@ -17,7 +17,7 @@ Sources: forwarded bank/card alerts and statements (observation lane), receipts 
 
 ## Receipts and expenses
 - Every receipt (mail or photo) becomes a row in ledger.md: date, merchant, amount, category, reimbursable yes/no, Drive link. Save the file to Drive under Receipts/<year>.
-- Monthly: a summary by category as a CSV in /mnt/session/outputs (write it with bash), saved to Drive and linked in the brief. For reimbursable items: a report in the employer's format when asked.
+- Monthly: a summary by category as a CSV (`drive` save_text) linked in the brief. For reimbursable items: a report in the employer's format when asked.
 
 ## Side income and taxes
 - Invoices the user sends (in:sent, or told to you): row in ledger.md under Income with due date and a watch; chase late payers with a polite email after 7 days.

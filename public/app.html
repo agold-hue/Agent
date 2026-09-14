@@ -255,7 +255,9 @@
       const el = rendered.get(item.id); if (el) el.classList.add("resolved");
     } else if (item.kind === "status") {
       if (item.status === "running") setStatus("running", "working…");
-      else if (item.status === "idle") setStatus("idle", item.stop === "requires_action" ? "waiting for you" : "ready");
+      else if (item.status === "waiting") setStatus("idle", "waiting for you");
+      else if (item.status === "idle") setStatus("idle", "ready");
+      else if (item.status === "error") setStatus("", "stopped on an error");
       else if (item.status === "terminated") { setStatus("", "session ended"); sessionId = null; }
     }
     scroll();
@@ -268,30 +270,24 @@
     $("log").innerHTML = ""; rendered.clear(); sessionId = data.session_id;
     for (const item of data.items) render(item);
     setStatus(data.status === "running" ? "running" : "idle", data.status === "none" ? "ready" : data.pending ? "waiting for you" : data.status === "running" ? "working…" : "ready");
-    if (sessionId) openStream();
+    if (sessionId && data.status === "running") openStream();
   }
-  async function openStream() {
-    if (!sessionId) return;
-    if (streamAbort) streamAbort.abort();
-    const ctl = new AbortController(); streamAbort = ctl;
-    try {
-      const r = await fetch(`/api/chat/stream?session=${encodeURIComponent(sessionId)}`, { signal: ctl.signal });
-      const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
-      while (true) {
-        const { value, done } = await reader.read(); if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let i;
-        while ((i = buf.indexOf("\n\n")) >= 0) {
-          const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
-          for (const line of chunk.split("\n")) if (line.startsWith("data: ")) {
-            const item = JSON.parse(line.slice(6));
-            if (item.kind === "bye") throw new Error("stream ended");
-            if (item.kind !== "hello") render(item);
-          }
-        }
-      }
-    } catch {}
-    if (streamAbort === ctl && sessionId) setTimeout(loadHistory, 1000);
+  // Poll while the agent works; the history endpoint is cheap (one row).
+  let pollTimer = null;
+  function openStream() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+      if (document.hidden || $("log").hidden) return;
+      const r = await api("/api/chat/history"); if (!r.ok) return;
+      const data = await r.json();
+      const running = data.status === "running";
+      const before = $("log").childElementCount;
+      $("log").innerHTML = ""; rendered.clear(); sessionId = data.session_id;
+      for (const item of data.items) render(item);
+      if ($("log").childElementCount !== before) scroll();
+      setStatus(running ? "running" : "idle", running ? "working…" : data.pending ? "waiting for you" : "ready");
+      if (!running) { clearInterval(pollTimer); pollTimer = null; }
+    }, 2500);
   }
   async function send(text) {
     text = (text || $("text").value).trim(); if (!text) return;
@@ -302,8 +298,7 @@
       const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text }) });
       const data = await r.json();
       if (!r.ok) { optimistic.textContent += `\n(${data.error || "failed"})`; if (r.status === 402) showTab("billing"); return; }
-      if (data.session_id !== sessionId) { sessionId = data.session_id; openStream(); }
-      setStatus("running", "working…");
+      sessionId = data.session_id; setStatus("running", "working…"); openStream();
     } catch (e) { optimistic.textContent += "\n(failed to send)"; }
     finally { $("send").disabled = false; $("text").focus(); }
   }
@@ -318,7 +313,7 @@
         const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: f.name, mimeType: f.type || "application/octet-stream", data }) });
         const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
         note.textContent = `Attached ${f.name}`;
-        if (out.session_id && out.session_id !== sessionId) { sessionId = out.session_id; openStream(); }
+        if (out.session_id) { sessionId = out.session_id; openStream(); }
       } catch (e) { note.textContent = `Could not attach ${f.name}: ${e.message}`; }
     }
     scroll();

@@ -11,12 +11,9 @@ function opt(name: string, fallback = ""): string {
 export const env = {
   appUrl: () => req("APP_URL").replace(/\/$/, ""),
   cronSecret: () => req("CRON_SECRET"),
-  anthropic: {
-    apiKey: () => req("ANTHROPIC_API_KEY"),
-    webhookSigningKey: () => req("ANTHROPIC_WEBHOOK_SIGNING_KEY"),
-    agentId: () => req("AGENT_ID"),
-    environmentId: () => req("ENVIRONMENT_ID"),
-    sandboxToolsFileId: () => opt("SANDBOX_TOOLS_FILE_ID"),
+  llm: {
+    baseUrl: () => opt("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+    apiKey: () => req("LLM_API_KEY"),
   },
   browserbase: {
     apiKey: () => req("BROWSERBASE_API_KEY"),
@@ -39,8 +36,8 @@ export const env = {
     clientSecret: () => opt("GOOGLE_CLIENT_SECRET"),
   },
   plans: {
-    /** Monthly Anthropic spend cap per plan, USD. */
+    /** Monthly model-spend cap per plan, USD (priced from the model price table). */
     monthlyCapUsd: (plan: string) => Number(opt(`PLAN_CAP_USD_${plan.toUpperCase()}`, opt("PLAN_CAP_USD_DEFAULT", "60"))),
-    sessionBudgetUsd: () => Number(opt("SESSION_BUDGET_USD", "10")),
+    sessionBudgetUsd: () => Number(opt("SESSION_BUDGET_USD", "3")),
   },
 };

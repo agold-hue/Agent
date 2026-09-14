@@ -3,15 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Multi-tenant personal secretary agent service: email-code login, Stripe subscriptions, per-customer memory, browser profile, encrypted logins, and an Anthropic Managed Agents runtime.",
+  "description": "Multi-tenant personal secretary agent service on any OpenAI-compatible model provider (OpenRouter, DeepSeek, Gemini...): email-code login, Stripe subscriptions, per-customer memory, hosted browser, encrypted logins, proactive follow-ups.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "setup": "tsx scripts/setup.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "dev": "vercel dev"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.125.0",
     "@browserbasehq/sdk": "^2.20.0",
     "googleapis": "^180.0.0",
     "pg": "^8.23.0",
@@ -19,6 +17,7 @@
     "stripe": "^22.6.2"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
     "@vercel/node": "^5.0.0",

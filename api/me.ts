@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../lib/auth.js";
-import { monthUsageCents } from "../lib/anthropic.js";
+import { monthUsageCents } from "../lib/sessions.js";
 import { env } from "../lib/env.js";
 import { agentAddress, updateSettings, type TenantSettings } from "../lib/tenant.js";
 

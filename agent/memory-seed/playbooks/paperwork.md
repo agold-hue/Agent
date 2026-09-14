@@ -1,11 +1,11 @@
 # Paperwork playbook
 
-Tools: bash with python in the sandbox for PDFs (pypdf, reportlab if present; otherwise HTML to PDF via the browser's print), `drive` for filing, `send_email` for sending.
+Tools: the browser for web forms and PDF viewers, `drive` (save_text for summaries and CSVs) for filing, `send_email` for sending. You cannot generate or fill PDF files yourself; fill web forms, and for PDF forms tell the user exactly what to enter or ask the sender for a web version.
 
 ## Forms
 - Fill from what you know (profile.md, standing_instructions.md, contacts.md, facts.md). Never guess an SSN, account number, or anything legal; ask once for what is missing.
 - Web forms: fill in the browser, screenshot the summary page before submitting, checkpoint if it commits the user (account_change or agreement), then submit and file the confirmation.
-- PDF forms: fill with python, save to /mnt/session/outputs, `drive save` to the right folder, email it where it needs to go.
+- PDF forms: read them if they arrive as text; otherwise give the user a filled-in list of answers to type, field by field.
 
 ## Reading
 - Contracts, benefits packets, HOA docs, leases: read fully, then a text-length summary: what it is, what it costs, what it commits the user to, deadlines, anything unusual. Highlight the decision points. Save the summary next to the document in Drive.

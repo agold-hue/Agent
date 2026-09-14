@@ -1,5 +1,7 @@
 # Memory layout
 
+The agent reads and writes these with its memory tools; the owner can view and edit them in the app.
+
 - `standing_instructions.md`: the user's defaults and rules. Read first, every task.
 - `preferences.md`: preferences the agent inferred over time. Append only.
 - `calendar.md`: dated commitments and whereabouts. Checked before scheduling anything.

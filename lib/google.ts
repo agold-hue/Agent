@@ -282,8 +282,7 @@ async function labelIds(g: gmail_v1.Gmail, names: string[]): Promise<Record<stri
 // ---------------------------------------------------------------- Drive
 
 export interface DriveInput {
-  action: "save" | "list" | "search" | "read";
-  /** For save: filename under /mnt/session/outputs to upload. */
+  action: "save_text" | "list" | "search" | "read";
   filename?: string;
   folder?: string;
   query?: string;
@@ -311,12 +310,13 @@ async function rootFolder(drive: () => drive_v3.Drive): Promise<string | undefin
   return created.id ?? undefined;
 }
 
-export async function driveSave(t: Tenant, opts: { filename: string; mimeType: string; content: Buffer; folder?: string }): Promise<{ id: string; link: string }> {
+export async function driveSaveText(t: Tenant, opts: { filename: string; content: string; folder?: string }): Promise<{ id: string; link: string }> {
   const drive = () => driveFor(t);
   const parent = await folderId(drive, opts.folder);
+  const mimeType = opts.filename.endsWith(".csv") ? "text/csv" : opts.filename.endsWith(".md") ? "text/markdown" : "text/plain";
   const { data } = await drive().files.create({
     requestBody: { name: opts.filename, parents: parent ? [parent] : undefined },
-    media: { mimeType: opts.mimeType, body: Readable.from(opts.content) },
+    media: { mimeType, body: Readable.from(Buffer.from(opts.content, "utf8")) },
     fields: "id,webViewLink",
   });
   return { id: data.id!, link: data.webViewLink ?? "" };

@@ -1,12 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../lib/chat.js";
-import { sendUserMessage, UsageCapError } from "../../lib/anthropic.js";
-import { resolvePending } from "../../lib/tools.js";
+import { appendTranscript } from "../../lib/memory.js";
 import { isApprovalReply } from "../../lib/policy.js";
-import { appendTranscript, stampMessage } from "../../lib/transcript.js";
+import { kick } from "../../lib/runtime.js";
+import { appendUserMessage, UsageCapError } from "../../lib/sessions.js";
+import { resolvePending } from "../../lib/tools.js";
+import { stampMessage } from "../../lib/transcript.js";
 
-/** POST { text } -> { session_id, action }. Sends into the tenant's live chat session (or starts one). */
+/** POST { text } -> { session_id, action }. Sends into the live chat session (or starts one) and kicks the worker. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).end();
   const t = await requireTenant(req, res);
@@ -27,10 +29,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await resolvePending(t, session, text, null);
       action = "question_answered";
     } else {
-      await sendUserMessage(session.id, stampMessage(t, text, "chat"));
+      await appendUserMessage(session, stampMessage(t, text, "chat"));
       action = "sent";
     }
     await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
+    await kick(session.id);
     return res.status(200).json({ session_id: session.id, action });
   } catch (err) {
     if (err instanceof UsageCapError) return res.status(402).json({ error: err.message });

@@ -28,7 +28,7 @@ export interface SendMailOptions {
 export async function sendMail(opts: SendMailOptions): Promise<{ messageId: string }> {
   const headers: Array<{ Name: string; Value: string }> = [];
   if (opts.inReplyTo) headers.push({ Name: "In-Reply-To", Value: opts.inReplyTo }, { Name: "References", Value: opts.inReplyTo });
-  const res = await fetch("https://api.postmarkapp.com/email", {
+  const res = await fetch(`${process.env.POSTMARK_API_URL || "https://api.postmarkapp.com"}/email`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", "X-Postmark-Server-Token": env.mail.postmarkToken() },
     body: JSON.stringify({

@@ -1,11 +1,7 @@
 import Browserbase from "@browserbasehq/sdk";
-import Anthropic from "@anthropic-ai/sdk";
-import fs from "node:fs";
-import path from "node:path";
 import { one, q } from "./db.js";
 import { env } from "./env.js";
 import { decrypt, encrypt, randomToken } from "./crypto.js";
-import { MEMORY_STORE_NAME_PREFIX } from "./agent-config.js";
 
 export interface TenantSettings {
   owner_name?: string;
@@ -135,40 +131,13 @@ export function requesterAddresses(t: Tenant): string[] {
   return [t.email, ...(t.settings.family_emails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean)];
 }
 
-/**
- * First-use provisioning: a memory store seeded with the templates and playbooks, and a persistent
- * browser profile. Idempotent; called lazily by whatever needs the resource.
- */
+/** First-use provisioning: a persistent browser profile. Memory is seeded by lib/memory.ts. Idempotent. */
 export async function ensureProvisioned(t: Tenant): Promise<Tenant> {
-  let changed = false;
-  if (!t.memoryStoreId) {
-    const client = new Anthropic({ apiKey: env.anthropic.apiKey() });
-    const store = await client.beta.memoryStores.create({
-      name: `${MEMORY_STORE_NAME_PREFIX}${t.slug}`,
-      description:
-        "This customer's standing instructions, profile, calendar, contacts, renewals, projects, playbooks and full " +
-        "conversation log. Read standing_instructions.md and the matching playbook before starting.",
-    });
-    const seedDir = path.join(process.cwd(), "agent", "memory-seed");
-    for (const file of fs.readdirSync(seedDir, { recursive: true, encoding: "utf8" })) {
-      const abs = path.join(seedDir, file);
-      if (fs.statSync(abs).isDirectory()) continue;
-      await client.beta.memoryStores.memories.create(store.id, { path: "/" + file.split(path.sep).join("/"), content: fs.readFileSync(abs, "utf8") });
-    }
-    t.memoryStoreId = store.id;
-    changed = true;
-  }
   if (!t.browserbaseContextId) {
     const bb = new Browserbase({ apiKey: env.browserbase.apiKey() });
     const ctx = await bb.contexts.create({ projectId: env.browserbase.projectId(), name: `tenant-${t.slug}` });
     t.browserbaseContextId = ctx.id;
-    changed = true;
+    await q("update users set browserbase_context_id = $2 where id = $1", [t.id, t.browserbaseContextId]);
   }
-  if (changed) await q("update users set memory_store_id = $2, browserbase_context_id = $3 where id = $1", [t.id, t.memoryStoreId, t.browserbaseContextId]);
   return t;
-}
-
-/** Memory mount path inside the sandbox for this tenant. */
-export function memoryMount(t: Tenant): string {
-  return `/mnt/memory/${MEMORY_STORE_NAME_PREFIX}${t.slug}`;
 }
