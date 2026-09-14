@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../lib/auth.js";
 import { monthUsageCents } from "../lib/sessions.js";
 import { env } from "../lib/env.js";
+import { sttConfigured } from "../lib/stt.js";
 import { agentAddress, updateSettings, type TenantSettings } from "../lib/tenant.js";
 
 const SETTABLE: Array<keyof TenantSettings> = [
@@ -53,6 +54,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     plan: t.plan,
     current_period_end: t.currentPeriodEnd,
     google_connected: !!t.googleRefreshToken,
+    voice_notes: sttConfigured(),
     usage: { month_cents: used, cap_cents: env.plans.monthlyCapUsd(t.plan) * 100 },
   });
 }

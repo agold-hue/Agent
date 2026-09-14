@@ -158,3 +158,47 @@ create index if not exists agent_sessions_runnable on agent_sessions(status) whe
 alter table agent_sessions alter column cost_cents type numeric(14,3);
 alter table usage alter column cost_cents type numeric(14,3);
 alter table session_costs alter column cost_cents type numeric(14,3);
+
+-- ---------------------------------------------------------------- Daily-use features
+-- Structured things the agent keeps an eye on for the "what's today" screen: bills, packages,
+-- appointments, reservations, school events, reminders. The agent upserts them with track_item.
+create table if not exists tracked_items (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,                       -- bill | package | appointment | reservation | school | reminder | other
+  title text not null,
+  due_at timestamptz,
+  status text not null default 'open',      -- open | done | cancelled
+  amount_cents numeric(14,2),
+  details jsonb not null default '{}'::jsonb,
+  source text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists tracked_items_user_due on tracked_items(user_id, status, due_at);
+
+-- Wins for the scoreboard: refunds won, money saved, subscriptions cancelled, time saved.
+create table if not exists wins (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,                       -- refund | saved | cancelled | price_drop | time | done
+  amount_cents numeric(14,2) not null default 0,
+  minutes int not null default 0,
+  label text not null,
+  session_id text,
+  created_at timestamptz not null default now()
+);
+create index if not exists wins_user_month on wins(user_id, created_at desc);
+
+-- Proof that a task was really done: confirmation numbers and an optional screenshot.
+create table if not exists receipts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  session_id text,
+  title text not null,
+  confirmation text,
+  details text,
+  image bytea,
+  created_at timestamptz not null default now()
+);
+create index if not exists receipts_user on receipts(user_id, created_at desc);

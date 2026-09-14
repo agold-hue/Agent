@@ -50,6 +50,27 @@
   td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--edge); }
   .banner { background:var(--tool); border:1px solid var(--tool-edge); border-radius:12px; padding:12px 14px; }
   code { background:var(--bg); padding:2px 6px; border-radius:6px; }
+  .score { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+  .score div { background:var(--bg); border-radius:12px; padding:10px; text-align:center; }
+  .score b { display:block; font-size:22px; }
+  .score span { font-size:12px; color:var(--muted); }
+  .quick { display:flex; gap:8px; flex-wrap:wrap; }
+  .quick button { border-radius:999px; font-size:14px; }
+  .item { display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--edge); }
+  .item:last-child { border-bottom:none; }
+  .item .k { font-size:18px; width:26px; text-align:center; flex:none; }
+  .item .t { flex:1; min-width:0; }
+  .item .t small { display:block; color:var(--muted); font-size:12px; }
+  .item.overdue .t small { color:#dc2626; }
+  .item button { padding:5px 9px; font-size:13px; }
+  .draft { border:1px solid var(--edge); border-radius:14px; padding:12px 14px; background:var(--panel); touch-action:pan-y; transition:transform .15s, opacity .15s; }
+  .draft h4 { margin:0 0 4px; font-size:14px; }
+  .draft .to { color:var(--muted); font-size:12px; }
+  .draft pre { white-space:pre-wrap; font:inherit; margin:8px 0; max-height:220px; overflow:auto; }
+  .draft.gone { transform:translateX(120%); opacity:0; }
+  .draft.gone-left { transform:translateX(-120%); opacity:0; }
+  #mic.rec { background:#dc2626; color:#fff; border-color:transparent; }
+  .empty { color:var(--muted); font-size:14px; padding:6px 0; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -57,7 +78,9 @@
 <header>
   <h1>Secretary</h1>
   <nav>
+    <button data-tab="home">Home</button>
     <button data-tab="chat" class="on">Chat</button>
+    <button data-tab="inbox" id="inboxTab" hidden>Inbox</button>
     <button data-tab="settings">Settings</button>
     <button data-tab="logins">Logins</button>
     <button data-tab="billing">Billing</button>
@@ -73,6 +96,44 @@
   <button type="button" id="mic" title="Dictate">🎤</button>
   <button class="primary" type="submit" id="send">Send</button>
 </form>
+
+<main id="home" hidden><div class="panel">
+  <div class="card">
+    <h3 id="homeTitle">Today</h3>
+    <div class="quick">
+      <button data-say="I want to return something I bought. Ask me what and I'll tell you.">Return something</button>
+      <button data-say="Where are my packages? Check everything in transit and give me expected days.">Where's my package</button>
+      <button data-say="Book me an appointment. Ask me for what, where, and when, then handle it.">Book an appointment</button>
+      <button data-say="Pay a bill for me. Ask me which one if you don't already know.">Pay a bill</button>
+      <button data-say="Find me the cheapest price for something. Ask me what it is.">Find the cheapest</button>
+      <button data-say="Make a reservation for me. Ask me where, when, and how many.">Reservation</button>
+      <button data-say="Add to my grocery list: ">Grocery list</button>
+      <button data-say="Remind me ">Remind me</button>
+    </div>
+  </div>
+  <div class="card">
+    <h3>What's today</h3>
+    <div id="todayList"><div class="empty">Loading…</div></div>
+  </div>
+  <div class="card">
+    <h3>Scoreboard</h3>
+    <div class="score" id="score"></div>
+    <div id="wins"></div>
+  </div>
+  <div class="card">
+    <h3>Done receipts</h3>
+    <p>Proof for everything it finished: order and confirmation numbers, and a screenshot when there was one.</p>
+    <div id="receipts"><div class="empty">Nothing yet.</div></div>
+  </div>
+</div></main>
+
+<main id="inbox" hidden><div class="panel">
+  <div class="card">
+    <h3>Replies waiting for your ok</h3>
+    <p>Drafts your agent wrote in your Gmail, in your voice. Send, or swipe left to discard. Say "change it" in chat to rewrite one.</p>
+  </div>
+  <div id="drafts"><div class="empty">Loading…</div></div>
+</div></main>
 
 <main id="settings" hidden><div class="panel">
   <div class="banner" id="paywall" hidden>Your trial or subscription is not active. <button class="primary" id="paywallBtn" style="margin-left:8px">Start subscription</button></div>
@@ -144,9 +205,12 @@
   document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
   function showTab(name) {
     document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-    for (const id of ["log", "settings", "logins", "billing"]) $(id).hidden = (id === "log" ? "chat" : id) !== name;
+    for (const id of ["home", "log", "inbox", "settings", "logins", "billing"]) $(id).hidden = (id === "log" ? "chat" : id) !== name;
     $("composer").hidden = name !== "chat";
     if (name === "logins") loadVault();
+    if (name === "home") loadHome();
+    if (name === "inbox") loadDrafts();
+    if (name === "chat") { setTimeout(() => $("text").focus(), 50); return loadHistory(); }
   }
 
   // ---- account
@@ -169,11 +233,13 @@
     $("s_quiet").value = s.quiet_hours ?? "22-7";
     $("s_weekly").value = s.weekly_review ?? "Sun 18";
     $("gConnect").hidden = me.google_connected; $("gDisconnect").hidden = !me.google_connected;
+    $("inboxTab").hidden = !me.google_connected;
+    setupMic();
     $("gState").textContent = me.google_connected ? "Connected" : "Not connected";
     $("bStatus").textContent = paid ? `Status: ${me.subscription_status}${me.current_period_end ? ", renews " + new Date(me.current_period_end).toLocaleDateString() : ""}` : `Status: ${me.subscription_status}. Start a subscription to use the agent.`;
     $("bUsage").textContent = `This month's usage: $${(me.usage.month_cents / 100).toFixed(2)} of $${(me.usage.cap_cents / 100).toFixed(0)} included.`;
     $("bCheckout").hidden = paid; $("bPortal").hidden = !me.stripe_customer && !paid;
-    if (!paid) showTab("billing"); else if (location.search.includes("google=")) showTab("settings"); else loadHistory();
+    if (!paid) showTab("billing"); else if (location.search.includes("google=")) showTab("settings"); else if (location.hash === "#home") showTab("home"); else loadHistory();
   }
   $("saveSettings").onclick = async () => {
     const body = {
@@ -193,6 +259,66 @@
   const checkout = async () => { const r = await api("/api/billing/checkout", { method: "POST" }); const d = await r.json(); if (d.url) location.href = d.url; };
   $("bCheckout").onclick = checkout; $("paywallBtn").onclick = checkout;
   $("bPortal").onclick = async () => { const r = await api("/api/billing/portal", { method: "POST" }); const d = await r.json(); if (d.url) location.href = d.url; };
+
+  // ---- home: what's today, scoreboard, receipts
+  const KIND_ICON = { bill: "💵", package: "📦", appointment: "📅", reservation: "🍽️", school: "🎒", reminder: "⏰", other: "•" };
+  const fmtDay = (iso) => { if (!iso) return ""; const d = new Date(iso); const today = new Date(); const diff = Math.round((new Date(d.toDateString()) - new Date(today.toDateString())) / 86400000); const when = diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : diff === -1 ? "Yesterday" : diff < -1 ? `${-diff} days ago` : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); const hasTime = /T\d\d:\d\d/.test(iso) && !/T00:00:00/.test(iso); return hasTime ? `${when} ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : when; };
+  const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function itemRow(i, kindLabel) {
+    const div = document.createElement("div"); div.className = "item" + (i.overdue ? " overdue" : "");
+    const d = i.details || {};
+    const extra = [i.amount_usd != null ? `$${Number(i.amount_usd).toFixed(2)}` : "", d.carrier ? `${d.carrier}${d.tracking ? " " + d.tracking : ""}` : "", d.location || d.where || "", d.who || "", d.notes || ""].filter(Boolean).join(" · ");
+    div.innerHTML = `<div class="k">${KIND_ICON[i.kind] || "•"}</div><div class="t">${esc(i.title)}<small>${esc([kindLabel || i.kind, i.due_at ? (i.overdue ? "overdue, was " : "") + fmtDay(i.due_at) : "", extra].filter(Boolean).join(" · "))}</small></div>`;
+    const ask = document.createElement("button"); ask.textContent = "Ask"; ask.onclick = () => { showTab("chat"); $("text").value = `About "${i.title}": `; $("text").focus(); };
+    div.appendChild(ask);
+    return div;
+  }
+  async function loadHome() {
+    $("homeTitle").textContent = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+    const [tr, sr, rr] = await Promise.all([api("/api/today?days=3"), api("/api/stats"), api("/api/receipts")]);
+    if (tr.ok) {
+      const d = await tr.json(); const box = $("todayList"); box.innerHTML = "";
+      for (const ev of d.calendar || []) { const div = document.createElement("div"); div.className = "item"; div.innerHTML = `<div class="k">🗓️</div><div class="t">${esc(ev.title)}<small>${esc([fmtDay(ev.start), ev.location].filter(Boolean).join(" · "))}</small></div>`; box.appendChild(div); }
+      for (const i of d.items || []) box.appendChild(itemRow(i));
+      for (const f of d.followups || []) { const div = document.createElement("div"); div.className = "item"; div.innerHTML = `<div class="k">🤖</div><div class="t">${esc(f.what)}<small>${esc("agent " + (f.recurring ? "watch" : "timer") + " · " + fmtDay(f.due))}</small></div>`; box.appendChild(div); }
+      for (const i of d.undated || []) box.appendChild(itemRow(i));
+      if (!box.childElementCount) box.innerHTML = `<div class="empty">Nothing on the list. Tell it about a bill, a package, an appointment, or forward the email and it lands here.</div>`;
+    }
+    if (sr.ok) {
+      const s = await sr.json();
+      const hrs = (m) => m >= 90 ? `${(m / 60).toFixed(1)} h` : `${m} min`;
+      $("score").innerHTML = `<div><b>${s.month.tasks_done}</b><span>tasks done this month</span></div><div><b>$${s.month.saved_usd.toFixed(0)}</b><span>back in your pocket</span></div><div><b>${hrs(s.month.minutes_saved)}</b><span>time saved</span></div>`;
+      $("wins").innerHTML = (s.recent_wins || []).slice(0, 5).map((w) => `<div class="item"><div class="k">🏆</div><div class="t">${esc(w.label)}<small>${esc([w.amount_usd ? "$" + w.amount_usd.toFixed(2) : "", w.minutes ? w.minutes + " min" : "", fmtDay(w.at)].filter(Boolean).join(" · "))}</small></div></div>`).join("") + `<div class="hint">All time: ${s.all_time.tasks_done} tasks, $${s.all_time.saved_usd.toFixed(0)} back, ${hrs(s.all_time.minutes_saved)} saved.</div>`;
+    }
+    if (rr.ok) {
+      const { items } = await rr.json(); const box = $("receipts"); box.innerHTML = "";
+      for (const r of items) { const div = document.createElement("div"); div.className = "item"; div.innerHTML = `<div class="k">✅</div><div class="t">${esc(r.title)}<small>${esc([r.confirmation ? "#" + r.confirmation : "", fmtDay(r.created_at), r.details].filter(Boolean).join(" · "))}</small></div>${r.has_image ? `<a href="/api/receipts?image=${r.id}" target="_blank"><button type="button">Proof</button></a>` : ""}`; box.appendChild(div); }
+      if (!items.length) box.innerHTML = `<div class="empty">Nothing yet.</div>`;
+    }
+  }
+  document.querySelectorAll("#home .quick button").forEach((b) => b.onclick = async () => { await showTab("chat"); const say = b.dataset.say; if (say.endsWith(": ") || say.endsWith("me ")) { $("text").value = say; autosize(); $("text").focus(); } else send(say); });
+
+  // ---- inbox: drafts waiting for a tap (send) or a swipe (discard)
+  async function loadDrafts() {
+    const box = $("drafts"); box.innerHTML = `<div class="empty">Loading…</div>`;
+    const r = await api("/api/drafts");
+    if (!r.ok) { box.innerHTML = `<div class="empty">${esc((await r.json()).error || "Could not load drafts")}</div>`; return; }
+    const { items } = await r.json(); box.innerHTML = "";
+    if (!items.length) { box.innerHTML = `<div class="empty">No replies waiting. When it drafts something in your Gmail, it shows up here.</div>`; return; }
+    for (const d of items) {
+      const card = document.createElement("div"); card.className = "draft";
+      card.innerHTML = `<h4>${esc(d.subject || "(no subject)")}</h4><div class="to">To: ${esc(d.to)}${d.cc ? " · Cc: " + esc(d.cc) : ""}</div><pre>${esc(d.body || d.snippet)}</pre><div class="row"><button class="primary">Send</button><button>Discard</button><button data-fix>Change…</button></div>`;
+      const [sendBtn, discardBtn, fixBtn] = card.querySelectorAll("button");
+      const act = async (action, cls) => { sendBtn.disabled = discardBtn.disabled = true; const rr = await api("/api/drafts", { method: "POST", body: JSON.stringify({ id: d.id, action }) }); if (rr.ok) { card.classList.add(cls); setTimeout(() => { card.remove(); if (!box.childElementCount) loadDrafts(); }, 200); } else { sendBtn.disabled = discardBtn.disabled = false; alert((await rr.json()).error || "Failed"); } };
+      sendBtn.onclick = () => act("send", "gone"); discardBtn.onclick = () => act("delete", "gone-left");
+      fixBtn.onclick = () => { showTab("chat"); $("text").value = `Change the draft "${d.subject}" to ${d.to}: `; autosize(); $("text").focus(); };
+      let x0 = null;
+      card.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+      card.addEventListener("touchmove", (e) => { if (x0 == null) return; const dx = e.touches[0].clientX - x0; card.style.transform = `translateX(${dx}px)`; }, { passive: true });
+      card.addEventListener("touchend", (e) => { const dx = e.changedTouches[0].clientX - (x0 ?? e.changedTouches[0].clientX); x0 = null; card.style.transform = ""; if (dx > 90) act("send", "gone"); else if (dx < -90) act("delete", "gone-left"); });
+      box.appendChild(card);
+    }
+  }
 
   // ---- vault
   async function loadVault() {
@@ -322,9 +448,35 @@
   $("text").addEventListener("input", autosize);
   $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) $("mic").hidden = true;
-  else $("mic").onclick = () => { const rec = new SR(); rec.lang = navigator.language || "en-US"; $("mic").textContent = "●"; rec.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); }; rec.onend = () => { $("mic").textContent = "🎤"; }; rec.start(); };
+  // Voice: hold the mic to record a voice note (server transcribes) when enabled; otherwise browser dictation.
+  let micReady = false;
+  function setupMic() {
+    if (micReady) return; micReady = true;
+    const mic = $("mic");
+    if (me.voice_notes && navigator.mediaDevices && window.MediaRecorder) {
+      mic.title = "Hold to record a voice note";
+      let rec = null, chunks = [], startedAt = 0;
+      const start = async (e) => { e.preventDefault(); if (rec) return; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : ""; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); chunks = []; rec.ondataavailable = (ev) => chunks.push(ev.data); rec.onstop = async () => { stream.getTracks().forEach((t) => t.stop()); const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" }); rec = null; mic.classList.remove("rec"); mic.textContent = "🎤"; if (Date.now() - startedAt < 600 || blob.size < 1000) return; await sendVoice(blob); }; rec.start(); startedAt = Date.now(); mic.classList.add("rec"); mic.textContent = "●"; } catch { alert("Microphone not available."); rec = null; } };
+      const stop = (e) => { if (e) e.preventDefault(); if (rec && rec.state === "recording") rec.stop(); };
+      mic.addEventListener("pointerdown", start); mic.addEventListener("pointerup", stop); mic.addEventListener("pointerleave", stop); mic.addEventListener("pointercancel", stop);
+      mic.addEventListener("contextmenu", (e) => e.preventDefault());
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { mic.hidden = true; return; }
+    mic.onclick = () => { const r = new SR(); r.lang = navigator.language || "en-US"; mic.textContent = "●"; r.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); }; r.onend = () => { mic.textContent = "🎤"; }; r.start(); };
+  }
+  async function sendVoice(blob) {
+    const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(blob); });
+    const note = bubble("user"); note.textContent = "🎤 sending voice note…"; scroll();
+    try {
+      const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+      const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: `voice.${ext}`, mimeType: blob.type || "audio/webm", data, voice: true }) });
+      const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
+      note.textContent = `🎤 ${out.text}`;
+      sessionId = out.session_id; setStatus("running", "working…"); openStream();
+    } catch (e) { note.textContent = `Voice note failed: ${e.message}`; }
+  }
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me) loadHistory(); });
   setInterval(() => { if (!document.hidden && me && !$("log").hidden && $("status").className !== "running") loadHistory(); }, 90_000);
   loadMe();

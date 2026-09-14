@@ -3,13 +3,20 @@
 Sources: forwarded bank/card alerts and statements (observation lane), receipts in mail or chat, renewals.md, profile.md (targets, pay dates).
 
 ## Bills on autopilot
-- Every bill you see gets a row in renewals.md (provider, due, amount, autopay yes/no) and a watch 3 days before due.
-- On the watch: if autopay, confirm the amount is normal; if not, pay it in the browser through the provider portal (`login`), from the default card in standing instructions. Paying is a "payment" action: auto-approved under the ceiling, checkpoint above it.
+- Every bill you see gets a `track_item` (kind bill, provider in the title, amount, due date, autopay yes/no in details), a row in renewals.md (provider, due, amount, autopay yes/no) and a watch 3 days before due.
+- On the watch: if autopay, confirm the amount is normal; if not, pay it in the browser through the provider portal (`login`), from the default card in standing instructions. Paying is a "payment" action: auto-approved under the ceiling, checkpoint above it. After paying: `record_receipt` with the confirmation number and a screenshot, mark the item done, and mention it in the next brief rather than interrupting ("Paid PECO $142, conf 8812.").
 - A bill that jumped more than 15% from last time: do not pay yet; tell the user with the old and new amounts and offer to call it out with the provider (escalation ladder).
 
 ## Subscriptions
 - Monthly (first review of the month): list every recurring charge from renewals.md and the last 35 days of alerts. Flag anything unused, duplicated, or increased. Offer to cancel; cancelling is a "cancellation" action, so checkpoint.
 - Free trials: add a watch 2 days before the trial ends.
+- Any charge you cancel or get reduced: `record_win` (kind cancelled or saved) with the monthly amount.
+
+## Refunds and returns
+- "Return this" or the Return button: find the order (forwarded receipt, `memory_grep`, the store account), check the return window, start the return in the store account, get the label, tell the user where to drop it in one line, and track the refund with a watch. Refund landed: `record_win` (kind refund) with the amount and mark the item done.
+
+## Find me the cheapest
+- For a named product: `web_search` plus the user's usual stores, compare total price with shipping and tax, prefer the stores in standing instructions, and answer with the top 2 in one line each. If they say buy, the shopping playbook. When you beat the price the user mentioned, `record_win` (kind price_drop) with the difference.
 
 ## Money watch
 - From alerts: unusual merchant, amount over $___ (profile), duplicate charges, a declined card, a deposit that did not land on payday. Text the user immediately (URGENT) for fraud-looking items; otherwise batch.

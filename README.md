@@ -37,7 +37,10 @@ Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwi
 | Browser | Browserbase context per customer | Cookies persist; live-view link for takeover |
 | Mail | Postmark, `lib/mail.ts` | `<slug>@MAIL_DOMAIN` inbound; `<slug>+<tag>@` routes replies to the right session |
 | Proactive | `api/cron.ts`, `lib/followups.ts`, `lib/notify.ts` | Database-driven; one query per concern |
-| Web app | `public/index.html`, `public/app.html` | Landing and login; chat, settings, logins, billing |
+| Daily screen | `lib/daily.ts`, `api/today.ts`, `api/stats.ts`, `api/receipts.ts` | Tracked bills, packages, appointments, reservations, school events, reminders; scoreboard of wins; done receipts with screenshots |
+| Inbox approval | `api/drafts.ts` | The customer's Gmail drafts (written by the agent in their voice) with one-tap send or swipe to discard |
+| Voice notes | `lib/stt.ts`, `api/chat/upload.ts` | Hold-to-record in the app, transcribed by any Whisper-compatible endpoint (`STT_*`); dictation fallback |
+| Web app | `public/index.html`, `public/app.html` | Landing and login; home (today, quick actions, scoreboard, receipts), chat, inbox, settings, logins, billing |
 
 ## Ownership boundary
 
@@ -62,7 +65,7 @@ Keep customer data (memories, vault, mail log) in this product's database only.
 
 ## How a customer uses it
 
-Sign up with an email code, start the trial, chat at `/app.html` or email their agent address. Settings: name, time zone, approval ceiling and auto-approve types, family senders, quiet hours, check-in times, morning and weekly review, Google connect. Logins: the sites the agent may use, with optional authenticator seeds. Every purchase, payment, message to an outsider, agreement, dispute, or cancellation waits for their yes unless they loosen the rules.
+Sign up with an email code, start the trial, chat at `/app.html` or email their agent address. The Home tab is the daily screen: what's today (tracked bills, packages, appointments, reservations, school events, reminders, the agent's own timers, and the real calendar when Google is connected), quick actions (return something, where's my package, book an appointment, pay a bill, cheapest price, reservation, grocery list, remind me), the scoreboard (tasks done, money back, time saved) and done receipts with proof. The Inbox tab shows replies the agent drafted in their Gmail for a tap to send or a swipe to discard. Forward anything to the agent address and it gets tracked, filed, paid, or asked about. Settings: name, time zone, approval ceiling and auto-approve types, family senders, quiet hours, check-in times, morning and weekly review, Google connect. Logins: the sites the agent may use, with optional authenticator seeds. Every purchase, payment, message to an outsider, agreement, dispute, or cancellation waits for their yes unless they loosen the rules.
 
 ## Security notes
 
@@ -80,4 +83,4 @@ Sign up with an email code, start the trial, chat at `/app.html` or email their 
 
 - Cheap models are less reliable at long browser tasks and tool discipline; the escalation path and the hard tier exist for that reason. Measure cost per completed task, not per request, before lowering tiers further.
 - No file generation (PDF forms, spreadsheets) without a sandbox; text and CSV via Drive only.
-- No SMS/WhatsApp in, no phone calls out, no native push. Browser dictation on the chat page is the start on voice.
+- No SMS/WhatsApp in, no phone calls out, no native push. Voice is voice notes (server transcription) and browser dictation; no spoken replies yet.

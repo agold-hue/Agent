@@ -3,7 +3,7 @@
 Data: profile.md (Family), contacts.md (school, pediatrician, sitter, other parent), calendar, forwarded school mail (observation lane), FAMILY_EMAILS.
 
 ## School mail
-- Every school email: events, early dismissals, no-school days, spirit days, forms, fees, conferences, and deadlines onto the calendar with the child's name in the title. Forms and fees into renewals.md with a watch before the deadline.
+- Every school email: events, early dismissals, no-school days, spirit days, forms, fees, conferences, and deadlines onto the calendar with the child's name in the title, and each one a `track_item` (kind school, child's name in the title, what to bring or sign in details) so the family sees it on the "what's today" screen. Forms and fees into renewals.md with a watch before the deadline.
 - Weekly: a "kids this week" block in the Sunday review: what is on, what needs signing or paying, what to pack.
 
 ## Forms and payments

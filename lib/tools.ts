@@ -3,6 +3,7 @@ import { liveViewUrl, reuseBrowser } from "./browser.js";
 import { registrableDomain, saveCredential } from "./credentials.js";
 import { addFollowUp, cancelFollowUp, durationMs, parseWhen } from "./followups.js";
 import { driveList, driveRead, driveSaveText, runCalendar, runOwnerInbox, type CalendarInput, type DriveInput, type OwnerInboxInput } from "./google.js";
+import { addReceipt, listItems, recordWin, upsertItem, type ItemKind } from "./daily.js";
 import { recentCodes } from "./inbound.js";
 import { loginToSite } from "./login.js";
 import { sendAgentMail } from "./mail.js";
@@ -134,6 +135,38 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         await notifyOwner(t, row, formatQuestionsEmail(questions, hours), "Quick questions");
         if (row.channel === "email") await updateSession(row.id, { pending_deadline: new Date(Date.now() + hours * 3_600_000) });
         return { text: "", pending: "ask_user" };
+      }
+      case "track_item": {
+        const due = args.due_at ? new Date(s("due_at")) : null;
+        const item = await upsertItem(t, {
+          id: args.id ? s("id") : undefined,
+          kind: (s("kind") || "other") as ItemKind,
+          title: s("title"),
+          due_at: due && !Number.isNaN(due.getTime()) ? due : null,
+          status: args.status ? (s("status") as "open" | "done" | "cancelled") : undefined,
+          amount_cents: args.amount_usd != null ? Math.round(Number(args.amount_usd) * 100) : null,
+          details: (args.details as Record<string, unknown>) ?? {},
+          source: args.source ? s("source") : `session:${row.id}`,
+        });
+        return { text: JSON.stringify({ id: item.id, kind: item.kind, title: item.title, due_at: item.due_at, status: item.status }) };
+      }
+      case "list_items": {
+        const days = args.due_within_days != null ? Number(args.due_within_days) : undefined;
+        const items = await listItems(t, { kind: args.kind ? s("kind") : undefined, status: args.status ? s("status") : "open", dueBefore: days != null ? new Date(Date.now() + days * 86_400_000) : undefined });
+        return { text: items.length ? JSON.stringify(items.map((i) => ({ id: i.id, kind: i.kind, title: i.title, due_at: i.due_at, status: i.status, amount_usd: i.amount_cents != null ? Number(i.amount_cents) / 100 : undefined, details: i.details }))) : "(nothing tracked)" };
+      }
+      case "record_win": {
+        await recordWin(t, { kind: s("kind"), amountCents: args.amount_usd != null ? Math.round(Number(args.amount_usd) * 100) : 0, minutes: args.minutes != null ? Number(args.minutes) : 0, label: s("label"), sessionId: row.id });
+        return { text: "win recorded" };
+      }
+      case "record_receipt": {
+        let image: Buffer | undefined;
+        if (args.screenshot && row.browserbase_session_id) {
+          const shot = await runBrowserTool(t, row, "browser_screenshot", {}).catch(() => undefined);
+          if (shot?.imageBase64) image = Buffer.from(shot.imageBase64, "base64");
+        }
+        const id = await addReceipt(t, { sessionId: row.id, title: s("title"), confirmation: args.confirmation ? s("confirmation") : undefined, details: args.details ? s("details") : undefined, image });
+        return { text: JSON.stringify({ receipt_id: id, screenshot: !!image }) };
       }
       case "escalate_model": {
         const next = nextTier(tierOfModel(row.model ?? "", t));

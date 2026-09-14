@@ -344,3 +344,51 @@ export async function driveRead(t: Tenant, fileId: string): Promise<{ name: stri
   const res = await drive().files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
   return { name: metaData.name ?? fileId, mimeType, content: Buffer.from(res.data as ArrayBuffer) };
 }
+
+// ---------------------------------------------------------------- Drafts (swipe-to-approve inbox)
+
+export interface DraftSummary {
+  id: string;
+  message_id: string | null;
+  thread_id: string | null;
+  to: string;
+  cc: string;
+  subject: string;
+  snippet: string;
+  body: string;
+  updated: string;
+}
+
+/** The customer's Gmail drafts, newest first, with their text so the app can show them for one-tap send. */
+export async function listDrafts(t: Tenant, max = 20): Promise<DraftSummary[]> {
+  const g = gmailFor(t);
+  const { data } = await g.users.drafts.list({ userId: "me", maxResults: Math.min(max, 50) });
+  const out: DraftSummary[] = [];
+  for (const d of data.drafts ?? []) {
+    const { data: full } = await g.users.drafts.get({ userId: "me", id: d.id!, format: "full" });
+    const msg = full.message;
+    if (!msg) continue;
+    out.push({
+      id: full.id!,
+      message_id: msg.id ?? null,
+      thread_id: msg.threadId ?? null,
+      to: header(msg, "To"),
+      cc: header(msg, "Cc"),
+      subject: header(msg, "Subject"),
+      snippet: msg.snippet ?? "",
+      body: decodeBody(msg.payload).slice(0, 6000),
+      updated: msg.internalDate ? new Date(Number(msg.internalDate)).toISOString() : "",
+    });
+  }
+  return out;
+}
+
+/** The customer taps Send on their own draft. This is the customer sending, not the agent. */
+export async function sendDraft(t: Tenant, draftId: string): Promise<{ message_id: string | null }> {
+  const { data } = await gmailFor(t).users.drafts.send({ userId: "me", requestBody: { id: draftId } });
+  return { message_id: data.id ?? null };
+}
+
+export async function deleteDraft(t: Tenant, draftId: string): Promise<void> {
+  await gmailFor(t).users.drafts.delete({ userId: "me", id: draftId });
+}
