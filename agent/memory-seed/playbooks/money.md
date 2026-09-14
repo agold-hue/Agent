@@ -32,3 +32,8 @@ Sources: forwarded bank/card alerts and statements (observation lane), receipts 
 
 ## Payday
 - On each pay date: confirm the deposit from alerts, remind the user of the savings transfer (you never move money between accounts), and note the paycheck amount in ledger.md; flag if it differs from the usual by more than a few percent.
+
+## Payment and affordability questions
+- "What's my monthly on this" with a listing link, a price, or a car: open the link and pull every recurring cost the page shows (property tax, HOA, insurance estimate, fees). `web_search` the current rate for the loan type (30-year fixed, auto, etc.) and name the source. Use 20% down if the user did not say; 30-year fixed if they did not say. Estimate what the page lacks (insurance about 0.35% of price per year for a house) and label it as an estimate.
+- Answer in one message: principal and interest, then taxes, HOA, insurance, then the all-in monthly. Never ask whether to include taxes or which rate to use; state what you used.
+- Save the numbers in `projects/<address-slug>.md` if the user is considering the purchase, so the next question ("what if I put 25% down") starts from the same inputs.
