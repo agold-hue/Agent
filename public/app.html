@@ -218,9 +218,10 @@
     const r = await api("/api/me");
     if (r.status === 401) { location.href = "/"; return; }
     me = await r.json();
-    const paid = me.subscription_status === "active" || me.subscription_status === "trialing";
+    const paid = me.access ?? (me.subscription_status === "active" || me.subscription_status === "trialing");
     $("paywall").hidden = paid;
-    $("agentEmail").textContent = me.agent_email;
+    document.querySelector('nav button[data-tab="billing"]').hidden = me.billing_enabled === false;
+    $("agentEmail").textContent = me.agent_email || "(email channel not enabled on this test deploy)";
     const s = me.settings || {};
     $("s_name").value = s.owner_name || me.name || "";
     $("s_tz").value = me.timezone || "";

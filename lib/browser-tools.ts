@@ -1,5 +1,6 @@
 import { chromium, type Browser, type Page } from "playwright-core";
 import { createBrowser, reuseBrowser, type BrowserHandle } from "./browser.js";
+import { env } from "./env.js";
 import { updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
@@ -12,6 +13,7 @@ const MAX_TEXT = 6000;
 const MAX_ELEMENTS = 250;
 
 async function handleFor(t: Tenant, row: SessionRow): Promise<BrowserHandle> {
+  if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, memory, calendar and email, and tell the user browsing is not enabled.");
   const existing = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
   if (existing) return existing;
   const h = await createBrowser(t);

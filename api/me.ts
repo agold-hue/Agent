@@ -4,7 +4,7 @@ import { monthUsageCents } from "../lib/sessions.js";
 import { env } from "../lib/env.js";
 import { one } from "../lib/db.js";
 import { sttConfigured } from "../lib/stt.js";
-import { agentAddress, updateSettings, type TenantSettings } from "../lib/tenant.js";
+import { agentAddress, hasAccess, updateSettings, type TenantSettings } from "../lib/tenant.js";
 
 const SETTABLE: Array<keyof TenantSettings> = [
   "owner_name",
@@ -50,7 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     email: t.email,
     name: t.name,
     slug: t.slug,
-    agent_email: agentAddress(t),
+    agent_email: env.mail.configured() ? agentAddress(t) : null,
     timezone: t.timezone,
     settings: t.settings,
     subscription_status: t.subscriptionStatus,
@@ -58,6 +58,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     current_period_end: t.currentPeriodEnd,
     google_connected: !!t.googleRefreshToken,
     voice_notes: sttConfigured(),
+    access: hasAccess(t),
+    billing_enabled: env.stripe.configured(),
+    browser_enabled: env.browserbase.configured(),
+    email_enabled: env.mail.configured(),
     usage: { month_cents: used, cap_cents: env.plans.monthlyCapUsd(t.plan) * 100, cache_hit_rate: Math.round(cacheRate * 100) / 100 },
   });
 }

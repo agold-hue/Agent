@@ -77,6 +77,7 @@
       if (stage === 1) {
         const r = await post("/api/auth/request-code", { email });
         if (!r.ok) throw new Error((await r.json()).error || "Could not send code");
+        if ((await r.json()).dev) document.querySelector('label[for="code"]').textContent = "Test deploy: enter the shared test code";
         stage = 2; $("step1").hidden = true; $("step2").hidden = false; $("code").focus();
       } else {
         const r = await post("/api/auth/verify", { email, code: $("code").value.trim() });

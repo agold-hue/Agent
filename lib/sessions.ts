@@ -111,10 +111,11 @@ function systemFor(t: Tenant): string {
   const base = loadPrompt();
   const facts = [
     `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,
-    `Your address (for send_email replies): ${t.slug}@${env.mail.domain()}.`,
+    env.mail.configured() ? `Your address (for send_email replies): ${t.slug}@${env.mail.domain()}.` : "Email is NOT enabled on this server: send_email and get_email_code will fail; tell the user once and work through chat.",
+    env.browserbase.configured() ? "" : "The hosted browser is NOT enabled on this server: browser_* and login will fail; use web_search, memory and the calendar, and tell the user once.",
     t.googleRefreshToken ? "Google is connected: calendar, owner_inbox and drive work." : "Google is NOT connected: calendar, owner_inbox and drive will fail; use calendar.md and email instead and mention Settings > Connect Google once.",
     `Approval rules: purchases/payments up to $${Number(t.settings.auto_approve_max_usd ?? 0)} auto-approved; auto-approved action types: ${(t.settings.auto_approve_types ?? []).join(", ") || "none"}.`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
   return `${base}\n\n# This user\n${facts}`;
 }
 

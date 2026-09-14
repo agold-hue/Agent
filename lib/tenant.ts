@@ -92,7 +92,9 @@ export async function activeTenants(): Promise<Tenant[]> {
   return rows.map(fromRow);
 }
 
+/** With Stripe configured, access follows the subscription; without it (a test deploy) everyone is in. */
 export function hasAccess(t: Tenant): boolean {
+  if (!env.stripe.configured()) return true;
   return t.subscriptionStatus === "active" || t.subscriptionStatus === "trialing";
 }
 
@@ -133,7 +135,7 @@ export function requesterAddresses(t: Tenant): string[] {
 
 /** First-use provisioning: a persistent browser profile. Memory is seeded by lib/memory.ts. Idempotent. */
 export async function ensureProvisioned(t: Tenant): Promise<Tenant> {
-  if (!t.browserbaseContextId) {
+  if (!t.browserbaseContextId && env.browserbase.configured()) {
     const bb = new Browserbase({ apiKey: env.browserbase.apiKey() });
     const ctx = await bb.contexts.create({ projectId: env.browserbase.projectId(), name: `tenant-${t.slug}` });
     t.browserbaseContextId = ctx.id;

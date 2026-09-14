@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { one, q } from "./db.js";
+import { ensureSchema, one, q } from "./db.js";
+import { env } from "./env.js";
 import { sha256, signToken, sixDigitCode, verifyToken } from "./crypto.js";
-import { createTenant, tenantByEmail, tenantById, type Tenant } from "./tenant.js";
+import { createTenant, hasAccess, tenantByEmail, tenantById, type Tenant } from "./tenant.js";
 import { sendServiceMail } from "./mail.js";
 
 const COOKIE = "pwa_session";
@@ -11,9 +12,13 @@ const TTL = 30 * 24 * 3600;
 export async function requestLoginCode(email: string): Promise<void> {
   const e = email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new Error("invalid email");
-  const code = sixDigitCode();
+  await ensureSchema();
+  const dev = env.devLoginCode();
+  if (!dev && !env.mail.configured()) throw new Error("login mail is not configured on this server (set POSTMARK_* or DEV_LOGIN_CODE)");
+  const code = dev || sixDigitCode();
   await q("delete from login_codes where email = $1 or expires_at < now()", [e]);
   await q("insert into login_codes (email, code_hash, expires_at) values ($1, $2, now() + interval '10 minutes')", [e, sha256(`${e}:${code}`)]);
+  if (dev) return;
   await sendServiceMail({
     to: e,
     subject: `Your login code: ${code}`,
@@ -63,7 +68,7 @@ export async function requireTenant(req: VercelRequest, res: VercelResponse, opt
     res.status(401).json({ error: "not logged in" });
     return undefined;
   }
-  if (opts.paid !== false && !(t.subscriptionStatus === "active" || t.subscriptionStatus === "trialing")) {
+  if (opts.paid !== false && !hasAccess(t)) {
     res.status(402).json({ error: "subscription required", status: t.subscriptionStatus });
     return undefined;
   }

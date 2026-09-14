@@ -57,6 +57,10 @@ Keep customer data (memories, vault, mail log) in this product's database only.
 
 ## Deploy
 
+**Quickest test deploy.** Create the Vercel project from this repo, add a Postgres from the Vercel marketplace (Neon sets `DATABASE_URL`), then set `LLM_API_KEY` (OpenRouter), `MASTER_KEY`, `SESSION_SECRET`, `CRON_SECRET` and `DEV_LOGIN_CODE`. Redeploy. The schema is applied on first use, everyone logs in with the shared test code, everyone has access, and chat works. Browsing needs Browserbase; the email channel needs Postmark; billing needs Stripe. Remove `DEV_LOGIN_CODE` before real customers.
+
+**Full deploy.**
+
 1. **Postgres**. Set `DATABASE_URL`, run `npm run db:migrate`.
 2. **Model provider**. An OpenRouter key is the simplest (`LLM_BASE_URL` default). For direct providers set `LLM_BASE_URL` to their OpenAI-compatible endpoint and use their model ids in the `MODEL_*` vars.
 3. **Browserbase**: API key and project id (contexts and keepAlive on the plan).

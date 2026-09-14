@@ -50,6 +50,22 @@ export async function one<T extends pg.QueryResultRow = pg.QueryResultRow>(text:
   return (await q<T>(text, params))[0];
 }
 
+let schemaReady: Promise<void> | undefined;
+/** First request on a fresh database applies db/schema.sql (idempotent), so a new deploy needs no manual migrate step. */
+export async function ensureSchema(): Promise<void> {
+  schemaReady ??= (async () => {
+    const r = await q<{ ok: string | null }>("select to_regclass('public.users')::text as ok");
+    if (r[0]?.ok) return;
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    await exec(fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8"));
+  })().catch((e) => {
+    schemaReady = undefined;
+    throw e;
+  });
+  return schemaReady;
+}
+
 export async function exec(sql: string): Promise<void> {
   const c = await ensure();
   if (process.env.DATABASE_URL?.startsWith("pglite://")) {
