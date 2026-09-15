@@ -42,6 +42,8 @@ Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwi
 | Daily screen | `lib/daily.ts`, `api/today.ts`, `api/stats.ts`, `api/receipts.ts` | Tracked bills, packages, appointments, reservations, school events, reminders; scoreboard of wins; done receipts with screenshots |
 | Inbox approval | `api/drafts.ts` | The customer's Gmail drafts (written by the agent in their voice) with one-tap send or swipe to discard |
 | Voice notes | `lib/stt.ts`, `api/chat/upload.ts` | Hold-to-record in the app, transcribed by any Whisper-compatible endpoint (`STT_*`); dictation fallback |
+| Parallel tasks | `server/routes/chat/send.ts`, `lib/chat.ts` | A request sent while the chat is busy (or prefixed "also:") runs as its own `task` session with its own budget and browser, up to `PARALLEL_TASKS` at once; its request and result show in the chat tagged with the task, questions it asks show as cards, and the page shows a strip of what each task is doing |
+| Documents | `lib/documents.ts` | PDFs and text files attached in chat or forwarded by mail are read (pdf.js text layer) and handed to the model as text; scans are reported as such |
 | Web app | `public/index.html`, `public/app.html` | Landing and login; home (today, quick actions, scoreboard, receipts), chat, inbox, settings, logins, billing |
 
 ## Ownership boundary

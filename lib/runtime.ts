@@ -293,7 +293,8 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   }
   if (row.browserbase_session_id) {
     await disconnectBrowser(row.browserbase_session_id);
-    if (proactive) await releaseBrowser(row.browserbase_session_id).catch(() => {});
+    // Self-started sessions and parallel tasks are done with their browser; the chat thread keeps its own.
+    if (proactive || row.kind === "task") await releaseBrowser(row.browserbase_session_id).catch(() => {});
   }
   return status === "error" ? "error" : "done";
 }
@@ -405,8 +406,8 @@ function stuckMessage(row: SessionRow): string {
   if (/needs_user|password form is still|rejected the (login|saved password)|no_credentials/.test(recent)) {
     return "I couldn't get signed in — the site blocked the automated login (it likely needs a code, a captcha, or the saved login is off). I stopped instead of spinning on it. Want me to try again, or check the login under Settings › Logins?";
   }
-  if (/captcha|verify you are human|are you a robot|challenge/.test(recent)) {
-    return "The site threw up a verification wall I can't get past on my own. I stopped rather than keep trying. Want to take it from here in the browser, or should I try a different route?";
+  if (/captcha|verify you are human|are you a robot|challenge|bot check/.test(recent)) {
+    return "The site's bot check won't let me sign in. Open the Logins tab, tap Watch the browser, sign in there once (it sticks), then tell me \"done\" and I'll take it from there.";
   }
   return "I got stuck repeating the same step without making progress, so I stopped instead of burning time. Tell me to retry or point me at a different approach and I'll jump back on it.";
 }

@@ -100,6 +100,12 @@ const MFA_CHOOSER = /verification code|security code|one-time (code|passcode|pas
 /** Buttons that plainly send a code; generic Continue/Next only count once a delivery option was picked. */
 const MFA_SEND = /^(send( the| me a)?( code)?|text me( a code)?|text|sms|send text( message)?)$/i;
 const MFA_NEXT = /^(continue|next|submit|verify)$/i;
+/** A bot check in the way (Browserbase solves most captchas on its own, given a few seconds). */
+const BOT_WALL = /verify you are human|are you a robot|not a robot|captcha|access denied|unusual traffic|press and hold|checking your browser|attention required|request blocked|bot detection|security check|verify your browser|one more step/i;
+/** How the user gets past a wall the automation cannot: they sign in once themselves in the hosted browser, the cookies stick. */
+export const TAKEOVER = "Ask the user to sign in once themselves: Logins tab > Watch the browser opens the same browser, they log in there, and the sign-in sticks for next time. Then they say 'done' and you call login again (it will find the session signed in). One line, no apology, no explanation of bot walls.";
+/** Signed in already: the page offers to sign out. */
+const SIGNED_IN = /\b(sign out|log out|logout|my account|hello,)\b/i;
 /** The site said no to the saved password (or locked the account); retrying will not help. */
 const REJECTED = /incorrect|invalid (email|password|username|login|credentials)|doesn'?t match|does not match|not recognized|wrong password|couldn'?t sign you in|unable to sign in|account (is )?locked|too many attempts|try again later/i;
 
@@ -189,6 +195,22 @@ async function requestTextCode(page: Page): Promise<boolean> {
   return clicked;
 }
 
+async function isSignedIn(page: Page): Promise<boolean> {
+  const link = page.getByRole("link", { name: /sign out|log out|logout/i }).or(page.getByRole("button", { name: /sign out|log out|logout/i })).first();
+  if ((await link.count().catch(() => 0)) > 0 && (await link.isVisible().catch(() => false))) return true;
+  return SIGNED_IN.test((await pageText(page).catch(() => "")).slice(0, 4000));
+}
+
+/** Give the captcha solver a chance: wait while a bot check is on the page, up to `ms`. */
+async function waitOutBotWall(page: Page, ms = 25_000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (!BOT_WALL.test(await pageText(page).catch(() => ""))) return true;
+    await page.waitForTimeout(2500);
+  }
+  return !BOT_WALL.test(await pageText(page).catch(() => ""));
+}
+
 async function fillOtp(page: Page, code: string) {
   const single = await firstVisible(page, OTP_SELECTORS);
   if (!single) return false;
@@ -226,10 +248,13 @@ export async function loginToSite(t: Tenant, opts: {
       await settle(page);
     }
 
+    // The user may have signed in themselves (a takeover after a bot wall) or the cookies still hold.
+    if (await isSignedIn(page)) return { status: "already_logged_in", url: page.url(), title: await page.title().catch(() => "") };
     // Only ever type into a sign-in form. A home page's search bar is never a username field.
     if (!(await reachLoginForm(page, domain))) {
       const title = await page.title().catch(() => "");
-      if (/account|orders|welcome|hello,/i.test(title)) return { status: "already_logged_in", url: page.url(), title };
+      if (/account|orders|welcome|hello,/i.test(title) || (await isSignedIn(page))) return { status: "already_logged_in", url: page.url(), title };
+      if (BOT_WALL.test(await pageText(page).catch(() => ""))) return { status: "needs_user", reason: `A bot check blocks the site before the sign-in form. ${TAKEOVER}`, url: page.url() };
       return { status: "needs_user", reason: "Could not find the sign-in form (no sign-in link, no password field on the usual login pages).", url: page.url() };
     }
     let user = await firstVisible(page, USER_SELECTORS);
@@ -252,6 +277,11 @@ export async function loginToSite(t: Tenant, opts: {
     await pass.fill(cred.password);
     await clickSubmit(page, pass);
     await settle(page, 4000);
+    // A bot check after submit: the hosted browser solves most of them given a moment.
+    if (BOT_WALL.test(await pageText(page).catch(() => ""))) {
+      await waitOutBotWall(page);
+      await settle(page, 1500);
+    }
     await tagFields(page);
 
     // Second factor. Some sites first ask how to send the code: pick text message and send it.
@@ -287,7 +317,8 @@ export async function loginToSite(t: Tenant, opts: {
       if (REJECTED.test(text)) {
         return { status: "needs_user", reason: "The site rejected the saved password (it says the login is wrong or the account is locked). Do not retry; tell the user in one line to check this login under Settings > Logins.", url: page.url() };
       }
-      return { status: "needs_user", reason: "Password form is still showing after submit; the site may have shown a challenge (captcha). Take one screenshot; if it is a captcha or the same form, tell the user rather than retrying.", url: page.url() };
+      if (BOT_WALL.test(text)) return { status: "needs_user", reason: `The site's bot check rejected the automated sign-in. Do not retry. ${TAKEOVER}`, url: page.url() };
+      return { status: "needs_user", reason: `Password form is still showing after submit; the site may have shown a challenge. Take one screenshot; if it is a bot check or the same form, do not retry. ${TAKEOVER}`, url: page.url() };
     }
     return { status: "logged_in", url: page.url(), title: await page.title(), account: cred.username };
   } finally {

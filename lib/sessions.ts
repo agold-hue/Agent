@@ -28,6 +28,8 @@ export interface SessionRow {
   review_day: Date | null;
   digest_key: string | null;
   followup_id: string | null;
+  /** For a parallel task spawned from the chat: the chat thread it belongs to. */
+  parent_session_id?: string | null;
   model: string | null;
   messages: ChatMessage[];
   turns: number;
@@ -131,8 +133,8 @@ export async function createSession(
   if (opts.quote) first.quote = opts.quote;
   const messages: ChatMessage[] = [{ role: "system", content: await systemFor(t) }, ...(opts.recap ? [{ role: "user" as const, content: opts.recap }] : []), first];
   const row = await one<SessionRow>(
-    `insert into agent_sessions (id, user_id, channel, kind, title, status, reply_tag, model, messages, requester, email_subject, last_message_id, correspondent, review_day, digest_key, followup_id)
-     values ($1,$2,$3,$4,$5,'running',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
+    `insert into agent_sessions (id, user_id, channel, kind, title, status, reply_tag, model, messages, requester, email_subject, last_message_id, correspondent, review_day, digest_key, followup_id, parent_session_id)
+     values ($1,$2,$3,$4,$5,'running',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning *`,
     [
       id,
       t.id,
@@ -149,6 +151,7 @@ export async function createSession(
       opts.row?.review_day ?? null,
       opts.row?.digest_key ?? null,
       opts.row?.followup_id ?? null,
+      opts.row?.parent_session_id ?? null,
     ],
   );
   await q("insert into usage (user_id, month, sessions) values ($1, date_trunc('month', now())::date, 1) on conflict (user_id, month) do update set sessions = usage.sessions + 1", [t.id]);
@@ -188,11 +191,18 @@ export async function knownFacts(t: Tenant): Promise<string> {
   return parts.join("\n\n");
 }
 
-export async function systemFor(t: Tenant): Promise<string> {
+export async function systemFor(t: Tenant, opts: { parallel?: boolean } = {}): Promise<string> {
   const known = await knownFacts(t);
-  const head = systemHead(t);
+  const head = systemHead(t) + (opts.parallel === false ? "" : await parallelTasksNote(t));
   if (!known) return head;
   return `${head}\n\n# What you already know about this user (from their memory files; never ask for any of it)\n${known}`;
+}
+
+async function parallelTasksNote(t: Tenant): Promise<string> {
+  const tasks = await activeTaskSessions(t.id).catch(() => [] as SessionRow[]);
+  if (!tasks.length) return "";
+  const lines = tasks.map((s) => `- "${(s.title ?? "task").slice(0, 120)}" (${s.status === "waiting" ? "waiting on the user" : "running"}, started ${Math.max(1, Math.round((Date.now() - new Date(s.created_at).getTime()) / 60_000))} min ago)`);
+  return `\n\n# Tasks running alongside this chat right now\nThese run as separate sessions; their results appear in the chat when they finish. Do not redo them or report on them; if the user asks about one, say it is still running (or waiting on them) and continue with what they asked you.\n${lines.join("\n")}`;
 }
 
 function systemHead(t: Tenant): string {
@@ -283,10 +293,21 @@ export async function latestChatSession(userId: string, maxAgeHours: number): Pr
   );
 }
 
-/** Every chat session in the window, oldest first, so the page can show the full conversation history. */
-export async function chatSessionsSince(userId: string, since: Date, limit = 200): Promise<SessionRow[]> {
-  const rows = await q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = 'chat' and created_at > $2 order by created_at desc limit $3", [userId, since, limit]);
+/** Every chat session in the window (and, with tasks, the parallel tasks spawned from chat), oldest first, so the page can show the full conversation. */
+export async function chatSessionsSince(userId: string, since: Date, limit = 200, opts: { tasks?: boolean } = {}): Promise<SessionRow[]> {
+  const kinds = opts.tasks ? ["chat", "task"] : ["chat"];
+  const rows = await q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = any($4::text[]) and created_at > $2 order by created_at desc limit $3", [userId, since, limit, kinds]);
   return rows.reverse();
+}
+
+/** Parallel tasks still going (running, or waiting on the user), oldest first. */
+export async function activeTaskSessions(userId: string): Promise<SessionRow[]> {
+  return q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = 'task' and status in ('running', 'waiting') order by created_at", [userId]);
+}
+
+/** A chat-side session by id, only if it belongs to this user. */
+export async function ownSession(userId: string, id: string): Promise<SessionRow | undefined> {
+  return one<SessionRow>("select * from agent_sessions where id = $1 and user_id = $2 and channel = 'chat'", [id, userId]);
 }
 
 export async function recentProactiveSessions(userId: string, limit = 10): Promise<SessionRow[]> {

@@ -30,6 +30,8 @@ export async function createBrowser(t: Tenant): Promise<BrowserHandle> {
       context: { id: t.browserbaseContextId, persist: true },
       solveCaptchas: true,
       viewport: { width: 1366, height: 900 },
+      // Browserbase's advanced stealth (Scale plan) gets past more bot walls; BROWSER_STEALTH=1 turns it on.
+      ...(process.env.BROWSER_STEALTH === "1" ? { advancedStealth: true } : {}),
     },
   });
   const live = await browserbase().sessions.debug(session.id);

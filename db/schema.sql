@@ -210,3 +210,7 @@ alter table usage add column if not exists cached_tokens bigint not null default
 
 -- Timers remember the channel they were set from so their report lands where the user is
 alter table followups add column if not exists channel text not null default 'chat';
+
+-- A task spawned from the chat to run alongside it (parallel tasks) remembers its chat thread
+alter table agent_sessions add column if not exists parent_session_id text;
+create index if not exists agent_sessions_parent on agent_sessions(parent_session_id) where parent_session_id is not null;

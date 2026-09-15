@@ -111,3 +111,15 @@ test("unstamped bubbles get their time from the conversation log, in order", () 
     [5, "2026-09-15T07:11:00.000Z"],
   ]);
 });
+
+import { describeFile } from "../lib/documents.js";
+import fs from "node:fs";
+
+test("a PDF bill is read as text for the model", async () => {
+  const pdf = fs.readFileSync(new URL("./fixtures/bill.pdf", import.meta.url));
+  const out = await describeFile(pdf, "application/pdf", "bill.pdf");
+  assert.ok(out.readable);
+  assert.match(out.text, /Amount due: \$142\.17/);
+  const other = await describeFile(Buffer.from("x"), "application/octet-stream", "old.docx");
+  assert.ok(!other.readable && /cannot be read/.test(other.text));
+});

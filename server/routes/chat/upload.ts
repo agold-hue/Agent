@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../../lib/chat.js";
+import { describeFile } from "../../../lib/documents.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { appendToolResult, appendUserMessage, type SessionRow } from "../../../lib/sessions.js";
 import { stampMessage } from "../../../lib/transcript.js";
@@ -55,24 +56,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ session_id: session.id, text: spoken });
   }
   const isImage = mime.startsWith("image/");
-  const isText = mime.startsWith("text/") || /json|csv|xml/.test(mime);
-  const text = isImage
-    ? `(Attached photo: ${body.filename})`
-    : isText
-      ? `(Attached file ${body.filename}):\n\n${content.toString("utf8").slice(0, 30_000)}`
-      : `(Attached file ${body.filename}, ${mime}, ${content.length} bytes. I cannot read this format directly; ask the user to paste the text or send it by email if needed.)`;
+  // PDFs (a bill from the utility's app, a statement, a receipt) and text files are read here, so the
+  // model gets the contents rather than a note that it cannot open them.
+  const text = isImage ? `(Attached photo: ${body.filename})` : (await describeFile(content, mime, body.filename)).text;
   const images = isImage ? [{ mimeType: mime, base64: body.data }] : undefined;
+  // What to do with it: a document is handled like forwarded mail, a photo is read for what it shows.
+  const handle = isImage
+    ? "(Read it. If it shows a verification code, enter it now; a bill, receipt, confirmation or tracking number gets tracked and filed per the playbooks; otherwise say in one line what you see and wait for the user's message about it.)"
+    : "(Handle it the way you handle forwarded mail: a bill gets a track_item with the amount and due date and goes on renewals.md and the watchlist; a receipt gets filed; a confirmation becomes an item; a statement answers whatever the user asked about it. Then reply in one or two lines with what it is and what you did or need. Never ask the user to paste what is already here.)";
 
   let session = await currentChatSession(t);
   if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
-  if (!session) session = await startChatSession(t, `${text}\n(Wait for the user's message about it.)`, images);
+  if (!session) session = await startChatSession(t, `${text}\n${handle}`, images);
   else if (session.pending_kind) {
     await answerPendingWith(session, isImage ? "a photo" : "a file");
     await appendUserMessage(session, stampMessage(t, `${text}\n(This is their answer to what you were waiting for. If it shows a verification code, enter it now.)`, "chat"), images);
   } else {
-    // Mid-task or idle: the attachment may be the thing the agent needs (a code that was texted, a
-    // photo support asked for) or the start of something the user will explain next.
-    await appendUserMessage(session, stampMessage(t, `${text}\n(If this is something you are waiting for, such as a verification code, use it now. Otherwise wait for the user's message about it.)`, "chat"), images);
+    // Mid-task or idle: the attachment may be the thing the agent needs (a code that was texted, the
+    // bill it could not reach on the site) or a document to file.
+    await appendUserMessage(session, stampMessage(t, `${text}\n${handle}`, "chat"), images);
   }
   await kick(session.id);
   return res.status(200).json({ session_id: session.id });

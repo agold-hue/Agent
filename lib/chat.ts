@@ -1,5 +1,7 @@
 import type { ChatMessage, MessageQuote } from "./llm.js";
-import { chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, type SessionRow } from "./sessions.js";
+import { activeTaskSessions, chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, type SessionRow } from "./sessions.js";
+import { codeIn, isApprovalReply } from "./policy.js";
+import { tierFor } from "./router.js";
 import { stampMessage } from "./transcript.js";
 import type { Tenant } from "./tenant.js";
 
@@ -10,6 +12,49 @@ export async function currentChatSession(t: Tenant): Promise<SessionRow | undefi
 export async function startChatSession(t: Tenant, firstMessage: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string, quote?: MessageQuote): Promise<SessionRow> {
   const recap = await recentRecap(t);
   return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, quote, recap });
+}
+
+/**
+ * A request that runs alongside the chat as its own session (its own loop, budget and browser). Its
+ * request and replies show in the chat like everything else, tagged as a task.
+ */
+export async function startTaskSession(t: Tenant, text: string, parent: SessionRow | undefined, quote?: MessageQuote, reaction?: string): Promise<SessionRow> {
+  const title = text.replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").replace(/\s+/g, " ").trim().slice(0, 120);
+  return createSession(t, {
+    channel: "chat",
+    kind: "task",
+    title,
+    text: stampMessage(t, text, "chat"),
+    quote,
+    reaction,
+    recap: "(This request runs as its own task alongside the user's chat, which may be busy with something else. Do exactly this task, keep the user posted with tell_user if it takes a while, and end with the result in a few lines; it shows in the chat as a task update.)",
+    row: { parent_session_id: parent?.id ?? null },
+  });
+}
+
+/** Maximum parallel tasks per user; past it a new request joins the main thread instead. */
+export const PARALLEL_TASKS = Number(process.env.PARALLEL_TASKS ?? 3);
+
+/** "also: book the dentist" / "in parallel, ..." asks for a task of its own; the prefix is dropped. */
+export const PARALLEL_PREFIX = /^(?:also|parallel|in parallel|meanwhile|separately|new task)\s*[:,-]\s*/i;
+/** A message that steers the running task rather than starting another. */
+const STEERS = /^(no|nope|wait|stop|hold on|actually|instead|never ?mind|forget it|use|try|don'?t|not that|also for|and|but|ok|okay|yes|yep|sure|go|do it|go ahead|fine|thanks|hmm+|(what|why|how|where|when)\s+(did|didn'?t|do|does|is it|are you|was|were|about|come|far|long|happened|can'?t|couldn'?t)|what'?s\s+(the\s+)?(status|going on|happening|taking)|is it|did you|are you|any (luck|update|news)|status|update\??$)\b/i;
+
+/**
+ * Whether a message typed while the thread is busy is a new task to run alongside it, rather than a
+ * steer, an answer, or a remark about the running one. New tasks read like requests (the task or hard
+ * tier), have some length, and do not start like a correction or a question about the current work.
+ */
+export function isSeparateTask(text: string, quote?: MessageQuote): boolean {
+  if (quote || codeIn(text)) return false;
+  const t = text.trim();
+  if (t.split(/\s+/).length < 3 || STEERS.test(t)) return false;
+  return tierFor(t, "chat") !== "chat";
+}
+
+/** Short replies, approvals and codes are answers to whichever question is waiting. */
+export function looksLikeAnswer(text: string): boolean {
+  return isApprovalReply(text) || !!codeIn(text) || text.trim().split(/\s+/).length <= 8 || tierFor(text, "chat") === "chat";
 }
 
 /**
@@ -43,8 +88,8 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
 }
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; at: string; approx?: boolean; reaction?: string; quote?: MessageQuote }
-  | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string }
+  | { kind: "user"; id: string; text: string; at: string; approx?: boolean; reaction?: string; quote?: MessageQuote; task?: string }
+  | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string; task?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
 
@@ -59,6 +104,7 @@ export function toChatItems(row: SessionRow): ChatItem[] {
   // bubbles fell back to the thread's last-update time, sorted below every new message, and a
   // freshly typed line landed in the middle of the page, "invisible".
   let last = new Date(row.created_at).toISOString();
+  const task = row.kind === "task" ? { task: (row.title ?? "task").slice(0, 60) } : {};
   row.messages.forEach((m: ChatMessage, i) => {
     const at = m.at && m.at > last ? m.at : last;
     last = at;
@@ -70,10 +116,14 @@ export function toChatItems(row: SessionRow): ChatItem[] {
       if (raw.startsWith("(")) return;
       let text = raw.replace(/^\[[^\]]+\]\n/, "");
       if (m.quote && text.startsWith(replyPrefix(m.quote))) text = text.slice(replyPrefix(m.quote).length);
-      items.push({ kind: "user", id: `${row.id}-${i}`, text, at, ...approx, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}) });
+      // An attachment shows as its name, not as the host's note and the extracted contents.
+      const file = text.match(/^\(Attached (?:file|photo):?\s+(.+?)(?:[;,)]|\):)/);
+      if (file) text = `📎 ${file[1].trim()}`;
+      else if (text.startsWith("(voice note) ")) text = `🎤 ${text.slice("(voice note) ".length)}`;
+      items.push({ kind: "user", id: `${row.id}-${i}`, text, at, ...approx, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}), ...task });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
-      if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx });
+      if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx, ...task });
       for (const tc of m.tool_calls ?? []) {
         if (!["checkpoint", "ask_user", "send_email", "request_code"].includes(tc.function.name)) continue;
         let input: Record<string, unknown> = {};
@@ -91,6 +141,12 @@ export function toChatItems(row: SessionRow): ChatItem[] {
 }
 
 /** What the agent is doing right now, for the typing line, from the last tool it called. */
+/** The parallel tasks still going, for the page's strip. */
+export async function taskStrip(t: Tenant): Promise<Array<{ id: string; title: string; status: string; activity: string | null }>> {
+  const tasks = await activeTaskSessions(t.id).catch(() => [] as SessionRow[]);
+  return tasks.map((s) => ({ id: s.id, title: (s.title ?? "task").slice(0, 80), status: s.status, activity: s.status === "waiting" ? "waiting for you" : activityOf(s) }));
+}
+
 export function activityOf(row: SessionRow | undefined): string | null {
   if (!row || row.status !== "running") return null;
   for (let i = row.messages.length - 1; i >= 0; i--) {
@@ -153,13 +209,18 @@ export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> 
   return out;
 }
 
-/** The whole conversation for the page: every chat session in the window, oldest first; only the current one carries a status. */
+/**
+ * The whole conversation for the page: every chat session and parallel task in the window, oldest
+ * first. Only the current thread carries a status; tool cards (approvals, questions, code requests)
+ * show for the current thread and for tasks still going, so a task can ask the user something.
+ */
 export async function chatHistory(t: Tenant, current: SessionRow | undefined, days = 30): Promise<ChatItem[]> {
-  const rows = await chatSessionsSince(t.id, new Date(Date.now() - days * 86_400_000));
+  const rows = await chatSessionsSince(t.id, new Date(Date.now() - days * 86_400_000), 200, { tasks: true });
   const out: ChatItem[] = [];
   for (const row of rows) {
     const items = toChatItems(row);
-    out.push(...(current && row.id === current.id ? items : items.filter((i) => i.kind !== "status" && i.kind !== "tool")));
+    const live = (current && row.id === current.id) || (row.kind === "task" && (row.status === "running" || row.status === "waiting"));
+    out.push(...(current && row.id === current.id ? items : items.filter((i) => i.kind !== "status" && (live || i.kind !== "tool"))));
   }
   if (current && !rows.some((r) => r.id === current.id)) out.push(...toChatItems(current));
   return out;
