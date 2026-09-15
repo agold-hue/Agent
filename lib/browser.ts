@@ -1,7 +1,7 @@
 import Browserbase from "@browserbasehq/sdk";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { env } from "./env.js";
-import type { Tenant } from "./tenant.js";
+import { ensureProvisioned, type Tenant } from "./tenant.js";
 
 let bb: Browserbase | undefined;
 export function browserbase(): Browserbase {
@@ -17,7 +17,9 @@ export interface BrowserHandle {
 
 /** Create a hosted browser on this tenant's persistent profile (cookies and logins survive between tasks). */
 export async function createBrowser(t: Tenant): Promise<BrowserHandle> {
-  if (!t.browserbaseContextId) throw new Error("tenant has no browser profile yet");
+  // Accounts created before Browserbase was configured get their profile on first use.
+  if (!t.browserbaseContextId) await ensureProvisioned(t);
+  if (!t.browserbaseContextId) throw new Error("The hosted browser is not set up on this server yet (BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID).");
   const session = await browserbase().sessions.create({
     projectId: env.browserbase.projectId(),
     keepAlive: true,

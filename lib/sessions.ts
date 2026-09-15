@@ -107,7 +107,7 @@ export async function createSession(
 }
 
 /** Per-customer preamble appended to the shared system prompt. */
-function systemFor(t: Tenant): string {
+export function systemFor(t: Tenant): string {
   const base = loadPrompt();
   const facts = [
     `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,

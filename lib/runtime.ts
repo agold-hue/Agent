@@ -5,7 +5,7 @@ import { tools } from "./agent-config.js";
 import { complete, costCents, estimateTokens, LLMError, supportsVision, type ChatMessage } from "./llm.js";
 import { appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
-import { acquireLease, getSession, releaseLease, updateSession, type SessionRow } from "./sessions.js";
+import { acquireLease, getSession, releaseLease, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool } from "./tools.js";
 
@@ -27,6 +27,9 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   if (!(await acquireLease(sessionId, Math.ceil(budgetMs / 1000) + 60))) return "busy";
   let row = (await getSession(sessionId))!;
   const t = (await tenantById(row.user_id))!;
+  // The system message is rebuilt every run, so a session started hours ago sees today's prompt,
+  // today's settings, and which services (browser, mail, Google) are available right now.
+  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: systemFor(t) };
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
 
   try {
