@@ -14,7 +14,7 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(package|delivery|tracking|shipped|where'?s my)\b/i, "📦"],
   [/\b(call|phone|dial)\b/i, "📞"],
   [/\b(find|search|look up|lookup|research|compare|check|who owns|owner of)\b/i, "🔍"],
-  [/\b(remember|note that|fyi|just so you know|i have an?|i'?m (in|at|going))\b/i, "📝"],
+  [/\b(remember|note that|fyi|just so you know|i have an?|i(?:'?m| am) (in|at|going))\b/i, "📝"],
   [/\b(thanks|thank you|great|perfect|you rock|awesome)\b/i, "🙌"],
   [/\b(why (didn'?t|did not)|you (forgot|didn'?t|never)|still waiting|not working|mistake|wrong)\b/i, "🙏"],
   [/^(yes|yep|ok|okay|do it|go ahead|approved|sure|y|done|added|saved|updated|finished|fixed|it'?s (in|there|done))\b/i, "✅"],
