@@ -177,9 +177,27 @@ export async function complete(opts: {
   maxTokens?: number;
   signal?: AbortSignal;
 }): Promise<Completion> {
-  const ids = modelList(opts.model);
-  const { provider, model } = resolveModel(ids[0] ?? opts.model);
+  let ids = modelList(opts.model);
+  let { provider, model } = resolveModel(ids[0] ?? opts.model);
   const isOpenRouter = () => provider.baseUrl.includes("openrouter.ai");
+  if (isOpenRouter()) {
+    // Every model OpenRouter serves is fair game: a tier with one or two ids gets the closest
+    // alternatives from the catalog behind it, and an id the catalog does not know is replaced
+    // rather than failing every request.
+    const known = await catalog();
+    if (known.length && process.env.LLM_AUTO_FALLBACK !== "off") {
+      const configured = ids.map((id) => resolveModel(id).model);
+      const valid = configured.filter((id) => id.startsWith("openrouter/") || known.some((m) => m.id === id));
+      if (valid.length < configured.length) console.error(`[llm] unknown model id(s) ${configured.filter((id) => !valid.includes(id)).join(", ")}; using catalog alternatives`);
+      // No valid id at all: size the chain from the unknown one, then drop it.
+      const chain = valid.length ? withFallbacks(valid, known) : withFallbacks([configured[0]], known).slice(1);
+      if (chain.length && chain[0] !== model) console.error(`[llm] ${model} is not on OpenRouter; running on ${chain[0]}`);
+      if (chain.length) {
+        ids = chain;
+        model = chain[0];
+      }
+    }
+  }
   const started = Date.now();
   let cacheLevel: "full" | "system" | "none" = wantsCacheMarkers(model) ? "full" : "none";
   const body: Record<string, unknown> = {
@@ -198,7 +216,8 @@ export async function complete(opts: {
     // Cheapest (or fastest, LLM_SORT) healthy provider for the chosen model; fall back to others if it fails.
     body.provider = { sort: providerSort(), allow_fallbacks: true };
     body.usage = { include: true };
-    // A model list becomes OpenRouter's fallback chain: the next model answers when the first is down.
+    // The model list is OpenRouter's fallback chain: the next model answers when the first is down,
+    // rate-limited, or rejects the request.
     if (ids.length > 1) body.models = ids.map((id) => resolveModel(id).model);
   }
   const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` };
@@ -321,6 +340,52 @@ export async function catalog(): Promise<CatalogModel[]> {
     console.error(`[llm] catalog: ${err instanceof Error ? err.message : String(err)}`);
     return catalogCache?.models ?? [];
   }
+}
+
+/** Vendors whose models are reliable tool callers, most trusted first; the chain takes one model per vendor. */
+const FALLBACK_VENDORS = ["google", "anthropic", "openai", "deepseek", "x-ai", "qwen", "moonshotai", "z-ai", "mistralai", "meta-llama"];
+const FALLBACK_MAX = Number(process.env.LLM_AUTO_FALLBACK_COUNT ?? 3);
+/** Variants and specialised models that make poor general agents: batch/free tiers, previews, coders, vision-only, tiny. */
+const NOT_A_FALLBACK = /[:]|preview|exp\b|-exp-|beta|thinking|nano|gemma|oss|-vl|vision|-code|coder|codestral|-v\b|build|guard|saba|voxtral|embed|audio|tts|image|search|-8b|-9b|-14b|-3b|-7b|\d{4}-\d{2}-\d{2}$|-\d{4}$/i;
+
+/**
+ * The configured ids followed by the catalog models a person would pick as stand-ins for the
+ * primary: tool-capable, image-capable when the primary is, from a trusted vendor, a plain id, and
+ * priced between half and two and a half times the primary. One model per vendor in order of trust,
+ * the cheapest one at or above the primary's price (a slightly stronger model, never a much weaker
+ * one), else the strongest below it. `openrouter/auto` closes the chain so a request is answered by
+ * something even when every named model is down. An unknown or unpriced primary is treated as a
+ * mid-priced task model.
+ */
+export function withFallbacks(configured: string[], models: CatalogModel[], max = FALLBACK_MAX): string[] {
+  const primary = configured[0];
+  if (!primary || primary.startsWith("openrouter/")) return configured;
+  const p = models.find((m) => m.id === primary);
+  const price = p && p.in + p.out > 0 ? p.in + p.out : 3;
+  const vision = p?.vision ?? true;
+  const vendorOf = (id: string) => id.split("/")[0];
+  const cost = (m: CatalogModel) => m.in + m.out;
+  const candidates = models.filter(
+    (m) =>
+      !configured.includes(m.id) &&
+      m.tools &&
+      (!vision || m.vision) &&
+      FALLBACK_VENDORS.includes(vendorOf(m.id)) &&
+      !NOT_A_FALLBACK.test(m.id.slice(m.id.indexOf("/") + 1)) &&
+      m.in > 0 &&
+      m.context >= 100_000 &&
+      cost(m) >= price / 2 &&
+      cost(m) <= price * 2.5,
+  );
+  const out = [...configured];
+  for (const vendor of FALLBACK_VENDORS) {
+    if (out.length >= configured.length + max) break;
+    const own = candidates.filter((m) => vendorOf(m.id) === vendor).sort((a, b) => cost(a) - cost(b));
+    const pick = own.find((m) => cost(m) >= price) ?? own[own.length - 1];
+    if (pick) out.push(pick.id);
+  }
+  if (models.some((m) => m.id === "openrouter/auto")) out.push("openrouter/auto");
+  return out;
 }
 
 /** Live prices for models the static table does not know; filled by warmCatalog(). */

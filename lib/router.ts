@@ -39,6 +39,20 @@ export function nextTier(current: Tier): Tier | null {
   return current === "chat" ? "task" : current === "task" ? "hard" : null;
 }
 
+const RANK: Record<Tier, number> = { chat: 0, task: 1, hard: 2 };
+
+/**
+ * A chat session lives for hours and its model was picked from its first message, so "update?"
+ * followed by "how much is an uber to JFK" left the browser work on the cheapest model. Each new
+ * message re-routes: the session moves up to the tier the message needs, never down mid-conversation.
+ */
+export function upgradedModel(currentModel: string, text: string, t?: Tenant): string | undefined {
+  const wanted = tierFor(text, "chat");
+  if (RANK[wanted] <= RANK[tierOfModel(currentModel, t)]) return undefined;
+  const model = modelFor(wanted, t);
+  return model === currentModel ? undefined : model;
+}
+
 export function tierOfModel(model: string, t?: Tenant): Tier {
   if (model === modelFor("hard", t)) return "hard";
   if (model === modelFor("task", t)) return "task";

@@ -5,7 +5,8 @@ import { appendTranscript } from "../../../lib/memory.js";
 import { isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { reactionFor } from "../../../lib/reaction.js";
-import { appendUserMessage, UsageCapError } from "../../../lib/sessions.js";
+import { upgradedModel } from "../../../lib/router.js";
+import { appendUserMessage, updateSession, UsageCapError } from "../../../lib/sessions.js";
 import { resolvePending } from "../../../lib/tools.js";
 import { stampMessage } from "../../../lib/transcript.js";
 
@@ -32,6 +33,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await resolvePending(t, session, text, null);
       action = "question_answered";
     } else {
+      const model = upgradedModel(session.model ?? "", text, t);
+      if (model) {
+        console.log(`[route] ${session.id}: ${session.model} -> ${model} for "${text.slice(0, 60)}"`);
+        await updateSession(session.id, { model });
+      }
       await appendUserMessage(session, stampMessage(t, text, "chat"), undefined, reaction);
       action = "sent";
     }
