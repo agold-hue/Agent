@@ -170,6 +170,9 @@ export function modelList(spec: string): string[] {
 /** OpenRouter rejects a `models` fallback array longer than this. */
 const OPENROUTER_MODELS_CAP = Number(process.env.OPENROUTER_MODELS_CAP ?? 3);
 
+/** Set once the account's OpenRouter model restrictions reject an auto-injected chain; then we stop injecting. */
+let openRouterRestricted = false;
+
 /**
  * Fit the fallback chain within OpenRouter's cap while keeping it useful: the primary, then the
  * first alternatives, and always openrouter/auto (a catch-all over every model) as the final slot
@@ -204,7 +207,9 @@ export async function complete(opts: {
     // alternatives from the catalog behind it, and an id the catalog does not know is replaced
     // rather than failing every request.
     const known = await catalog();
-    if (known.length && process.env.LLM_AUTO_FALLBACK !== "off") {
+    // Once the account's model restrictions have rejected an auto-injected chain, stop injecting for
+    // the rest of this worker: the extra models just cost a wasted request and a retry every call.
+    if (known.length && process.env.LLM_AUTO_FALLBACK !== "off" && !openRouterRestricted) {
       const configured = ids.map((id) => resolveModel(id).model);
       const valid = configured.filter((id) => id.startsWith("openrouter/") || known.some((m) => m.id === id));
       if (valid.length < configured.length) console.error(`[llm] unknown model id(s) ${configured.filter((id) => !valid.includes(id)).join(", ")}; using catalog alternatives`);
@@ -273,6 +278,23 @@ export async function complete(opts: {
         delete body.provider;
         attempt--;
         continue;
+      }
+      // The account's OpenRouter model restrictions (an allowlist) reject some models in the chain:
+      // drop the auto-injected fallbacks and run the configured primary alone, which is the one the
+      // user chose and is normally on their allowlist. If that still fails, drop routing preferences.
+      if (res.status === 404 && /model restrictions|No models match|no allowed providers/i.test(text)) {
+        if (Array.isArray(body.models)) {
+          console.error(`[llm] ${model}: model restrictions rejected the fallback chain, retrying with the primary only`);
+          openRouterRestricted = true; // this account has a model allowlist; stop auto-injecting fallbacks
+          delete body.models;
+          attempt--;
+          continue;
+        }
+        if (body.provider) {
+          delete body.provider;
+          attempt--;
+          continue;
+        }
       }
       // OpenRouter (or an org) allows fewer fallback models than we sent: trim and retry.
       if (res.status === 400 && Array.isArray(body.models) && /models['"\s]*array|too many models|\d+ items or fewer/i.test(text)) {
