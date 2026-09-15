@@ -77,8 +77,16 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 
       const calls = completion.message.tool_calls ?? [];
       if (!calls.length) {
-        console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} reply`);
         const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
+        const nudge = stallNudge(row, text);
+        if (nudge) {
+          // The model "ended" with a promise or a question it should not ask; send it back to work.
+          row.messages.push({ role: "user", content: nudge });
+          await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens });
+          console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
+          continue;
+        }
+        console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} reply`);
         return await finish(t, row, text, "idle");
       }
 
@@ -146,6 +154,41 @@ async function finish(t: Tenant, row: SessionRow, report: string, status: "idle"
     if (proactive) await releaseBrowser(row.browserbase_session_id).catch(() => {});
   }
   return status === "error" ? "error" : "done";
+}
+
+/**
+ * A reply with no tool call is the end of the task. Cheaper models sometimes end with a promise
+ * instead ("I'll try again now", "I'll search for the price directly"), so the user gets narration
+ * three times and never the result; or they ask in prose for a default that is in the prompt
+ * (the home address). Both go back to the model as a short note, at most twice per user message.
+ */
+export const NUDGE_PREFIX = "(Not done yet:";
+const MAX_NUDGES = 2;
+const PROMISED_ACTION =
+  /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(now\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|search for|look (?:for|up)|open)\b|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
+const ASKS_FOR_ADDRESS = /\b(provide|tell me|what(?:'|’)?s|what is|send me|confirm|i need|share)\b[^.?\n]{0,60}\b(your|the)\s+(current\s+|pickup\s+|home\s+|starting\s+|exact\s+)?(location|address)\b/i;
+
+export function stallNudge(row: SessionRow, reply: string): string | undefined {
+  if (!reply || /^NO_REPORT\b/.test(reply)) return undefined;
+  // Count nudges since the user's last real message (host notes start with "(").
+  let nudges = 0;
+  for (let i = row.messages.length - 1; i > 0; i--) {
+    const m = row.messages[i];
+    if (m.role !== "user") continue;
+    const c = typeof m.content === "string" ? m.content : "";
+    if (c.startsWith(NUDGE_PREFIX)) nudges++;
+    else if (!c.startsWith("(")) break;
+  }
+  if (nudges >= MAX_NUDGES) return undefined;
+  const system = typeof row.messages[0]?.content === "string" ? row.messages[0].content : "";
+  const homeKnown = /home address[^\n]*:\s*\S/i.test(system);
+  if (homeKnown && ASKS_FOR_ADDRESS.test(reply)) {
+    return `${NUDGE_PREFIX} you asked for the user's address. It is already in your system prompt under "What you already know about this user" (home address); never ask for it. Use it now and continue the task.)`;
+  }
+  if (PROMISED_ACTION.test(reply)) {
+    return `${NUDGE_PREFIX} that reply promised an action and then ended your turn, so nothing happened and the user is still waiting. A reply without a tool call ends the task. Do the step now with tools instead of describing it. If the same route already failed twice, take a different one: another site, a direct URL, web_search, or escalate_model. Then end with the result, or with exactly where you are stuck and the live-view link.)`;
+  }
+  return undefined;
 }
 
 function lastAssistantText(messages: ChatMessage[]): string {

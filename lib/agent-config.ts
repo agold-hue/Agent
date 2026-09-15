@@ -34,6 +34,7 @@ export const tools: ToolDef[] = [
   fn("browser_text", "The page's visible text (trimmed). Cheaper than a screenshot for reading.", obj({})),
   fn("browser_screenshot", "A screenshot when layout matters or the snapshot is confusing. Costs more; use sparingly.", obj({})),
   fn("browser_watch", "Wait up to N seconds for the page text to change (live support chats), returning only the new lines.", obj({ seconds: { type: "number" } })),
+  fn("browser_wait_for", "Wait for a slow page: until `text` shows anywhere on the page (a heading, a price, 'Your fare'), or with no text until the page has finished drawing its controls. Returns a fresh snapshot. Use it instead of giving up on a page that came back empty.", obj({ text: { type: "string" }, seconds: { type: "number" } })),
   fn("browser_tabs", "List open tabs.", obj({})),
   fn("browser_tab", "Switch to tab by index.", obj({ index: { type: "number" } }, ["index"])),
   fn("browser_back", "Go back one page.", obj({})),

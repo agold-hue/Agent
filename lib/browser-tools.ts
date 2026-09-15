@@ -108,13 +108,38 @@ const settle = async (page: Page, ms = 1500) => {
   await page.waitForTimeout(ms);
 };
 
+/** Visible controls in the main frame; the snapshot's own selector, so "interactive" means the same thing in both. */
+const COUNT_CONTROLS = `(() => { const v = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; }; return Array.from(document.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [role="combobox"], [role="option"], [contenteditable="true"]')).filter(v).length; })()`;
+
+/**
+ * After a navigation, wait until the page is actually usable: single-page apps (Uber's fare estimator,
+ * airline sites) answer domcontentloaded with an empty shell and draw the form seconds later once their
+ * scripts arrive, slower still through the hosted browser's proxy. Waits for the network to go quiet
+ * and for the count of visible controls to appear and stop growing, within `maxMs`.
+ */
+export async function waitInteractive(page: Page, maxMs = 12_000): Promise<void> {
+  const start = Date.now();
+  await page.waitForLoadState("load", { timeout: Math.min(5000, maxMs) }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: Math.max(0, Math.min(6000, maxMs - (Date.now() - start))) }).catch(() => {});
+  let last = -1;
+  while (Date.now() - start < maxMs) {
+    const n = Number(await page.evaluate(COUNT_CONTROLS).catch(() => 0));
+    if (n > 0 && n === last) return;
+    last = n;
+    await page.waitForTimeout(600);
+  }
+}
+
+/** Text of every frame, lowercased, for "wait until the page says X". */
+const lowerText = async (page: Page) => (await pageText(page).catch(() => "")).toLowerCase();
+
 /**
  * Runs inside a frame. Kept as source text (not a closure) so no bundler helper such as __name leaks
  * into the page, where it does not exist. Numbers every visible control from `offset + 1`.
  */
 const SNAPSHOT_FN = `(max, offset) => {
   const isVisible = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none"; };
-  const sel = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="combobox"], [role="option"], [contenteditable="true"], summary, [onclick]';
+  const sel = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="combobox"], [role="option"], [role="listbox"] li, [contenteditable="true"], summary, [onclick]';
   const els = Array.from(document.querySelectorAll(sel)).filter(isVisible);
   const lines = [];
   let n = 0;
@@ -180,18 +205,43 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
   switch (name) {
     case "browser_open":
       return withPage(t, row, async (page, _b, h) => {
-        if (str("url")) await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
-        await settle(page, 2000);
+        if (str("url")) {
+          await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
+          await waitInteractive(page);
+        }
         return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}` };
       });
     case "browser_goto":
       return withPage(t, row, async (page) => {
         await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 });
-        await settle(page, 2000);
+        await waitInteractive(page);
         return { text: `${await page.title()}\n${page.url()}\n\n${await snapshot(page)}` };
       });
     case "browser_snapshot":
-      return withPage(t, row, async (page) => ({ text: await snapshot(page) }));
+      return withPage(t, row, async (page) => {
+        let snap = await snapshot(page);
+        // Nothing to click yet: the page is still drawing itself. Give it a moment rather than reporting an empty page.
+        if (!/^\[\d+\]/m.test(snap)) {
+          await waitInteractive(page, 8000);
+          snap = await snapshot(page);
+        }
+        return { text: snap };
+      });
+    case "browser_wait_for":
+      return withPage(t, row, async (page) => {
+        const want = str("text").trim().toLowerCase();
+        const limit = Math.min(Math.max(Number(a.seconds ?? 15), 1), 120) * 1000;
+        const start = Date.now();
+        if (!want) {
+          await waitInteractive(page, limit);
+          return { text: `page settled after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
+        }
+        while (Date.now() - start < limit) {
+          if ((await lowerText(page)).includes(want)) return { text: `"${str("text")}" is on the page after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
+          await page.waitForTimeout(700);
+        }
+        return { text: `"${str("text")}" did not appear within ${Math.round(limit / 1000)}s\n\n${await snapshot(page)}` };
+      });
     case "browser_click":
       return withPage(t, row, async (page) => {
         await (await ref(page, str("ref"))).click({ timeout: 10_000 });
@@ -209,7 +259,9 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
           await settle(page);
           return { text: `typed + Enter\n\n${await snapshot(page)}` };
         }
-        return { text: `typed into [${str("ref")}]` };
+        // Address and search boxes answer typing with a suggestion list that must be clicked; show it.
+        await page.waitForTimeout(1200);
+        return { text: `typed into [${str("ref")}]\n\n${await snapshot(page)}` };
       });
     case "browser_select":
       return withPage(t, row, async (page) => {

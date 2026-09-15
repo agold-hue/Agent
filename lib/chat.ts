@@ -42,7 +42,7 @@ export function toChatItems(row: SessionRow): ChatItem[] {
   row.messages.forEach((m: ChatMessage, i) => {
     if (m.role === "user") {
       const text = (typeof m.content === "string" ? m.content : (m.content ?? []).map((p) => (p.type === "text" ? p.text : "")).join("\n")).replace(/^\[[^\]]+\]\n/, "");
-      if (text.startsWith("(You are now running") || text.startsWith("(Earlier in this chat") || text === "(screenshot)") return;
+      if (text.startsWith("(You are now running") || text.startsWith("(Earlier in this chat") || text.startsWith("(Not done yet:") || text === "(screenshot)") return;
       items.push({ kind: "user", id: `${row.id}-${i}`, text, at, reaction: m.reaction });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
