@@ -24,8 +24,48 @@ const RULES: Array<[RegExp, string]> = [
   [/\?\s*$/, "💬"],
 ];
 
-export function reactionFor(text: string): string {
+/**
+ * Interchangeable emojis per intent, so the same face does not repeat down a short run of bubbles.
+ * The first entry is the primary from RULES; the rest are stand-ins picked when it was used recently.
+ */
+const ALTERNATES: Record<string, string[]> = {
+  "⏰": ["⏰", "⏳", "🕒", "⏲️"],
+  "💸": ["💸", "💰", "🧾", "↩️"],
+  "🔐": ["🔐", "🔑", "🗝️", "🔒"],
+  "🛒": ["🛒", "🛍️", "🧺", "🏷️"],
+  "💵": ["💵", "💳", "🧾", "🏦"],
+  "📅": ["📅", "🗓️", "📆", "⏱️"],
+  "✉️": ["✉️", "📧", "📨", "📝"],
+  "✈️": ["✈️", "🛫", "🧳", "🚕"],
+  "📦": ["📦", "🚚", "📬", "🏷️"],
+  "📞": ["📞", "☎️", "📲", "🗣️"],
+  "🔍": ["🔍", "🔎", "🕵️", "🧐"],
+  "📝": ["📝", "🗒️", "📌", "🖊️"],
+  "🙌": ["🙌", "🎉", "👏", "😄"],
+  "🙏": ["🙏", "🫶", "😅", "🛠️"],
+  "✋": ["✋", "🛑", "🚫", "⏸️"],
+  "💬": ["💬", "🗨️", "❓", "🤔"],
+};
+
+/** These may repeat as often as they like; they are the plain "got it" / "done" acks. */
+const REPEATABLE = new Set(["👍", "✅"]);
+
+/**
+ * Pick the acknowledgement emoji for a message. `recent` is the emojis used on the last several
+ * messages; the same non-repeatable emoji is not used twice within that window, so a run of shopping
+ * or lookup messages gets a little variety instead of ten identical faces. 👍 and ✅ are exempt.
+ */
+export function reactionFor(text: string, recent: string[] = []): string {
   const t = text.trim();
-  for (const [re, emoji] of RULES) if (re.test(t)) return emoji;
-  return "👍";
+  let primary = "👍";
+  for (const [re, emoji] of RULES)
+    if (re.test(t)) {
+      primary = emoji;
+      break;
+    }
+  if (REPEATABLE.has(primary)) return primary;
+  const used = new Set(recent);
+  if (!used.has(primary)) return primary;
+  for (const alt of ALTERNATES[primary] ?? []) if (!used.has(alt)) return alt;
+  return "👍"; // every variant was used recently; fall back to the one emoji that is allowed to repeat
 }

@@ -15,6 +15,8 @@ function opt(name: string, fallback = ""): string {
  */
 export const env = {
   appUrl: () => (opt("APP_URL") || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : req("APP_URL"))).replace(/\/$/, ""),
+  /** The assistant's display name, shown in the chat header, the typing line and email subjects. Override with ASSISTANT_NAME. */
+  assistantName: () => opt("ASSISTANT_NAME", "Pete"),
   devLoginCode: () => opt("DEV_LOGIN_CODE"),
   cronSecret: () => req("CRON_SECRET"),
   llm: {

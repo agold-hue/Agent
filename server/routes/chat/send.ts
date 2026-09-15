@@ -18,10 +18,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const text = String((req.body as { text?: unknown })?.text ?? "").trim();
   if (!text) return res.status(400).json({ error: "text required" });
 
-  const reaction = reactionFor(text);
   try {
     let session = await currentChatSession(t);
     if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
+    // The emojis on the last few of the user's messages, so we don't stamp the same one twice in a row.
+    const recentReactions = (session?.messages ?? [])
+      .filter((m) => m.role === "user" && m.reaction)
+      .slice(-9)
+      .map((m) => m.reaction!);
+    const reaction = reactionFor(text, recentReactions);
     let action: string;
     if (!session) {
       session = await startChatSession(t, text, undefined, reaction);

@@ -163,6 +163,21 @@ export function modelList(spec: string): string[] {
   return spec.split(",").map((m) => m.trim()).filter(Boolean);
 }
 
+/** OpenRouter rejects a `models` fallback array longer than this. */
+const OPENROUTER_MODELS_CAP = Number(process.env.OPENROUTER_MODELS_CAP ?? 3);
+
+/**
+ * Fit the fallback chain within OpenRouter's cap while keeping it useful: the primary, then the
+ * first alternatives, and always openrouter/auto (a catch-all over every model) as the final slot
+ * when the chain has one. So [primary, a, b, c, auto] with cap 3 becomes [primary, a, auto].
+ */
+export function capModels(models: string[], cap = OPENROUTER_MODELS_CAP): string[] {
+  if (models.length <= cap) return models;
+  const auto = models.find((m) => m.startsWith("openrouter/"));
+  const head = models.filter((m) => m !== auto).slice(0, auto ? cap - 1 : cap);
+  return auto ? [...head, auto] : head;
+}
+
 /** How OpenRouter picks among the providers serving a model: LLM_SORT=price (default), throughput or latency. */
 function providerSort(): "price" | "throughput" | "latency" {
   const v = (process.env.LLM_SORT ?? "price").toLowerCase();
@@ -217,13 +232,14 @@ export async function complete(opts: {
     body.provider = { sort: providerSort(), allow_fallbacks: true };
     body.usage = { include: true };
     // The model list is OpenRouter's fallback chain: the next model answers when the first is down,
-    // rate-limited, or rejects the request.
-    if (ids.length > 1) body.models = ids.map((id) => resolveModel(id).model);
+    // rate-limited, or rejects the request. OpenRouter caps this array at OPENROUTER_MODELS_CAP, so
+    // keep the primary, one real alternative, and openrouter/auto (a catch-all) when there is one.
+    if (ids.length > 1) body.models = capModels(ids.map((id) => resolveModel(id).model));
   }
   const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` };
   if (isOpenRouter()) {
     headers["HTTP-Referer"] = process.env.APP_URL || "https://example.com";
-    headers["X-Title"] = "Secretary";
+    headers["X-Title"] = process.env.ASSISTANT_NAME || "Pete";
   }
 
   let lastErr: LLMError | undefined;
@@ -251,6 +267,16 @@ export async function complete(opts: {
       if (res.status === 404 && body.provider && /No endpoints/i.test(text)) {
         console.error(`[llm] ${model}: no endpoint for the routing preferences, retrying without them`);
         delete body.provider;
+        attempt--;
+        continue;
+      }
+      // OpenRouter (or an org) allows fewer fallback models than we sent: trim and retry.
+      if (res.status === 400 && Array.isArray(body.models) && /models['"\s]*array|too many models|\d+ items or fewer/i.test(text)) {
+        const n = Number(text.match(/(\d+) items or fewer/i)?.[1] ?? OPENROUTER_MODELS_CAP);
+        const trimmed = capModels(body.models as string[], Math.max(1, n));
+        if (trimmed.length <= 1) delete body.models;
+        else body.models = trimmed;
+        console.error(`[llm] ${model}: models array too long, retrying with ${trimmed.length}`);
         attempt--;
         continue;
       }

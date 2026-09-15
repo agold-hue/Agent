@@ -150,6 +150,7 @@ export async function systemFor(t: Tenant): Promise<string> {
 function systemHead(t: Tenant): string {
   const base = loadPrompt();
   const facts = [
+    `Your name is ${env.assistantName()}. When you refer to yourself or a message needs a name, use it; you are the user's assistant, not a faceless service.`,
     `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,
     env.mail.configured() ? `Your address (for send_email replies): ${t.slug}@${env.mail.domain()}.` : "Email is NOT enabled on this server: send_email and get_email_code will fail; tell the user once and work through chat.",
     env.browserbase.configured() ? "" : "The hosted browser is NOT enabled on this server: browser_* and login will fail; use web_search, memory and the calendar, and tell the user once.",

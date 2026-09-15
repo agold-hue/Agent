@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Secretary</title>
+<title>Pete</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Bodoni+Moda:wght@500&display=swap">
 <meta name="theme-color" content="#111318">
@@ -181,6 +181,7 @@
   .chatDown:hover { background:var(--blue-soft); }
   .chatDownBadge { position:absolute; top:-7px; right:-7px; min-width:22px; height:22px; padding:0 6px; box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; border:2px solid #fff; border-radius:999px; background:var(--blue); color:#fff; font-size:11.5px; font-weight:700; line-height:1; }
   .chatTyping { min-height:18px; display:flex; align-items:center; gap:8px; padding:0 6px 4px; font-size:11.5px; color:var(--muted); }
+  .chatStatus { color:var(--muted); }
   .chatDots { display:inline-flex; gap:3px; }
   .chatDots i { width:5px; height:5px; border-radius:50%; background:var(--copper); animation:dotBounce 1.2s ease-in-out infinite; }
   .chatDots i:nth-child(2) { animation-delay:.15s; } .chatDots i:nth-child(3) { animation-delay:.3s; }
@@ -227,7 +228,7 @@
 </head>
 <body>
 <header>
-  <h1>Secretary</h1>
+  <h1>Pete</h1>
   <nav>
     <button data-tab="chat" class="on">Chats</button>
     <button data-tab="home">Home</button>
@@ -252,7 +253,7 @@
     <div class="roomHead">
       <div style="min-width:0;display:flex;align-items:center;gap:8px">
         <button type="button" class="toolChip backChip" id="backChip" aria-label="All chats">‹</button>
-        <div style="min-width:0"><div class="roomTitle" id="roomTitle">Secretary</div><div class="roomSub" id="roomSub">Your personal secretary · always on</div></div>
+        <div style="min-width:0"><div class="roomTitle" id="roomTitle">Pete</div><div class="roomSub" id="roomSub">Your personal secretary · always on</div></div>
       </div>
       <span class="roomTools">
         <button type="button" class="toolChip" id="findChip" title="Search this conversation" aria-label="Search this conversation"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
@@ -275,7 +276,7 @@
       <div id="emojiDrawer" class="chatDrawer" hidden></div>
       <div class="chatRow">
         <button type="button" id="attach" class="chatIcon chatPlus" title="Attach a photo or document" aria-label="Attach"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
-        <textarea id="text" class="rcBox" rows="1" placeholder="Message Secretary" autofocus></textarea>
+        <textarea id="text" class="rcBox" rows="1" placeholder="Message Pete" autofocus></textarea>
         <span class="chatSide">
           <button type="button" id="emojiBtn" class="chatIcon" title="Emoji" aria-label="Emoji"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8M9 10h.01M15 10h.01"/></svg></button>
           <button type="button" id="mic" class="chatIcon chatMic" title="Voice" aria-label="Voice"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"/></svg></button>
@@ -408,6 +409,14 @@
     const r = await api("/api/me");
     if (r.status === 401) { location.href = "/"; return; }
     me = await r.json();
+    if (me.assistant_name) {
+      AGENT = me.assistant_name;
+      document.title = AGENT;
+      const brand = document.querySelector("h1"); if (brand) brand.textContent = AGENT;
+      $("text").placeholder = `Message ${AGENT}`;
+      if (currentRoom === "secretary") $("roomTitle").textContent = AGENT;
+      renderRooms();
+    }
     const paid = me.access ?? (me.subscription_status === "active" || me.subscription_status === "trialing");
     $("paywall").hidden = paid;
     document.querySelector('nav button[data-tab="billing"]').hidden = me.billing_enabled === false;
@@ -553,7 +562,7 @@
   };
 
   // ---- chats: the room, built the way the office's app draws it
-  const AGENT = "Secretary";
+  let AGENT = "Pete";
   const QUICK = ["👍", "😊", "🎉"];
   const SHEET_QUICK = ["👍", "😊", "🙏", "❤️", "😅"];
   const DRAWER = ["😀","😂","🙂","😉","😍","🤔","😅","😢","😡","🙏","👍","👎","👏","🙌","🤝","💪","❤️","🔥","✨","🎉","✅","❌","⏰","📅","📦","💵","🛒","✉️","🔐","🔍","📞","🏠","🚗","✈️","☕","🍕"];
@@ -735,7 +744,14 @@
   }
   let liveViewUrl = null;
   const watchLink = () => liveViewUrl ? ` <a href="${liveViewUrl.replace(/"/g, "&quot;")}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;margin-left:8px">Watch the browser ↗</a>` : "";
-  function setTyping(on, activity) { const label = activity || `${AGENT} is typing…`; $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>${label.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}${watchLink()}` : (pending && liveViewUrl ? `Browser is open, waiting for you.${watchLink()}` : ""); }
+  // During tool work show a calm status line (no dots): "Opening uber.com…". The bouncing "typing"
+  // dots appear only when the agent is composing a reply with no tool running, i.e. a post is imminent.
+  function setTyping(on, activity) {
+    const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+    if (!on) { $("typing").innerHTML = pending && liveViewUrl ? `Browser is open, waiting for you.${watchLink()}` : ""; return; }
+    if (activity) { $("typing").innerHTML = `<span class="chatStatus">${esc(activity)}</span>${watchLink()}`; return; }
+    $("typing").innerHTML = `<span class="chatDots"><i></i><i></i><i></i></span>${esc(AGENT + " is typing…")}${watchLink()}`;
+  }
   $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
   $("notifyChip").onclick = async () => { try { if (window.Notification) { const p = await Notification.requestPermission(); $("notifyChip").classList.toggle("toolChipOn", p === "granted"); } } catch {} };
@@ -857,7 +873,7 @@
       document.title = "● " + baseTitle;
       const restore = () => { document.title = baseTitle; document.removeEventListener("visibilitychange", restore); };
       document.addEventListener("visibilitychange", restore);
-      try { if (window.Notification && Notification.permission === "granted") new Notification("Secretary", { body: (last.text || "").slice(0, 140) }); } catch {}
+      try { if (window.Notification && Notification.permission === "granted") new Notification(AGENT, { body: (last.text || "").slice(0, 140) }); } catch {}
     }
   }
   renderRooms();

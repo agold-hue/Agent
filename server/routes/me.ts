@@ -49,6 +49,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({
     email: t.email,
     name: t.name,
+    assistant_name: env.assistantName(),
     slug: t.slug,
     agent_email: env.mail.configured() ? agentAddress(t) : null,
     timezone: t.timezone,
