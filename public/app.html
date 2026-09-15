@@ -551,7 +551,7 @@
     { id: "secretary", name: AGENT, sub: "Your personal secretary · always on", hue: AGENT_HUE, items: items.filter((i) => i.kind !== "status") },
     { id: "notices", name: "Reminders & heads-ups", sub: "Timers, the morning brief, things it noticed", hue: NOTICE_HUE, items: items.filter((i) => i.kind === "agent" && i.notice) },
   ]);
-  const textOf = (i) => i.kind === "tool" ? (i.name === "checkpoint" ? "Needs your ok: " + (i.input.summary || "") : i.name === "send_email" ? "Ok to send an email?" : "Quick question") : (i.text || "");
+  const textOf = (i) => i.kind === "tool" ? (i.name === "checkpoint" ? "Needs your ok: " + (i.input.summary || "") : i.name === "send_email" ? "Ok to send an email?" : i.name === "request_code" ? (i.input.message || "Send me the code") : "Quick question") : (i.text || "");
 
   // ---- the left column
   function renderRooms() {
@@ -618,6 +618,7 @@
       const i = item.input; const h = document.createElement("h4"); const body = document.createElement("div"); body.className = "chatBody";
       if (item.name === "checkpoint") { h.textContent = "Need your ok"; body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}` + (i.recommendation ? `\n\n${i.recommendation}` : "") + ((i.options_considered || []).length ? `\nOther options: ` + i.options_considered.join("; ") : ""); }
       else if (item.name === "send_email") { h.textContent = "Ok to send?"; body.textContent = `${i.purpose ? i.purpose + "\n\n" : ""}To: ${i.to}${i.cc ? "\nCc: " + i.cc : ""}\nSubject: ${i.subject}\n\n${i.body}`; }
+      else if (item.name === "request_code") { h.textContent = "Code needed"; body.textContent = i.message || "A verification code was sent to your phone. Send it here."; }
       else { h.textContent = "Quick question"; const qs = i.questions || []; body.textContent = qs.length === 1 ? `${qs[0].question}\n(no answer = ${qs[0].default})` : qs.map((q, n) => `${n + 1}. ${q.question} (default: ${q.default})`).join("\n"); }
       bubble.append(h, body);
       const actions = document.createElement("div"); actions.className = "actions";

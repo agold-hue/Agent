@@ -3,7 +3,7 @@ import { requireTenant } from "../../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../../lib/chat.js";
 import { appendTranscript } from "../../../lib/memory.js";
 import { isApprovalReply } from "../../../lib/policy.js";
-import { kick } from "../../../lib/runtime.js";
+import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { reactionFor } from "../../../lib/reaction.js";
 import { appendUserMessage, UsageCapError } from "../../../lib/sessions.js";
 import { resolvePending } from "../../../lib/tools.js";
@@ -20,6 +20,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const reaction = reactionFor(text);
   try {
     let session = await currentChatSession(t);
+    if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
     let action: string;
     if (!session) {
       session = await startChatSession(t, text, undefined, reaction);

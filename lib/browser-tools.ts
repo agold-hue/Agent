@@ -36,50 +36,104 @@ async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser:
   }
 }
 
-const ref = (page: Page, r: string) => page.locator(`[data-agent-ref="${String(r).replace(/[^0-9]/g, "")}"]`).first();
+/**
+ * Locate a snapshot ref in whichever frame holds it. Card verification (3-D Secure), payment forms and
+ * some sign-in dialogs render inside iframes; refs are numbered across every frame, so the agent
+ * clicks them like anything else.
+ */
+async function ref(page: Page, r: string) {
+  const sel = `[data-agent-ref="${String(r).replace(/[^0-9]/g, "")}"]`;
+  for (const frame of page.frames()) {
+    const loc = frame.locator(sel).first();
+    if ((await loc.count().catch(() => 0)) > 0) return loc;
+  }
+  return page.locator(sel).first();
+}
+
+/** Visible text of the page and of every child frame that shows something. */
+export async function pageText(page: Page): Promise<string> {
+  const parts: string[] = [];
+  for (const frame of page.frames()) {
+    const text = (await frame.evaluate(`document.body ? document.body.innerText : ""`).catch(() => "")) as string;
+    const clean = text.replace(/\n{3,}/g, "\n\n").trim();
+    if (!clean) continue;
+    if (frame === page.mainFrame()) parts.unshift(clean);
+    else if (clean.length > 20) parts.push(`--- inside a popup/frame (${frameHost(frame.url())}) ---\n${clean}`);
+  }
+  return parts.join("\n\n");
+}
+
+function frameHost(url: string): string {
+  try {
+    return new URL(url).hostname || "embedded";
+  } catch {
+    return "embedded";
+  }
+}
 const settle = async (page: Page, ms = 1500) => {
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await page.waitForTimeout(ms);
 };
 
-async function snapshot(page: Page): Promise<string> {
-  const data = await page.evaluate((max) => {
-    const isVisible = (el: Element) => {
-      const r = el.getBoundingClientRect();
-      const st = getComputedStyle(el);
-      return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
-    };
-    const sel = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="combobox"], [role="option"], [contenteditable="true"], summary, [onclick]';
-    const els = Array.from(document.querySelectorAll(sel)).filter(isVisible);
-    const lines: string[] = [];
-    let n = 0;
-    for (const el of els) {
-      if (n >= max) break;
-      n++;
-      el.setAttribute("data-agent-ref", String(n));
-      const e = el as HTMLInputElement & HTMLSelectElement & HTMLAnchorElement;
-      const tag = el.tagName.toLowerCase();
-      const role = el.getAttribute("role") || (tag === "a" ? "link" : tag === "input" ? `input:${e.type || "text"}` : tag);
-      const label =
-        el.getAttribute("aria-label") ||
-        (e.labels && e.labels[0] && e.labels[0].innerText) ||
-        el.getAttribute("placeholder") ||
-        el.getAttribute("title") ||
-        el.getAttribute("alt") ||
-        ((el as HTMLElement).innerText || e.value || "").trim();
-      const extra: string[] = [];
-      if (tag === "input" && e.value && String(e.type) !== "password") extra.push(`value="${e.value.slice(0, 40)}"`);
-      if (tag === "select") extra.push(`selected="${e.options?.[e.selectedIndex]?.text ?? ""}"`);
-      if (e.checked) extra.push("checked");
-      if (e.disabled) extra.push("disabled");
-      if (tag === "a" && e.href && !e.href.startsWith("javascript:")) extra.push(e.href.slice(0, 100));
-      lines.push(`[${n}] ${role} "${String(label).replace(/\s+/g, " ").slice(0, 80)}" ${extra.join(" ")}`.trim());
+/**
+ * Runs inside a frame. Kept as source text (not a closure) so no bundler helper such as __name leaks
+ * into the page, where it does not exist. Numbers every visible control from `offset + 1`.
+ */
+const SNAPSHOT_FN = `(max, offset) => {
+  const isVisible = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none"; };
+  const sel = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="combobox"], [role="option"], [contenteditable="true"], summary, [onclick]';
+  const els = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+  const lines = [];
+  let n = 0;
+  for (const el of els) {
+    if (n >= max) break;
+    n++;
+    const id = offset + n;
+    el.setAttribute("data-agent-ref", String(id));
+    const e = el;
+    const tag = el.tagName.toLowerCase();
+    const role = el.getAttribute("role") || (tag === "a" ? "link" : tag === "input" ? "input:" + (e.type || "text") : tag);
+    const label = el.getAttribute("aria-label") || (e.labels && e.labels[0] && e.labels[0].innerText) || el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || (el.innerText || e.value || "").trim();
+    const extra = [];
+    if (tag === "input" && e.value && String(e.type) !== "password") extra.push('value="' + e.value.slice(0, 40) + '"');
+    if (tag === "select") extra.push('selected="' + ((e.options && e.options[e.selectedIndex] && e.options[e.selectedIndex].text) || "") + '"');
+    if (e.checked) extra.push("checked");
+    if (e.disabled) extra.push("disabled");
+    if (tag === "a" && e.href && !e.href.startsWith("javascript:")) extra.push(e.href.slice(0, 100));
+    lines.push(("[" + id + "] " + role + ' "' + String(label).replace(/\\s+/g, " ").slice(0, 80) + '" ' + extra.join(" ")).trim());
+  }
+  const headings = Array.from(document.querySelectorAll("h1, h2")).filter(isVisible).slice(0, 12).map((h) => "# " + h.innerText.trim().replace(/\\s+/g, " ").slice(0, 100));
+  return { title: document.title, url: location.href, headings, lines, total: els.length };
+}`;
+
+type FrameSnapshot = { title: string; url: string; headings: string[]; lines: string[]; total: number };
+
+export async function snapshot(page: Page): Promise<string> {
+  const out: string[] = [];
+  let offset = 0;
+  let total = 0;
+  let title = "";
+  let url = "";
+  for (const frame of page.frames()) {
+    if (offset >= MAX_ELEMENTS) break;
+    const data = (await frame.evaluate(`(${SNAPSHOT_FN})(${MAX_ELEMENTS - offset}, ${offset})`).catch((e: unknown) => {
+      console.error(`[browser] snapshot of frame ${frameHost(frame.url())} failed: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    })) as FrameSnapshot | null;
+    if (!data) continue;
+    if (frame === page.mainFrame()) {
+      title = data.title;
+      url = data.url;
+      out.push(...data.headings, ...data.lines);
+    } else if (data.lines.length) {
+      // A frame with controls is usually a dialog the user must deal with (card verification, payment, sign-in).
+      out.push(`--- inside a popup/frame (${frameHost(data.url)}) ---`, ...data.headings, ...data.lines);
     }
-    const headings = Array.from(document.querySelectorAll("h1, h2")).filter(isVisible).slice(0, 12).map((h) => `# ${(h as HTMLElement).innerText.trim().replace(/\s+/g, " ").slice(0, 100)}`);
-    return { title: document.title, url: location.href, headings, lines, total: els.length };
-  }, MAX_ELEMENTS);
-  const out = [`${data.title}\n${data.url}`, ...data.headings, ...data.lines];
-  if (data.total > MAX_ELEMENTS) out.push(`... ${data.total - MAX_ELEMENTS} more elements not shown; scroll or use browser_text`);
+    offset += data.lines.length;
+    total += data.total;
+  }
+  out.unshift(`${title}\n${url}`);
+  if (total > MAX_ELEMENTS) out.push(`... ${total - MAX_ELEMENTS} more elements not shown; scroll or use browser_text`);
   return out.join("\n");
 }
 
@@ -107,13 +161,13 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       return withPage(t, row, async (page) => ({ text: await snapshot(page) }));
     case "browser_click":
       return withPage(t, row, async (page) => {
-        await ref(page, str("ref")).click({ timeout: 10_000 });
+        await (await ref(page, str("ref"))).click({ timeout: 10_000 });
         await settle(page);
         return { text: `clicked [${str("ref")}] -> ${page.url()}\n\n${await snapshot(page)}` };
       });
     case "browser_type":
       return withPage(t, row, async (page) => {
-        const loc = ref(page, str("ref"));
+        const loc = await ref(page, str("ref"));
         await loc.click({ timeout: 10_000 });
         await loc.fill("").catch(() => {});
         await loc.type(str("text"), { delay: 15 });
@@ -126,7 +180,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       });
     case "browser_select":
       return withPage(t, row, async (page) => {
-        const loc = ref(page, str("ref"));
+        const loc = await ref(page, str("ref"));
         await loc.selectOption({ label: str("value") }).catch(async () => {
           await loc.selectOption(str("value"));
         });
@@ -146,8 +200,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       });
     case "browser_text":
       return withPage(t, row, async (page) => {
-        const raw = await page.evaluate(() => document.body.innerText);
-        const clean = raw.replace(/\n{3,}/g, "\n\n").trim();
+        const clean = await pageText(page);
         return { text: clean.length > MAX_TEXT ? clean.slice(0, MAX_TEXT) + `\n... (${clean.length - MAX_TEXT} more chars)` : clean };
       });
     case "browser_screenshot":
@@ -158,7 +211,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
     case "browser_watch":
       return withPage(t, row, async (page) => {
         const limit = Math.min(Number(a.seconds ?? 60), 180) * 1000;
-        const grab = () => page.evaluate(() => document.body.innerText).catch(() => "");
+        const grab = () => pageText(page).catch(() => "");
         const before = await grab();
         const start = Date.now();
         let after = before;

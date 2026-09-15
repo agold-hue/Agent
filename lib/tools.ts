@@ -69,10 +69,11 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
       case "login": {
         const browser = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
         if (!browser) return { text: "No active browser. Call browser_open first." };
-        const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined });
+        const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined, code: args.code ? s("code") : undefined });
         console.log(`[login] ${row.id} ${s("domain")}: ${result.status}${"reason" in result ? ` (${result.reason})` : ""}`);
         const payload: Record<string, unknown> = { ...result };
         if (result.status === "needs_user") payload.live_view_url = browser.liveViewUrl;
+        if (result.status === "needs_user" && /code/i.test(result.reason)) payload.hint = "If the site offers to text or email a code, click that, then request_code.";
         if (result.status === "no_credentials") payload.note = "The user can add this login under Settings > Logins, or you can sign up (checkpoint first) and save_login.";
         return { text: JSON.stringify(payload) };
       }
@@ -129,6 +130,13 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const live = row.browserbase_session_id ? await liveViewUrl(row.browserbase_session_id).catch(() => undefined) : undefined;
         await notifyOwner(t, row, formatCheckpointEmail(cp, live), `Approval needed: ${cp.summary}`);
         return { text: "", pending: "checkpoint" };
+      }
+      case "request_code": {
+        // A code went to the user's phone: one line to the user, then wait. Never counts as a question.
+        const message = s("message") || "A verification code was just sent to your phone. Send it here and I'll continue.";
+        await notifyOwner(t, row, message, "Code needed");
+        if (row.channel === "email") await updateSession(row.id, { pending_deadline: new Date(Date.now() + 30 * 60_000) });
+        return { text: "", pending: "ask_user" };
       }
       case "ask_user": {
         const questions = (args.questions as Array<{ question: string; default: string }>) ?? [];

@@ -23,6 +23,8 @@ export async function createBrowser(t: Tenant): Promise<BrowserHandle> {
   const session = await browserbase().sessions.create({
     projectId: env.browserbase.projectId(),
     keepAlive: true,
+    // Long enough to wait for a code from the user's phone mid-checkout; released when a proactive task ends.
+    api_timeout: Number(process.env.BROWSER_SESSION_MINUTES ?? 30) * 60,
     proxies: true,
     browserSettings: {
       context: { id: t.browserbaseContextId, persist: true },

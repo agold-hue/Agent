@@ -18,8 +18,19 @@ const MAX_TURNS = Number(process.env.MAX_TURNS_PER_SESSION ?? 120);
 const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 40_000);
 // Compact down to this share of the budget so the prefix then stays stable (and cached) for many turns.
 const COMPACT_TARGET = 0.6;
+// A chat session is one long conversation; once it has done this much work it is closed after the
+// current task and the next message starts a fresh one (with a recap), so per-task limits never
+// silence the chat.
+const CHAT_ROLLOVER_TURNS = Number(process.env.CHAT_ROLLOVER_TURNS ?? 60);
+const CHAT_ROLLOVER_SHARE = 0.6;
 
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
+
+/** A chat session that can do no more work: the next message must start a fresh one. */
+export function chatSessionExhausted(row: SessionRow): boolean {
+  const cap = env.plans.sessionBudgetUsd() * 100;
+  return row.status === "terminated" || row.status === "error" || row.turns >= MAX_TURNS || (cap > 0 && Number(row.cost_cents) >= cap);
+}
 
 export async function runSession(sessionId: string, opts: { budgetMs?: number } = {}): Promise<RunOutcome> {
   const budgetMs = opts.budgetMs ?? 240_000;
@@ -34,8 +45,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 
   try {
     while (Date.now() - started < budgetMs) {
-      if (row.turns >= MAX_TURNS) return await finish(t, row, "I've hit the step limit for one task. Here's where I got to:\n\n" + (lastAssistantText(row.messages) || "(no summary)"), "idle");
-      if (sessionCap > 0 && row.cost_cents >= sessionCap) return await finish(t, row, `Hit the per-task spend cap, so I paused. Say "continue" if you want me to keep going.\n\n${lastAssistantText(row.messages)}`, "idle");
+      if (row.turns >= MAX_TURNS) return await finish(t, row, "I've hit the step limit for one task, so I stopped here. Here's where I got to:\n\n" + (lastAssistantText(row.messages) || "(no summary)") + "\n\nSend the next message and I'll pick it up fresh.", "idle");
+      if (sessionCap > 0 && row.cost_cents >= sessionCap) return await finish(t, row, `Hit the per-task spend cap, so I paused here. Say "continue" and I'll keep going in a fresh task.\n\n${lastAssistantText(row.messages)}`, "idle");
 
       // The stored conversation is the user's record and is never trimmed; the model gets a working copy
       // kept under the context budget.
@@ -105,6 +116,13 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 async function finish(t: Tenant, row: SessionRow, report: string, status: "idle" | "error"): Promise<RunOutcome> {
   const proactive = ["review", "weekly", "followup", "triage", "digest"].includes(row.kind);
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
+  // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
+  // provider error) must be in it or the user sees nothing at all.
+  if (report && !silent && lastAssistantText(row.messages) !== report.trim()) row.messages.push({ role: "assistant", content: report });
+  const sessionCap = env.plans.sessionBudgetUsd() * 100;
+  const limitHit = row.turns >= MAX_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap);
+  const rollOver = row.kind === "chat" && (status === "error" || limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
+  if (rollOver) status = "terminated" as typeof status;
   await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
   if (report && !silent) {
     // Mail triage can wait for the check-in times; a timer the user or the agent set fires on time.

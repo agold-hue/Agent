@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../../lib/chat.js";
-import { kick } from "../../../lib/runtime.js";
+import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { appendUserMessage } from "../../../lib/sessions.js";
 import { stampMessage } from "../../../lib/transcript.js";
 import { sttConfigured, transcribe } from "../../../lib/stt.js";
@@ -31,6 +31,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (!spoken) return res.status(422).json({ error: "could not hear anything in that note" });
     let session = await currentChatSession(t);
+    if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
     if (!session) session = await startChatSession(t, `(voice note) ${spoken}`);
     else await appendUserMessage(session, stampMessage(t, `(voice note) ${spoken}`, "chat"));
     await kick(session.id);
@@ -46,6 +47,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const images = isImage ? [{ mimeType: mime, base64: body.data }] : undefined;
 
   let session = await currentChatSession(t);
+    if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
   if (!session) session = await startChatSession(t, `${text}\n(Wait for the user's message about it.)`, images);
   else await appendUserMessage(session, stampMessage(t, `${text}\n(No reply needed until I say more.)`, "chat"), images);
   await kick(session.id);

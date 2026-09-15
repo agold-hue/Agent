@@ -8,7 +8,24 @@ export async function currentChatSession(t: Tenant): Promise<SessionRow | undefi
 }
 
 export async function startChatSession(t: Tenant, firstMessage: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string): Promise<SessionRow> {
-  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction });
+  const recap = await recentRecap(t);
+  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, recap });
+}
+
+/**
+ * The last exchanges of the previous chat session, so a session that rolled over (step or spend
+ * limit, error) continues the conversation instead of starting blank. Hidden from the chat page.
+ */
+async function recentRecap(t: Tenant): Promise<string | undefined> {
+  const previous = (await chatSessionsSince(t.id, new Date(Date.now() - 24 * 3_600_000), 3)).pop();
+  if (!previous) return undefined;
+  const lines: string[] = [];
+  for (const m of previous.messages) {
+    if (m.role === "user" && typeof m.content === "string" && !m.content.startsWith("(")) lines.push(`User: ${m.content.replace(/^\[[^\]]+\]\n/, "").slice(0, 400)}`);
+    else if (m.role === "assistant" && typeof m.content === "string" && m.content.trim() && !m.tool_calls?.length) lines.push(`You: ${m.content.trim().slice(0, 400)}`);
+  }
+  if (!lines.length) return undefined;
+  return `(Earlier in this chat, before this task started. Continue naturally; do not repeat it.)\n${lines.slice(-8).join("\n")}`;
 }
 
 export type ChatItem =
@@ -25,13 +42,13 @@ export function toChatItems(row: SessionRow): ChatItem[] {
   row.messages.forEach((m: ChatMessage, i) => {
     if (m.role === "user") {
       const text = (typeof m.content === "string" ? m.content : (m.content ?? []).map((p) => (p.type === "text" ? p.text : "")).join("\n")).replace(/^\[[^\]]+\]\n/, "");
-      if (text.startsWith("(You are now running") || text === "(screenshot)") return;
+      if (text.startsWith("(You are now running") || text.startsWith("(Earlier in this chat") || text === "(screenshot)") return;
       items.push({ kind: "user", id: `${row.id}-${i}`, text, at, reaction: m.reaction });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
       if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at });
       for (const tc of m.tool_calls ?? []) {
-        if (!["checkpoint", "ask_user", "send_email"].includes(tc.function.name)) continue;
+        if (!["checkpoint", "ask_user", "send_email", "request_code"].includes(tc.function.name)) continue;
         let input: Record<string, unknown> = {};
         try {
           input = JSON.parse(tc.function.arguments);

@@ -1,6 +1,7 @@
 import type { Page } from "playwright-core";
 import { attach } from "./browser.js";
 import { findCredential, registrableDomain } from "./credentials.js";
+import { env } from "./env.js";
 import { recentCodes } from "./inbound.js";
 import type { Tenant } from "./tenant.js";
 
@@ -8,7 +9,9 @@ export type LoginResult =
   | { status: "logged_in"; url: string; title: string; account: string }
   | { status: "already_logged_in"; url: string; title: string }
   | { status: "no_credentials"; domain: string }
-  | { status: "needs_user"; reason: string; url: string };
+  | { status: "needs_user"; reason: string; url: string }
+  /** The site wants a code sent to the user's phone: ask the user, then call login again with `code`. */
+  | { status: "needs_code"; ask: string; url: string };
 
 /**
  * Field detection runs in the page: every visible input gets a data-login-role so the host can pick the
@@ -93,12 +96,15 @@ const OTP_SELECTORS = [
 const SUBMIT_TEXT = /^(sign in|log in|login|continue|next|submit|verify|confirm|sign in with password)$/i;
 
 async function firstVisible(page: Page, selectors: string[]) {
-  for (const sel of selectors) {
-    const loc = page.locator(sel).first();
-    try {
-      if ((await loc.count()) > 0 && (await loc.isVisible())) return loc;
-    } catch {
-      /* try next */
+  // Verification steps often render inside an iframe (card issuers, some banks): search every frame.
+  for (const frame of page.frames()) {
+    for (const sel of selectors) {
+      const loc = frame.locator(sel).first();
+      try {
+        if ((await loc.count()) > 0 && (await loc.isVisible())) return loc;
+      } catch {
+        /* try next */
+      }
     }
   }
   return undefined;
@@ -137,7 +143,7 @@ async function fillOtp(page: Page, code: string) {
   const single = await firstVisible(page, OTP_SELECTORS);
   if (!single) return false;
   // Some sites split the code into one box per digit.
-  const boxes = page.locator('input[maxlength="1"]');
+  const boxes = single.page().locator('input[maxlength="1"]');
   if ((await boxes.count()) >= code.length) {
     for (let i = 0; i < code.length; i++) await boxes.nth(i).fill(code[i]);
   } else {
@@ -155,8 +161,11 @@ export async function loginToSite(t: Tenant, opts: {
   connectUrl: string;
   domain: string;
   accountHint?: string;
+  /** A code the user sent from their phone: typed into the verification field on the current page. */
+  code?: string;
 }): Promise<LoginResult> {
   const domain = registrableDomain(opts.domain);
+  if (opts.code) return enterCode(opts.connectUrl, domain, opts.code);
   const cred = await findCredential(t, domain, opts.accountHint);
   if (!cred) return { status: "no_credentials", domain };
 
@@ -198,7 +207,7 @@ export async function loginToSite(t: Tenant, opts: {
     // Second factor.
     if (await firstVisible(page, OTP_SELECTORS)) {
       let code = cred.totp;
-      if (!code) {
+      if (!code && env.mail.configured()) {
         // Fall back to a code the user auto-forwards to their agent address; give the site a moment to send it.
         for (let attempt = 0; attempt < 6 && !code; attempt++) {
           await page.waitForTimeout(10_000);
@@ -207,7 +216,8 @@ export async function loginToSite(t: Tenant, opts: {
         }
       }
       if (!code) {
-        return { status: "needs_user", reason: "Site asked for a verification code that is not in the vault (add the authenticator seed) or in forwarded mail (SMS?).", url: page.url() };
+        // The code went to the user's phone: the page stays open on the code field.
+        return { status: "needs_code", ask: `${domain} sent a verification code to the user's phone. Call request_code now (one line), and when the user sends it call login again with code.`, url: page.url() };
       }
       await fillOtp(page, code);
     }
@@ -219,6 +229,25 @@ export async function loginToSite(t: Tenant, opts: {
     return { status: "logged_in", url: page.url(), title: await page.title(), account: cred.username };
   } finally {
     // Disconnect only; the hosted browser keeps running for the sandbox.
+    await browser.close().catch(() => {});
+  }
+}
+
+/** Type a code the user relayed into whatever verification field is showing (sign-in or card verification). */
+export async function enterCode(connectUrl: string, domain: string, code: string): Promise<LoginResult> {
+  const { browser, page } = await attach(connectUrl, domain);
+  try {
+    const clean = code.replace(/[^0-9a-z]/gi, "");
+    if (!clean) return { status: "needs_user", reason: "The code was empty after removing spaces and punctuation.", url: page.url() };
+    if (!(await fillOtp(page, clean))) {
+      return { status: "needs_user", reason: "No verification-code field is showing right now. Snapshot the page; the step may have expired (request a new code) or already passed.", url: page.url() };
+    }
+    await tagFields(page);
+    if (await firstVisible(page, OTP_SELECTORS)) {
+      return { status: "needs_user", reason: "The code field is still showing; the site may have rejected the code (expired or mistyped). Ask the user for a fresh one.", url: page.url() };
+    }
+    return { status: "logged_in", url: page.url(), title: await page.title(), account: "code accepted" };
+  } finally {
     await browser.close().catch(() => {});
   }
 }

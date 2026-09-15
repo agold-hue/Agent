@@ -66,7 +66,7 @@ export async function monthUsageCents(t: Tenant): Promise<number> {
  */
 export async function createSession(
   t: Tenant,
-  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: "chat" | "task" | "hard"; reaction?: string },
+  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: "chat" | "task" | "hard"; reaction?: string; recap?: string },
 ): Promise<SessionRow> {
   const cap = env.plans.monthlyCapUsd(t.plan) * 100;
   if (cap > 0 && (await monthUsageCents(t)) >= cap) {
@@ -81,7 +81,7 @@ export async function createSession(
     ? { role: "user", content: [{ type: "text", text: opts.text }, ...opts.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))] }
     : { role: "user", content: opts.text };
   if (opts.reaction) first.reaction = opts.reaction;
-  const messages: ChatMessage[] = [{ role: "system", content: systemFor(t) }, first];
+  const messages: ChatMessage[] = [{ role: "system", content: systemFor(t) }, ...(opts.recap ? [{ role: "user" as const, content: opts.recap }] : []), first];
   const row = await one<SessionRow>(
     `insert into agent_sessions (id, user_id, channel, kind, title, status, reply_tag, model, messages, requester, email_subject, last_message_id, correspondent, review_day, digest_key, followup_id)
      values ($1,$2,$3,$4,$5,'running',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,

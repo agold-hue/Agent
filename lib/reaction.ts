@@ -5,6 +5,7 @@
 const RULES: Array<[RegExp, string]> = [
   [/\b(remind|reminder|timer|alarm|in \d+ ?(min|minutes|hours?|h|m)\b|at \d{1,2}(:\d{2})? ?(am|pm))/i, "⏰"],
   [/\b(refund|return (it|this|the)|money back|chargeback|dispute)\b/i, "💸"],
+  [/^\s*(code[:\s]*)?\d{4,8}\s*$/i, "🔐"],
   [/\b(log ?in(to)?|login|sign ?in(to)?|password|account|acct)\b/i, "🔐"],
   [/\b(buy|order|purchase|reorder|cart|checkout|amazon|cheapest|price)\b/i, "🛒"],
   [/\b(pay|bill|payment|invoice|utility|con ?ed(ison)?|national grid|pseg|peco)\b/i, "💵"],
