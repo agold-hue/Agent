@@ -5,9 +5,12 @@ import type { Tenant } from "./tenant.js";
  * Which model runs a session. Three tiers, each an env var holding any model id your provider
  * accepts. Defaults are cheap-first; the agent can escalate mid-task with the escalate tool.
  *
- *   MODEL_CHAT  short replies, calendar notes, recall           (default google/gemini-2.5-flash-lite)
- *   MODEL_TASK  routine browser work, reorders, forms, drafting (default google/gemini-3.8-flash)
- *   MODEL_HARD  refunds, negotiations, projects, anything with judgment (default anthropic/claude-sonnet-5)
+ *   MODEL_CHAT  short replies, calendar notes, recall           (default google/gemini-3.8-flash)
+ *   MODEL_TASK  routine browser work, reorders, forms, drafting (default anthropic/claude-sonnet-5)
+ *   MODEL_HARD  refunds, negotiations, projects, anything with judgment (default anthropic/claude-opus-5)
+ *
+ * The defaults favour a secretary that notices things over one that is cheap: a reply that misses the
+ * wrong unit number on a bill costs more than the model does. Monthly and per-task caps still apply.
  */
 export type Tier = "chat" | "task" | "hard";
 
@@ -17,7 +20,7 @@ export function modelFor(tier: Tier, t?: Tenant): string {
   if (perPlan) return perPlan;
   const def = geminiDirect()
     ? { chat: "gemini-2.5-flash-lite", task: "gemini-2.5-flash", hard: "gemini-2.5-pro" }[tier] // Google-only: Pro takes the hard tier
-    : { chat: "google/gemini-2.5-flash-lite", task: "google/gemini-3.8-flash", hard: "anthropic/claude-sonnet-5" }[tier];
+    : { chat: "google/gemini-3.8-flash", task: "anthropic/claude-sonnet-5", hard: "anthropic/claude-opus-5" }[tier];
   return process.env[`MODEL_${tier.toUpperCase()}`] || def;
 }
 

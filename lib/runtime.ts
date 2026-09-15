@@ -134,6 +134,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 
       const calls = completion.message.tool_calls ?? [];
       if (!calls.length) {
+        // The reply is what the user reads: drop the closing filler chat models add.
+        if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(completion.message.content);
         const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
         const nudge = stallNudge(row, text);
         if (nudge) {
@@ -352,6 +354,22 @@ export function stallNudge(row: SessionRow, reply: string): string | undefined {
 function taskUsedTools(messages: ChatMessage[]): boolean {
   for (let i = taskStart(messages); i < messages.length; i++) if (messages[i].role === "assistant" && messages[i].tool_calls?.length) return true;
   return false;
+}
+
+/**
+ * Closing filler a chat model tacks on ("Anything else on your mind tonight?", "Let me know if you
+ * need anything else!", "Hope this helps!"): removed before the user sees it. Only trailing sentences
+ * go; a real question stays, and a reply is never emptied.
+ */
+const FILLER = /\s*(?:(?:is there )?anything else[^.!?\n]*[.!?]|what else can (?:i|we)[^.!?\n]*[.!?]|(?:just )?let me know (?:if|when|what)[^.!?\n]*[.!?]|(?:i )?hope (?:this|that) helps[^.!?\n]*[.!?]|happy to help[^.!?\n]*[.!?]|(?:feel free|don'?t hesitate) to[^.!?\n]*[.!?]|(?:i'?m|i am) here (?:if|whenever)[^.!?\n]*[.!?]|you'?re all set[.!]|have a (?:great|good|nice)[^.!?\n]*[.!?])\s*$/i;
+export function unfilled(text: string): string {
+  let out = text.trimEnd();
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(FILLER, "");
+    if (next === out) break;
+    out = next.trimEnd();
+  }
+  return out.trim() ? out : text;
 }
 
 /** The host's request for a progress line during a long, silent task. */

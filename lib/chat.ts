@@ -11,7 +11,9 @@ export async function currentChatSession(t: Tenant): Promise<SessionRow | undefi
 
 export async function startChatSession(t: Tenant, firstMessage: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string, quote?: MessageQuote): Promise<SessionRow> {
   const recap = await recentRecap(t);
-  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, quote, recap });
+  // A thread that opens with a document or photo starts on the strong model.
+  const document = !!images?.length || firstMessage.startsWith("(Attached");
+  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, quote, recap, ...(document ? { tier: "hard" as const } : {}) });
 }
 
 /**

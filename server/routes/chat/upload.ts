@@ -3,7 +3,8 @@ import { requireTenant } from "../../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../../lib/chat.js";
 import { describeFile } from "../../../lib/documents.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
-import { appendToolResult, appendUserMessage, type SessionRow } from "../../../lib/sessions.js";
+import { modelFor, tierOfModel } from "../../../lib/router.js";
+import { appendToolResult, appendUserMessage, updateSession, type SessionRow } from "../../../lib/sessions.js";
 import { stampMessage } from "../../../lib/transcript.js";
 import { sttConfigured, transcribe } from "../../../lib/stt.js";
 
@@ -67,6 +68,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let session = await currentChatSession(t);
   if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
+  // A bill, a statement, a photo of something: reading it well is judgment work, so it runs on the
+  // strong model whatever tier the thread started on (never down mid-conversation).
+  if (session && tierOfModel(session.model ?? "", t) !== "hard") await updateSession(session.id, { model: modelFor("hard", t) });
   if (!session) session = await startChatSession(t, `${text}\n${handle}`, images);
   else if (session.pending_kind) {
     await answerPendingWith(session, isImage ? "a photo" : "a file");

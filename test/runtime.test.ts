@@ -85,3 +85,13 @@ test("shownSinceTaskStart: the ack does not count, a tell_user line does", () =>
   messages.push({ role: "tool", tool_call_id: "c", content: "ok" }, call("tell_user", { text: "Signed in, pulling up the bill" }));
   assert.equal(shownSinceTaskStart(messages), true);
 });
+
+import { unfilled } from "../lib/runtime.js";
+
+test("closing filler is stripped from replies; real content and questions stay", () => {
+  assert.equal(unfilled("Got it all locked in. Autopay takes $246.27 on Sep 21. Anything else on your mind tonight?"), "Got it all locked in. Autopay takes $246.27 on Sep 21.");
+  assert.equal(unfilled("Done. Order #112. Let me know if you need anything else!"), "Done. Order #112.");
+  assert.equal(unfilled("Tracked it. Hope this helps! Have a great night!"), "Tracked it.");
+  assert.equal(unfilled("The bill says #6L but you're in 6A. Want me to ask Con Ed to move the account to 6A?"), "The bill says #6L but you're in 6A. Want me to ask Con Ed to move the account to 6A?");
+  assert.equal(unfilled("Anything else?"), "Anything else?"); // never empty a reply
+});
