@@ -23,11 +23,15 @@ export interface ChatMessage {
   tool_call_id?: string;
   /** Instant emoji acknowledgement shown on a user message in the chat page; never sent to the model. */
   reaction?: string;
+  /** A UI-only bubble (the instant "on it" line): shown in chat, never sent to the model. */
+  ephemeral?: boolean;
 }
 
-/** Only the fields providers know; anything else (reactions, future UI metadata) stays out of the request. */
+/** Only the fields providers know; UI-only bubbles (reactions, the "on it" ack) stay out of the request. */
 export function forProvider(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map(({ role, content, name, tool_calls, tool_call_id }) => ({ role, content, ...(name ? { name } : {}), ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}) }));
+  return messages
+    .filter((m) => !m.ephemeral)
+    .map(({ role, content, name, tool_calls, tool_call_id }) => ({ role, content, ...(name ? { name } : {}), ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}) }));
 }
 
 export interface ToolDef {

@@ -27,10 +27,15 @@ const CHAT_ROLLOVER_SHARE = 0.6;
 
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
 
-/** A chat session that can do no more work: the next message must start a fresh one. */
+/**
+ * A chat session that can do no more work: the next message must start a fresh one. A one-off
+ * provider error does NOT exhaust the chat — the same thread stays open so the user can just retry
+ * and keep their context, instead of silently losing the conversation. Only a hard, terminated
+ * session or the real turn/spend limits roll over.
+ */
 export function chatSessionExhausted(row: SessionRow): boolean {
   const cap = env.plans.sessionBudgetUsd() * 100;
-  return row.status === "terminated" || row.status === "error" || row.turns >= MAX_TURNS || (cap > 0 && Number(row.cost_cents) >= cap);
+  return row.status === "terminated" || row.turns >= MAX_TURNS || (cap > 0 && Number(row.cost_cents) >= cap);
 }
 
 export async function runSession(sessionId: string, opts: { budgetMs?: number } = {}): Promise<RunOutcome> {
@@ -139,7 +144,9 @@ async function finish(t: Tenant, row: SessionRow, report: string, status: "idle"
   if (report && !silent && lastAssistantText(row.messages) !== report.trim()) row.messages.push({ role: "assistant", content: report });
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   const limitHit = row.turns >= MAX_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap);
-  const rollOver = row.kind === "chat" && (status === "error" || limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
+  // A provider error no longer terminates the chat: the thread stays open (status "error", still
+  // resumable) so the next message continues it with full context. Only the real limits roll over.
+  const rollOver = row.kind === "chat" && (limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
   if (rollOver) status = "terminated" as typeof status;
   await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
   if (report && !silent) {

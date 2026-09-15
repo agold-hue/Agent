@@ -5,8 +5,9 @@ import { appendTranscript } from "../../../lib/memory.js";
 import { isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { reactionFor } from "../../../lib/reaction.js";
-import { upgradedModel } from "../../../lib/router.js";
-import { appendUserMessage, updateSession, UsageCapError } from "../../../lib/sessions.js";
+import { researchAck } from "../../../lib/acks.js";
+import { tierFor, upgradedModel } from "../../../lib/router.js";
+import { appendAssistantMessage, appendUserMessage, updateSession, UsageCapError } from "../../../lib/sessions.js";
 import { resolvePending } from "../../../lib/tools.js";
 import { stampMessage } from "../../../lib/transcript.js";
 
@@ -27,6 +28,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .slice(-9)
       .map((m) => m.reaction!);
     const reaction = reactionFor(text, recentReactions);
+    // A task that will take real work (a price to look up, a booking, a refund, research) gets an
+    // instant "on it" bubble so the chat is never silent while the agent works. Quick chat-tier
+    // messages (acks, a calendar note, recall) do not. Wording never repeats what was just said.
+    const willResearch = tierFor(text, "chat") !== "chat";
+    const recentSaid = (session?.messages ?? []).filter((m) => m.role === "assistant" && typeof m.content === "string").slice(-6).map((m) => m.content as string);
+    let ack: string | undefined;
     let action: string;
     if (!session) {
       session = await startChatSession(t, text, undefined, reaction);
@@ -46,9 +53,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await appendUserMessage(session, stampMessage(t, text, "chat"), undefined, reaction);
       action = "sent";
     }
+    if (willResearch && (action === "started" || action === "sent")) {
+      ack = researchAck(recentSaid);
+      await appendAssistantMessage(session, ack, true);
+    }
     await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
     await kick(session.id);
-    return res.status(200).json({ session_id: session.id, action, reaction });
+    return res.status(200).json({ session_id: session.id, action, reaction, ack });
   } catch (err) {
     if (err instanceof UsageCapError) return res.status(402).json({ error: err.message });
     throw err;

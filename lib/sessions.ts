@@ -174,6 +174,12 @@ export async function appendUserMessage(row: SessionRow, text: string, images?: 
   await q("update agent_sessions set messages = messages || $2::jsonb, status = 'running', updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
+/** Append an assistant bubble (e.g. the instant "on it" ack). Ephemeral ones show in chat but are never sent to the model. */
+export async function appendAssistantMessage(row: SessionRow, text: string, ephemeral = false): Promise<void> {
+  const msg: ChatMessage = ephemeral ? { role: "assistant", content: text, ephemeral: true } : { role: "assistant", content: text };
+  await q("update agent_sessions set messages = messages || $2::jsonb, updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
+}
+
 /** Append a tool result for a pending call and mark runnable. */
 export async function appendToolResult(row: SessionRow, toolCallId: string, text: string): Promise<void> {
   const msg: ChatMessage = { role: "tool", tool_call_id: toolCallId, content: text };

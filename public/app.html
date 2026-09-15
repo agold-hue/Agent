@@ -804,6 +804,7 @@
       const data = await r.json();
       if (!r.ok) { it.text += `\n(${data.error || "failed"})`; renderList(false); if (r.status === 402) showTab("billing"); return; }
       if (data.reaction) { it.reaction = data.reaction; renderList(false); }
+      if (data.ack) { items.push({ kind: "agent", id: "ack-" + Date.now(), text: data.ack, at: new Date().toISOString() }); renderList(true); }
       sessionId = data.session_id; status = "running"; setTyping(true); setStatus("running", "working…"); openStream();
     } catch (e) { it.text += "\n(failed to send)"; renderList(false); }
     finally { $("send").disabled = false; $("text").focus(); }
