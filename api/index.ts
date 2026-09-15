@@ -16,6 +16,7 @@ import googleConnect from "../server/routes/google/connect.js";
 import googleDisconnect from "../server/routes/google/disconnect.js";
 import mailInbound from "../server/routes/mail-inbound.js";
 import me from "../server/routes/me.js";
+import models from "../server/routes/models.js";
 import receipts from "../server/routes/receipts.js";
 import run from "../server/routes/run.js";
 import stats from "../server/routes/stats.js";
@@ -50,6 +51,7 @@ const routes: Record<string, Handler> = {
   "google/disconnect": googleDisconnect,
   "mail-inbound": mailInbound,
   me,
+  models,
   receipts,
   run,
   stats,

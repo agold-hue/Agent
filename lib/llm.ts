@@ -277,6 +277,64 @@ export async function complete(opts: {
   throw lastErr ?? new LLMError("llm failed", undefined, true);
 }
 
+// ---------------------------------------------------------------- Model catalog
+
+export interface CatalogModel {
+  id: string;
+  name: string;
+  /** USD per million tokens. */
+  in: number;
+  out: number;
+  context: number;
+  tools: boolean;
+  vision: boolean;
+}
+
+let catalogCache: { at: number; models: CatalogModel[] } | undefined;
+const CATALOG_TTL = 6 * 3_600_000;
+
+/**
+ * Every model OpenRouter serves, with live prices and capabilities, so any id works in MODEL_* and
+ * is priced correctly, with no table to maintain. Cached per worker; empty when not on OpenRouter
+ * or the catalog is unreachable.
+ */
+export async function catalog(): Promise<CatalogModel[]> {
+  if (catalogCache && Date.now() - catalogCache.at < CATALOG_TTL) return catalogCache.models;
+  const base = (process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
+  if (!base.includes("openrouter.ai") || !process.env.LLM_API_KEY) return [];
+  try {
+    const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${process.env.LLM_API_KEY}` }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return catalogCache?.models ?? [];
+    const data = (await res.json()) as { data?: Array<{ id: string; name?: string; context_length?: number; pricing?: { prompt?: string; completion?: string }; architecture?: { input_modalities?: string[] }; supported_parameters?: string[] }> };
+    const models: CatalogModel[] = (data.data ?? []).map((m) => ({
+      id: m.id,
+      name: m.name ?? m.id,
+      in: Number(m.pricing?.prompt ?? 0) * 1_000_000,
+      out: Number(m.pricing?.completion ?? 0) * 1_000_000,
+      context: m.context_length ?? 0,
+      tools: (m.supported_parameters ?? []).includes("tools"),
+      vision: (m.architecture?.input_modalities ?? []).includes("image"),
+    }));
+    catalogCache = { at: Date.now(), models };
+    return models;
+  } catch (err) {
+    console.error(`[llm] catalog: ${err instanceof Error ? err.message : String(err)}`);
+    return catalogCache?.models ?? [];
+  }
+}
+
+/** Live prices for models the static table does not know; filled by warmCatalog(). */
+const livePrices = new Map<string, { in: number; out: number }>();
+const liveVision = new Set<string>();
+
+/** Load the catalog once per worker so pricing and vision checks know every model. */
+export async function warmCatalog(): Promise<void> {
+  for (const m of await catalog()) {
+    livePrices.set(m.id, { in: m.in, out: m.out });
+    if (m.vision) liveVision.add(m.id);
+  }
+}
+
 // ---------------------------------------------------------------- Pricing
 
 /** USD per million tokens. Override or extend with MODEL_PRICES='{"model":{"in":0.1,"out":0.4}}'. */
@@ -306,7 +364,9 @@ export function priceFor(modelId: string): { in: number; out: number } {
     /* ignore bad JSON */
   }
   const key = Object.keys(table).find((k) => model === k || model.endsWith(k) || k.endsWith(model));
-  return key ? table[key] : { in: 2, out: 10 }; // unknown model: assume Sonnet-class so caps still bite
+  if (key) return table[key];
+  const live = livePrices.get(model) ?? livePrices.get(model.replace(/:[a-z]+$/, ""));
+  return live ?? { in: 2, out: 10 }; // unknown model: assume Sonnet-class so caps still bite
 }
 
 /** What a cached input token costs relative to a fresh one, per model family. */
@@ -334,8 +394,10 @@ function resolveModelName(modelId: string): string {
 
 /** Whether we may send screenshots to this model. */
 export function supportsVision(model: string): boolean {
+  const primary = modelList(model)[0] ?? model;
+  if (liveVision.has(primary) || liveVision.has(resolveModelName(primary))) return true;
   const list = (process.env.VISION_MODELS ?? "gemini,gpt-4o,gpt-5,claude,qwen-vl,pixtral,llama-4").split(",").map((s) => s.trim().toLowerCase());
-  return list.some((s) => s && model.toLowerCase().includes(s));
+  return list.some((s) => s && primary.toLowerCase().includes(s));
 }
 
 /** Rough token estimate for context budgeting. */

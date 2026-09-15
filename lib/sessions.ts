@@ -3,7 +3,7 @@ import { loadSystemPrompt } from "./agent-config.js";
 import { randomToken } from "./crypto.js";
 import { env } from "./env.js";
 import type { ChatMessage } from "./llm.js";
-import { ensureSeeded } from "./memory.js";
+import { ensureSeeded, readMemory } from "./memory.js";
 import { modelFor, tierFor } from "./router.js";
 import { ensureProvisioned, type Tenant } from "./tenant.js";
 
@@ -81,7 +81,7 @@ export async function createSession(
     ? { role: "user", content: [{ type: "text", text: opts.text }, ...opts.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))] }
     : { role: "user", content: opts.text };
   if (opts.reaction) first.reaction = opts.reaction;
-  const messages: ChatMessage[] = [{ role: "system", content: systemFor(t) }, ...(opts.recap ? [{ role: "user" as const, content: opts.recap }] : []), first];
+  const messages: ChatMessage[] = [{ role: "system", content: await systemFor(t) }, ...(opts.recap ? [{ role: "user" as const, content: opts.recap }] : []), first];
   const row = await one<SessionRow>(
     `insert into agent_sessions (id, user_id, channel, kind, title, status, reply_tag, model, messages, requester, email_subject, last_message_id, correspondent, review_day, digest_key, followup_id)
      values ($1,$2,$3,$4,$5,'running',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
@@ -108,7 +108,46 @@ export async function createSession(
 }
 
 /** Per-customer preamble appended to the shared system prompt. */
-export function systemFor(t: Tenant): string {
+/** Memory files the model gets inline, so it never has to look up (or ask for) a default it already has. */
+const KNOWN_FILES = ["standing_instructions.md", "profile.md", "facts.md", "contacts.md", "preferences.md"];
+const KNOWN_BUDGET = Number(process.env.KNOWN_FACTS_CHARS ?? 9000);
+
+/** The user's own facts, defaults and contacts, trimmed to the budget; empty template lines are dropped. */
+export async function knownFacts(t: Tenant): Promise<string> {
+  const parts: string[] = [];
+  let used = 0;
+  for (const path of KNOWN_FILES) {
+    const raw = (await readMemory(t, path).catch(() => null)) ?? "";
+    const lines = raw
+      .split("\n")
+      .filter((l) => {
+        const line = l.trim();
+        if (!line) return false;
+        if (line.includes("___")) return false; // unfilled template value
+        if (/^-\s*[^:]*:\s*$/.test(line)) return false; // "- Phone:" with nothing after it
+        if (/^`/.test(line) || /^\(/.test(line) || /^Examples? of /i.test(line)) return false; // template hints
+        if (/^(Fill (this|in)|Facts the playbooks|Durable things|People and companies the agent)/i.test(line)) return false;
+        return true;
+      })
+      .filter((l, i, arr) => !(l.trim().startsWith("#") && (i === arr.length - 1 || arr[i + 1].trim().startsWith("#")))); // headings with nothing under them
+    if (!lines.length) continue;
+    let block = `## ${path}\n${lines.join("\n")}`;
+    if (used + block.length > KNOWN_BUDGET) block = block.slice(0, Math.max(0, KNOWN_BUDGET - used)) + "\n... (read the file for the rest)";
+    parts.push(block);
+    used += block.length;
+    if (used >= KNOWN_BUDGET) break;
+  }
+  return parts.join("\n\n");
+}
+
+export async function systemFor(t: Tenant): Promise<string> {
+  const known = await knownFacts(t);
+  const head = systemHead(t);
+  if (!known) return head;
+  return `${head}\n\n# What you already know about this user (from their memory files; never ask for any of it)\n${known}`;
+}
+
+function systemHead(t: Tenant): string {
   const base = loadPrompt();
   const facts = [
     `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,
