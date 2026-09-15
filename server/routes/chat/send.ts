@@ -1,12 +1,12 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../../lib/auth.js";
-import { currentChatSession, startChatSession } from "../../lib/chat.js";
-import { appendTranscript } from "../../lib/memory.js";
-import { isApprovalReply } from "../../lib/policy.js";
-import { kick } from "../../lib/runtime.js";
-import { appendUserMessage, UsageCapError } from "../../lib/sessions.js";
-import { resolvePending } from "../../lib/tools.js";
-import { stampMessage } from "../../lib/transcript.js";
+import { requireTenant } from "../../../lib/auth.js";
+import { currentChatSession, startChatSession } from "../../../lib/chat.js";
+import { appendTranscript } from "../../../lib/memory.js";
+import { isApprovalReply } from "../../../lib/policy.js";
+import { kick } from "../../../lib/runtime.js";
+import { appendUserMessage, UsageCapError } from "../../../lib/sessions.js";
+import { resolvePending } from "../../../lib/tools.js";
+import { stampMessage } from "../../../lib/transcript.js";
 
 /** POST { text } -> { session_id, action }. Sends into the live chat session (or starts one) and kicks the worker. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

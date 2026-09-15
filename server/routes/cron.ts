@@ -1,16 +1,15 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { ensureSchema } from "../lib/db.js";
-import { env } from "../lib/env.js";
-import { takeDueFollowUps } from "../lib/followups.js";
-import { attachmentsFor, takeUntriaged } from "../lib/inbound.js";
-import { isBatchMinute, takeDigest } from "../lib/notify.js";
-import { kick } from "../lib/runtime.js";
-import { createSession, expiredAskUserSessions, hasDigestKey, hasSessionOfKindToday, staleRunnableSessions, UsageCapError } from "../lib/sessions.js";
-import { activeTenants, tenantById, type Tenant } from "../lib/tenant.js";
-import { expirePending } from "../lib/tools.js";
-import { localClock, stampMessage } from "../lib/transcript.js";
+import { ensureSchema } from "../../lib/db.js";
+import { env } from "../../lib/env.js";
+import { takeDueFollowUps } from "../../lib/followups.js";
+import { attachmentsFor, takeUntriaged } from "../../lib/inbound.js";
+import { isBatchMinute, takeDigest } from "../../lib/notify.js";
+import { kick } from "../../lib/runtime.js";
+import { createSession, expiredAskUserSessions, hasDigestKey, hasSessionOfKindToday, staleRunnableSessions, UsageCapError } from "../../lib/sessions.js";
+import { activeTenants, tenantById, type Tenant } from "../../lib/tenant.js";
+import { expirePending } from "../../lib/tools.js";
+import { localClock, stampMessage } from "../../lib/transcript.js";
 
-export const config = { maxDuration: 300 };
 
 /**
  * Every minute, for every active customer, one query per concern. Resumes sessions whose worker

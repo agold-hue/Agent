@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requestLoginCode } from "../../lib/auth.js";
-import { env } from "../../lib/env.js";
+import { requestLoginCode } from "../../../lib/auth.js";
+import { env } from "../../../lib/env.js";
 
 /** POST { email } -> emails a six-digit code. Same response whether or not the account exists. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../../lib/auth.js";
-import { signToken } from "../../lib/crypto.js";
-import { env } from "../../lib/env.js";
-import { GOOGLE_SCOPES, oauthClient } from "../../lib/google.js";
+import { requireTenant } from "../../../lib/auth.js";
+import { signToken } from "../../../lib/crypto.js";
+import { env } from "../../../lib/env.js";
+import { GOOGLE_SCOPES, oauthClient } from "../../../lib/google.js";
 
 /** Sends the customer to Google to connect their own calendar, inbox and Drive. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

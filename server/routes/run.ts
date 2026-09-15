@@ -1,8 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { env } from "../lib/env.js";
-import { kick, runSession } from "../lib/runtime.js";
+import { env } from "../../lib/env.js";
+import { kick, runSession } from "../../lib/runtime.js";
 
-export const config = { maxDuration: 300 };
 
 /** Internal worker: runs one session's loop for up to ~4 minutes, then re-kicks itself if unfinished. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

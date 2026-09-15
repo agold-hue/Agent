@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { verifyToken } from "../../lib/crypto.js";
-import { env } from "../../lib/env.js";
-import { oauthClient } from "../../lib/google.js";
-import { setGoogleToken, tenantById } from "../../lib/tenant.js";
+import { verifyToken } from "../../../lib/crypto.js";
+import { env } from "../../../lib/env.js";
+import { oauthClient } from "../../../lib/google.js";
+import { setGoogleToken, tenantById } from "../../../lib/tenant.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const code = typeof req.query.code === "string" ? req.query.code : "";

@@ -1,33 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/cron.ts": {
+    "api/index.ts": {
       "maxDuration": 300,
-      "includeFiles": "{db,agent}/**"
-    },
-    "api/run.ts": {
-      "maxDuration": 300,
-      "includeFiles": "{db,agent}/**"
-    },
-    "api/mail-inbound.ts": {
-      "maxDuration": 120,
-      "includeFiles": "{db,agent}/**"
-    },
-    "api/stripe-webhook.ts": {
-      "maxDuration": 30
-    },
-    "api/chat/send.ts": {
-      "maxDuration": 60,
-      "includeFiles": "{db,agent}/**"
-    },
-    "api/chat/history.ts": {
-      "maxDuration": 60
-    },
-    "api/chat/upload.ts": {
-      "maxDuration": 60,
-      "includeFiles": "{db,agent}/**"
-    },
-    "api/auth/request-code.ts": {
       "includeFiles": "{db,agent}/**"
     }
   },
@@ -35,6 +10,12 @@
     {
       "path": "/api/cron",
       "schedule": "* * * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/:path((?!index).*)",
+      "destination": "/api/index?path=:path"
     }
   ]
 }

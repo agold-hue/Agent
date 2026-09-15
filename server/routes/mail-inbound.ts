@@ -1,16 +1,15 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { env } from "../lib/env.js";
-import { logInbound } from "../lib/inbound.js";
-import { parseInbound, stripQuoted, type InboundMail } from "../lib/mail.js";
-import { appendTranscript } from "../lib/memory.js";
-import { isApprovalReply } from "../lib/policy.js";
-import { kick } from "../lib/runtime.js";
-import { appendUserMessage, createSession, sessionByReplyTag, updateSession, UsageCapError } from "../lib/sessions.js";
-import { hasAccess, requesterAddresses, tenantBySlug } from "../lib/tenant.js";
-import { resolvePending } from "../lib/tools.js";
-import { stampMessage } from "../lib/transcript.js";
+import { env } from "../../lib/env.js";
+import { logInbound } from "../../lib/inbound.js";
+import { parseInbound, stripQuoted, type InboundMail } from "../../lib/mail.js";
+import { appendTranscript } from "../../lib/memory.js";
+import { isApprovalReply } from "../../lib/policy.js";
+import { kick } from "../../lib/runtime.js";
+import { appendUserMessage, createSession, sessionByReplyTag, updateSession, UsageCapError } from "../../lib/sessions.js";
+import { hasAccess, requesterAddresses, tenantBySlug } from "../../lib/tenant.js";
+import { resolvePending } from "../../lib/tools.js";
+import { stampMessage } from "../../lib/transcript.js";
 
-export const config = { api: { bodyParser: { sizeLimit: "35mb" } } };
 
 /** Attachments become part of the message: images for the model to see, text inlined, others described. */
 function describeAttachments(mail: InboundMail): { text: string; images: Array<{ mimeType: string; base64: string }> } {

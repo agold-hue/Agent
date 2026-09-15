@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../lib/auth.js";
-import { listItems } from "../lib/daily.js";
-import { listFollowUps } from "../lib/followups.js";
-import { runCalendar } from "../lib/google.js";
-import { localClock } from "../lib/transcript.js";
+import { requireTenant } from "../../lib/auth.js";
+import { listItems } from "../../lib/daily.js";
+import { listFollowUps } from "../../lib/followups.js";
+import { runCalendar } from "../../lib/google.js";
+import { localClock } from "../../lib/transcript.js";
 
 /**
  * GET ?days=N (default 3): the "what's today" screen. Tracked items due within N days (bills, packages,

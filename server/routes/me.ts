@@ -1,10 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../lib/auth.js";
-import { monthUsageCents } from "../lib/sessions.js";
-import { env } from "../lib/env.js";
-import { one } from "../lib/db.js";
-import { sttConfigured } from "../lib/stt.js";
-import { agentAddress, hasAccess, updateSettings, type TenantSettings } from "../lib/tenant.js";
+import { requireTenant } from "../../lib/auth.js";
+import { monthUsageCents } from "../../lib/sessions.js";
+import { env } from "../../lib/env.js";
+import { one } from "../../lib/db.js";
+import { sttConfigured } from "../../lib/stt.js";
+import { agentAddress, hasAccess, updateSettings, type TenantSettings } from "../../lib/tenant.js";
 
 const SETTABLE: Array<keyof TenantSettings> = [
   "owner_name",

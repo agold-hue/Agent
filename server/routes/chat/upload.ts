@@ -1,12 +1,11 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../../lib/auth.js";
-import { currentChatSession, startChatSession } from "../../lib/chat.js";
-import { kick } from "../../lib/runtime.js";
-import { appendUserMessage } from "../../lib/sessions.js";
-import { stampMessage } from "../../lib/transcript.js";
-import { sttConfigured, transcribe } from "../../lib/stt.js";
+import { requireTenant } from "../../../lib/auth.js";
+import { currentChatSession, startChatSession } from "../../../lib/chat.js";
+import { kick } from "../../../lib/runtime.js";
+import { appendUserMessage } from "../../../lib/sessions.js";
+import { stampMessage } from "../../../lib/transcript.js";
+import { sttConfigured, transcribe } from "../../../lib/stt.js";
 
-export const config = { api: { bodyParser: { sizeLimit: "6mb" } } };
 
 /**
  * POST { filename, mimeType, data (base64), voice? }. Images go to the model directly (if it can see);

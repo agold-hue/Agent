@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../../lib/auth.js";
-import { portalUrl } from "../../lib/billing.js";
+import { requireTenant } from "../../../lib/auth.js";
+import { portalUrl } from "../../../lib/billing.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).end();

@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../lib/auth.js";
-import { deleteCredential, listCredentials, saveCredential } from "../lib/credentials.js";
+import { requireTenant } from "../../lib/auth.js";
+import { deleteCredential, listCredentials, saveCredential } from "../../lib/credentials.js";
 
 /**
  * The customer's site logins. GET lists (no secrets). POST { domain, username, password, totp_secret?, notes? }

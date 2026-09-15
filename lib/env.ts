@@ -19,7 +19,7 @@ export const env = {
   cronSecret: () => req("CRON_SECRET"),
   llm: {
     baseUrl: () => opt("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
-    apiKey: () => process.env.LLM_API_KEY || process.env.GEMINI_API_KEY || req("LLM_API_KEY"),
+    apiKey: () => (process.env.LLM_PROVIDER === "openrouter" ? req("LLM_API_KEY") : process.env.GEMINI_API_KEY || process.env.LLM_API_KEY || req("LLM_API_KEY")),
   },
   browserbase: {
     configured: () => !!(process.env.BROWSERBASE_API_KEY && process.env.BROWSERBASE_PROJECT_ID),

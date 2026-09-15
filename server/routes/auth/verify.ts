@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { verifyLoginCode } from "../../lib/auth.js";
+import { verifyLoginCode } from "../../../lib/auth.js";
 
 /** POST { email, code } -> sets the session cookie; creates the account on first login. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

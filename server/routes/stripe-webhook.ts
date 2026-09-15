@@ -1,11 +1,13 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import type Stripe from "stripe";
-import { env } from "../lib/env.js";
-import { applySubscription, stripe } from "../lib/billing.js";
+import { env } from "../../lib/env.js";
+import { applySubscription, stripe } from "../../lib/billing.js";
 
-export const config = { api: { bodyParser: false } };
 
+/** The API entry point reads the body once and keeps the raw bytes for signature checks. */
 async function rawBody(req: VercelRequest): Promise<Buffer> {
+  const pre = (req as VercelRequest & { rawBody?: Buffer }).rawBody;
+  if (pre) return pre;
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(typeof c === "string" ? Buffer.from(c) : c);
   return Buffer.concat(chunks);

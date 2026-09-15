@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../../lib/auth.js";
-import { currentChatSession, recentNotices, toChatItems } from "../../lib/chat.js";
+import { requireTenant } from "../../../lib/auth.js";
+import { currentChatSession, recentNotices, toChatItems } from "../../../lib/chat.js";
 
 /** GET -> { session_id, status, pending, items[] }. The page polls this while the agent is running. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

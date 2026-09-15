@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../lib/auth.js";
-import { stats } from "../lib/daily.js";
+import { requireTenant } from "../../lib/auth.js";
+import { stats } from "../../lib/daily.js";
 
 /** GET: the scoreboard. Tasks done, money back, hours saved; this month and all time; latest wins. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

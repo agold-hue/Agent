@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../lib/auth.js";
-import { listReceipts, receiptImage } from "../lib/daily.js";
+import { requireTenant } from "../../lib/auth.js";
+import { listReceipts, receiptImage } from "../../lib/daily.js";
 
 /** GET: done receipts (proof of completed orders, payments, bookings). GET ?image=<id>: its screenshot. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {

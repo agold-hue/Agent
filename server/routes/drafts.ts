@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireTenant } from "../lib/auth.js";
-import { deleteDraft, listDrafts, sendDraft } from "../lib/google.js";
+import { requireTenant } from "../../lib/auth.js";
+import { deleteDraft, listDrafts, sendDraft } from "../../lib/google.js";
 
 /**
  * The swipe-to-approve inbox. GET: the customer's Gmail drafts (the agent writes replies there in

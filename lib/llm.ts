@@ -67,18 +67,22 @@ function providers(): Record<string, { base_url: string; api_key: string }> {
 
 export const GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 
-/** True when the default provider is Google's own Gemini endpoint (GEMINI_API_KEY shortcut or LLM_BASE_URL). */
+/**
+ * True when calls go to Google's own Gemini endpoint. GEMINI_API_KEY wins whenever it is set (a Google
+ * key is usually the one with credit); LLM_PROVIDER=openrouter forces the OpenRouter key instead.
+ */
 export function geminiDirect(): boolean {
-  if (process.env.LLM_API_KEY) return (process.env.LLM_BASE_URL ?? "").includes("generativelanguage.googleapis.com");
-  return !!process.env.GEMINI_API_KEY;
+  if (process.env.LLM_PROVIDER === "openrouter") return false;
+  if (process.env.GEMINI_API_KEY) return true;
+  return !!process.env.LLM_API_KEY && (process.env.LLM_BASE_URL ?? "").includes("generativelanguage.googleapis.com");
 }
 
 export function resolveModel(model: string): { provider: Provider; model: string } {
   for (const [prefix, p] of Object.entries(providers())) {
     if (model.startsWith(prefix)) return { provider: { baseUrl: p.base_url.replace(/\/$/, ""), apiKey: p.api_key }, model: model.slice(prefix.length) };
   }
-  // Shortcut: GEMINI_API_KEY alone routes everything to Google's OpenAI-compatible endpoint.
-  if (!process.env.LLM_API_KEY && process.env.GEMINI_API_KEY) {
+  // GEMINI_API_KEY routes everything to Google's OpenAI-compatible endpoint (unless LLM_PROVIDER=openrouter).
+  if (process.env.GEMINI_API_KEY && process.env.LLM_PROVIDER !== "openrouter") {
     return { provider: { baseUrl: GEMINI_OPENAI_URL, apiKey: process.env.GEMINI_API_KEY }, model: model.replace(/^google\//, "") };
   }
   const k = process.env.LLM_API_KEY;
