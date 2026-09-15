@@ -1,5 +1,5 @@
 import type { ChatMessage } from "./llm.js";
-import { chatSessionsSince, createSession, latestChatSession, recentProactiveSessions, type SessionRow } from "./sessions.js";
+import { chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, type SessionRow } from "./sessions.js";
 import { stampMessage } from "./transcript.js";
 import type { Tenant } from "./tenant.js";
 
@@ -21,11 +21,12 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
   if (!previous) return undefined;
   const lines: string[] = [];
   for (const m of previous.messages) {
+    if (m.ephemeral) continue; // the "on it" ack and progress lines are not part of the record
     if (m.role === "user" && typeof m.content === "string" && !m.content.startsWith("(")) lines.push(`User: ${m.content.replace(/^\[[^\]]+\]\n/, "").slice(0, 400)}`);
-    else if (m.role === "assistant" && typeof m.content === "string" && m.content.trim() && !m.tool_calls?.length) lines.push(`You: ${m.content.trim().slice(0, 400)}`);
+    else if (m.role === "assistant" && typeof m.content === "string" && m.content.trim() && !m.tool_calls?.length) lines.push(`You: ${m.content.trim().slice(0, 600)}`);
   }
   if (!lines.length) return undefined;
-  return `(Earlier in this chat, before this task started. Continue naturally; do not repeat it.)\n${lines.slice(-8).join("\n")}`;
+  return `(Earlier in this chat, before this task started. Continue naturally; do not repeat it. Anything the browser was in the middle of is gone; start that over if it is still wanted.)\n${lines.slice(-12).join("\n")}`;
 }
 
 export type ChatItem =
@@ -38,12 +39,15 @@ export type ChatItem =
 export function toChatItems(row: SessionRow): ChatItem[] {
   const items: ChatItem[] = [];
   const answered = new Set(row.messages.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
-  const at = new Date(row.updated_at).toISOString();
+  // Messages from before timestamps were recorded fall back to the session's last update.
+  const fallbackAt = new Date(row.updated_at).toISOString();
   row.messages.forEach((m: ChatMessage, i) => {
+    const at = m.at ?? fallbackAt;
     if (m.role === "user") {
-      const text = (typeof m.content === "string" ? m.content : (m.content ?? []).map((p) => (p.type === "text" ? p.text : "")).join("\n")).replace(/^\[[^\]]+\]\n/, "");
-      if (text.startsWith("(You are now running") || text.startsWith("(Earlier in this chat") || text.startsWith("(Not done yet:") || text === "(screenshot)") return;
-      items.push({ kind: "user", id: `${row.id}-${i}`, text, at, reaction: m.reaction });
+      const raw = messageText(m);
+      // Host notes (nudges, recaps, screenshots, model switches) are never stamped; everything the user sent is.
+      if (raw.startsWith("(")) return;
+      items.push({ kind: "user", id: `${row.id}-${i}`, text: raw.replace(/^\[[^\]]+\]\n/, ""), at, reaction: m.reaction });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
       if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at });
@@ -59,7 +63,7 @@ export function toChatItems(row: SessionRow): ChatItem[] {
       }
     }
   });
-  items.push({ kind: "status", id: `${row.id}-status`, status: row.status, at });
+  items.push({ kind: "status", id: `${row.id}-status`, status: row.status, at: fallbackAt });
   return items;
 }
 
@@ -105,6 +109,8 @@ export function activityOf(row: SessionRow | undefined): string | null {
         return "Writing an email…";
       case "escalate_model":
         return "Bringing in a stronger model…";
+      case "tell_user":
+        return "Typing…";
       default:
         return "Working…";
     }

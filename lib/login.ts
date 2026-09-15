@@ -1,5 +1,6 @@
 import type { Page } from "playwright-core";
 import { attach } from "./browser.js";
+import { pageText } from "./browser-tools.js";
 import { findCredential, registrableDomain } from "./credentials.js";
 import { env } from "./env.js";
 import { recentCodes } from "./inbound.js";
@@ -94,6 +95,13 @@ const OTP_SELECTORS = [
   'input[inputmode="numeric"]',
 ];
 const SUBMIT_TEXT = /^(sign in|log in|login|continue|next|submit|verify|confirm|sign in with password)$/i;
+/** The page is asking how to deliver a second-factor code (text or email, "send code") rather than showing the code box. */
+const MFA_CHOOSER = /verification code|security code|one-time (code|passcode|password)|verify (your identity|it'?s you)|two-step|two-factor|2fa|send (me |you )?(a |the )?code|text message|authentication code|confirm your identity/i;
+/** Buttons that plainly send a code; generic Continue/Next only count once a delivery option was picked. */
+const MFA_SEND = /^(send( the| me a)?( code)?|text me( a code)?|text|sms|send text( message)?)$/i;
+const MFA_NEXT = /^(continue|next|submit|verify)$/i;
+/** The site said no to the saved password (or locked the account); retrying will not help. */
+const REJECTED = /incorrect|invalid (email|password|username|login|credentials)|doesn'?t match|does not match|not recognized|wrong password|couldn'?t sign you in|unable to sign in|account (is )?locked|too many attempts|try again later/i;
 
 async function firstVisible(page: Page, selectors: string[]) {
   // Verification steps often render inside an iframe (card issuers, some banks): search every frame.
@@ -137,6 +145,48 @@ async function clickSubmit(page: Page, near?: ReturnType<Page["locator"]>) {
 async function settle(page: Page, ms = 2500) {
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await page.waitForTimeout(ms);
+}
+
+/** True when the page is a "how should we send your code" step. */
+async function isMfaChooser(page: Page): Promise<boolean> {
+  return MFA_CHOOSER.test(await pageText(page).catch(() => ""));
+}
+
+/**
+ * On a "how should we send your code" step, choose the text-message option and send it, so the code
+ * reaches the user's phone without a round of snapshots. Best effort; returns whether anything was clicked.
+ */
+async function requestTextCode(page: Page): Promise<boolean> {
+  const option = page
+    .getByRole("radio", { name: /text|sms|phone|mobile/i })
+    .or(page.getByLabel(/text( message)?|sms|phone|mobile/i))
+    .or(page.getByRole("button", { name: /text me|send (a )?text|sms|text message/i }))
+    .first();
+  let clicked = false;
+  try {
+    if ((await option.count()) > 0 && (await option.isVisible())) {
+      await option.click({ timeout: 5000 });
+      clicked = true;
+      await page.waitForTimeout(800);
+    }
+  } catch {
+    /* no such option; try the send button alone */
+  }
+  const buttons = page.locator('button, input[type="submit"], [role="button"]');
+  const n = await buttons.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const b = buttons.nth(i);
+    try {
+      const label = ((await b.innerText().catch(() => "")) || (await b.getAttribute("value")) || (await b.getAttribute("aria-label")) || "").trim();
+      if ((MFA_SEND.test(label) || (clicked && MFA_NEXT.test(label))) && (await b.isVisible())) {
+        await b.click({ timeout: 5000 });
+        return true;
+      }
+    } catch {
+      /* next */
+    }
+  }
+  return clicked;
 }
 
 async function fillOtp(page: Page, code: string) {
@@ -204,7 +254,16 @@ export async function loginToSite(t: Tenant, opts: {
     await settle(page, 4000);
     await tagFields(page);
 
-    // Second factor.
+    // Second factor. Some sites first ask how to send the code: pick text message and send it.
+    if (!(await firstVisible(page, OTP_SELECTORS)) && !(await firstVisible(page, PASS_SELECTORS)) && (await isMfaChooser(page))) {
+      if (await requestTextCode(page)) {
+        await settle(page, 3500);
+        await tagFields(page);
+      }
+      if (!(await firstVisible(page, OTP_SELECTORS))) {
+        return { status: "needs_code", ask: `${domain} wants to send a verification code but I could not pick the delivery option. Snapshot the page, click the text-message option and its send button, call request_code, and when the user sends the code call login again with code.`, url: page.url() };
+      }
+    }
     if (await firstVisible(page, OTP_SELECTORS)) {
       let code = cred.totp;
       if (!code && env.mail.configured()) {
@@ -224,7 +283,11 @@ export async function loginToSite(t: Tenant, opts: {
 
     await tagFields(page);
     if (await firstVisible(page, PASS_SELECTORS)) {
-      return { status: "needs_user", reason: "Password form is still showing after submit; the site may have rejected the login or shown a challenge.", url: page.url() };
+      const text = await pageText(page).catch(() => "");
+      if (REJECTED.test(text)) {
+        return { status: "needs_user", reason: "The site rejected the saved password (it says the login is wrong or the account is locked). Do not retry; tell the user in one line to check this login under Settings > Logins.", url: page.url() };
+      }
+      return { status: "needs_user", reason: "Password form is still showing after submit; the site may have shown a challenge (captcha). Take one screenshot; if it is a captcha or the same form, tell the user rather than retrying.", url: page.url() };
     }
     return { status: "logged_in", url: page.url(), title: await page.title(), account: cred.username };
   } finally {

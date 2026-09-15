@@ -23,6 +23,24 @@ export function autoApprove(t: Tenant, input: CheckpointInput): { ok: boolean; r
   return { ok: false, reason: "requires the user's approval" };
 }
 
+/**
+ * A verification code in a short message the user sent ("905168", "code is 905168", "it's 12 34 56").
+ * Only short messages count: a long sentence with a number in it is not a code.
+ */
+export function codeIn(text: string): string | undefined {
+  const t = text.trim().replace(/^\[[^\]]+\]\n/, "");
+  if (t.length > 80) return undefined;
+  const m = t.match(/(?:^|\b(?:code|is|it'?s|:)\s*)(\d[\d\s-]{2,9}\d)\s*[.!]?$/i) ?? t.match(/^\s*(\d{4,8})\s*$/);
+  if (!m) return undefined;
+  const digits = m[1].replace(/\D/g, "");
+  return digits.length >= 4 && digits.length <= 8 ? digits : undefined;
+}
+
+/** The host's hint to the model when a code arrives, so it is entered instead of read as chat. */
+export function codeHint(code: string): string {
+  return `(That looks like a verification code: ${code}. If a site is waiting for one, enter it now with login(domain, code) or browser_type into the code field, then continue. Never repeat the code back to the user.)`;
+}
+
 export function isApprovalReply(text: string): boolean {
   const first = text.trim().split(/\r?\n/)[0]?.trim().toLowerCase() ?? "";
   return /^(yes|y|yes please|approve|approved|ok|okay|go|go ahead|do it|confirm|confirmed|proceed|send it|👍)\b/.test(first);

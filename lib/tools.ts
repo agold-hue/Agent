@@ -9,9 +9,9 @@ import { loginToSite } from "./login.js";
 import { sendAgentMail } from "./mail.js";
 import { appendMemory, deleteMemory, grepMemory, listMemory, readMemory, writeMemory } from "./memory.js";
 import { notifyOwner } from "./notify.js";
-import { autoApprove, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
+import { autoApprove, codeHint, codeIn, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
 import { modelFor, nextTier, tierOfModel } from "./router.js";
-import { appendToolResult, updateSession, type SessionRow } from "./sessions.js";
+import { appendAssistantMessage, appendToolResult, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
 export interface SendEmailInput {
@@ -177,6 +177,15 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const id = await addReceipt(t, { sessionId: row.id, title: s("title"), confirmation: args.confirmation ? s("confirmation") : undefined, details: args.details ? s("details") : undefined, image });
         return { text: JSON.stringify({ receipt_id: id, screenshot: !!image }) };
       }
+      case "tell_user": {
+        // A progress line the user sees at once, without ending the turn. The chat copy is UI-only;
+        // the model remembers what it said through this call's arguments.
+        const text = s("text").trim();
+        if (!text) return { text: "Nothing to show; pass text." };
+        if (row.channel !== "chat") return { text: "The user is on email, where only your final report is delivered. Noted; continue and put it in the report." };
+        await appendAssistantMessage(row, text.slice(0, 500), true);
+        return { text: "Shown to the user. Continue the task; your final reply is still needed when it is done." };
+      }
       case "escalate_model": {
         const next = nextTier(tierOfModel(row.model ?? "", t));
         if (!next) return { text: "You are already on the most capable model. Keep going with what you have, or tell the user where you are stuck." };
@@ -211,7 +220,8 @@ export async function resolvePending(t: Tenant, row: SessionRow, userText: strin
       text = `NOT SENT. The user replied:\n\n${userText}\n\nRevise per their instructions or drop it.`;
     }
   } else {
-    text = `The user answered:\n\n${userText}`;
+    const code = codeIn(userText);
+    text = `The user answered:\n\n${userText}${code ? `\n\n${codeHint(code)}` : ""}`;
   }
   await appendToolResult(row, row.pending_event_id, text);
 }

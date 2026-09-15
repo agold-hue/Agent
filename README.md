@@ -28,7 +28,7 @@ Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwi
 
 | Area | Where | Notes |
 | --- | --- | --- |
-| Agent loop | `lib/runtime.ts`, `api/run.ts` | Runs ~4 minutes per invocation, persists after every turn, re-kicks itself; lease prevents double runs; cron resumes stalls |
+| Agent loop | `lib/runtime.ts`, `api/run.ts` | Runs ~4 minutes per invocation, persists after every turn, re-kicks itself; lease prevents double runs; cron resumes stalls. Budgets are per task (`MAX_TURNS_PER_TASK`, `TASK_TIME_LIMIT_MINUTES`); a stopped task ends with a model-written summary of where it got to; a loop guard catches a model repeating the same step or cycle (`LOOP_LIMIT`), escalates once, then stops |
 | Provider client | `lib/llm.ts` | Plain fetch to `/chat/completions` with tools; retries; usage → cost |
 | Router | `lib/router.ts` | Tier heuristics, per-plan model overrides, escalation |
 | Tools | `lib/agent-config.ts`, `lib/tools.ts`, `lib/browser-tools.ts` | All server-side; the model never sees a password |
@@ -83,7 +83,7 @@ Sign up with an email code, start the trial, chat at `/app.html` or email their 
 
 ## Developing
 
-`npm run typecheck`. Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`.
+`npm run typecheck` and `npm test` (unit tests for the loop's pure parts: budgets, loop detection, nudges, code detection, chat rendering). Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`.
 
 ### Shipping changes to existing customers
 

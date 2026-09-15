@@ -22,7 +22,7 @@ export function modelFor(tier: Tier, t?: Tenant): string {
 }
 
 const HARD = /\b(refund|dispute|chargeback|negotiat|escalat|complain|appeal|cancel(l)?ation|contract|offer|mortgage|realtor|broker|lawyer|insurance claim|denied|refus|buy (me )?a (house|car)|find (me )?the best|compare|research|plan (a|my) trip|book (a|my) flight|hire|quote)s?\b/i;
-const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|coned|utility|bill|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
+const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|con ?ed(ison)?|utility|bill|balance|statement|due date|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
 
 /** Pick a tier from the request text and where it came from. Cheap heuristics; wrong guesses can escalate. */
 export function tierFor(text: string, kind: string): Tier {

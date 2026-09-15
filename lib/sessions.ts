@@ -44,6 +44,53 @@ export interface SessionRow {
 
 export class UsageCapError extends Error {}
 
+const now = () => new Date().toISOString();
+
+/** Text of a message: the string, or the text parts of a multimodal message. */
+export function messageText(m: ChatMessage): string {
+  if (typeof m.content === "string") return m.content;
+  return (m.content ?? []).filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
+}
+
+/**
+ * Whether a user-role message came from the user (a chat line, an email, an upload) rather than from
+ * the host. Everything the user sends is stamped `[time via channel]`; host notes (nudges, recaps,
+ * screenshots, "(You are now running...)") never are, and start with "(".
+ */
+export function isUserMessage(m: ChatMessage): boolean {
+  return m.role === "user" && !m.ephemeral && messageText(m).startsWith("[");
+}
+
+/**
+ * Where the current task starts: the index of the user's latest real message. Step budgets and the
+ * task clock count from here, so a long chat does not exhaust a new task before it begins.
+ */
+export function taskStart(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i > 0; i--) if (isUserMessage(messages[i])) return i;
+  return 1;
+}
+
+/**
+ * When the current task's clock started: the user's latest message, or their latest answer to a
+ * question or code request (those arrive as tool results stamped by appendToolResult; the loop's own
+ * tool results carry no `at`). Waiting for the user never counts against the task. Undefined for
+ * sessions from before timestamps were recorded.
+ */
+export function taskClockStart(messages: ChatMessage[]): number | undefined {
+  for (let i = messages.length - 1; i > 0; i--) {
+    const m = messages[i];
+    if (isUserMessage(m) || (m.role === "tool" && m.at)) return m.at ? new Date(m.at).getTime() : undefined;
+  }
+  return undefined;
+}
+
+/** How many model turns the current task has used. */
+export function taskTurns(messages: ChatMessage[]): number {
+  let n = 0;
+  for (let i = taskStart(messages); i < messages.length; i++) if (messages[i].role === "assistant" && !messages[i].ephemeral) n++;
+  return n;
+}
+
 export async function getSession(id: string): Promise<SessionRow | undefined> {
   return one<SessionRow>("select * from agent_sessions where id = $1", [id]);
 }
@@ -78,8 +125,8 @@ export async function createSession(
   const model = modelFor(tier, t);
   const id = `s_${Date.now().toString(36)}${randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, "")}`;
   const first: ChatMessage = opts.images?.length
-    ? { role: "user", content: [{ type: "text", text: opts.text }, ...opts.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))] }
-    : { role: "user", content: opts.text };
+    ? { role: "user", content: [{ type: "text", text: opts.text }, ...opts.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))], at: now() }
+    : { role: "user", content: opts.text, at: now() };
   if (opts.reaction) first.reaction = opts.reaction;
   const messages: ChatMessage[] = [{ role: "system", content: await systemFor(t) }, ...(opts.recap ? [{ role: "user" as const, content: opts.recap }] : []), first];
   const row = await one<SessionRow>(
@@ -168,10 +215,15 @@ function loadPrompt(): string {
 /** Append a user message (a chat line, an email reply) and mark runnable. */
 export async function appendUserMessage(row: SessionRow, text: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string): Promise<void> {
   const msg: ChatMessage = images?.length
-    ? { role: "user", content: [{ type: "text", text }, ...images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))] }
-    : { role: "user", content: text };
+    ? { role: "user", content: [{ type: "text", text }, ...images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))], at: now() }
+    : { role: "user", content: text, at: now() };
   if (reaction) msg.reaction = reaction;
   await q("update agent_sessions set messages = messages || $2::jsonb, status = 'running', updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
+}
+
+/** A note from the host to the model (a hint about the user's last message). Never shown in chat; does not start a task. */
+export async function appendHostNote(row: SessionRow, text: string): Promise<void> {
+  await q("update agent_sessions set messages = messages || $2::jsonb, updated_at = now() where id = $1", [row.id, JSON.stringify([{ role: "user", content: text }])]);
 }
 
 /** Just the message array, re-read fresh — used by the loop to pick up a message the user sent while it was working. */
@@ -199,19 +251,19 @@ export async function persistTurn(id: string, append: ChatMessage[], patch: Part
 
 /** Append an assistant bubble (e.g. the instant "on it" ack). Ephemeral ones show in chat but are never sent to the model. */
 export async function appendAssistantMessage(row: SessionRow, text: string, ephemeral = false): Promise<void> {
-  const msg: ChatMessage = ephemeral ? { role: "assistant", content: text, ephemeral: true } : { role: "assistant", content: text };
+  const msg: ChatMessage = ephemeral ? { role: "assistant", content: text, ephemeral: true, at: now() } : { role: "assistant", content: text, at: now() };
   await q("update agent_sessions set messages = messages || $2::jsonb, updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
 /** Show the user's own text as a chat bubble (with its reaction) when it answered a question. UI-only: the model gets the answer via the tool result, so this echo is ephemeral. */
 export async function appendUserEcho(row: SessionRow, text: string, reaction?: string): Promise<void> {
-  const msg: ChatMessage = { role: "user", content: text, ephemeral: true, ...(reaction ? { reaction } : {}) };
+  const msg: ChatMessage = { role: "user", content: text, ephemeral: true, at: now(), ...(reaction ? { reaction } : {}) };
   await q("update agent_sessions set messages = messages || $2::jsonb where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
-/** Append a tool result for a pending call and mark runnable. */
+/** Append a tool result for a pending call (the user's answer) and mark runnable. Stamped: the task clock restarts here. */
 export async function appendToolResult(row: SessionRow, toolCallId: string, text: string): Promise<void> {
-  const msg: ChatMessage = { role: "tool", tool_call_id: toolCallId, content: text };
+  const msg: ChatMessage = { role: "tool", tool_call_id: toolCallId, content: text, at: now() };
   await q(
     "update agent_sessions set messages = messages || $2::jsonb, status = 'running', pending_kind = null, pending_event_id = null, pending_deadline = null, updated_at = now() where id = $1",
     [row.id, JSON.stringify([msg])],

@@ -25,6 +25,8 @@ export interface ChatMessage {
   reaction?: string;
   /** A UI-only bubble (the instant "on it" line): shown in chat, never sent to the model. */
   ephemeral?: boolean;
+  /** When the message was written (ISO). Set on everything the user sends and the agent says; the chat page shows it. */
+  at?: string;
 }
 
 /** Only the fields providers know; UI-only bubbles (reactions, the "on it" ack) stay out of the request. */
@@ -195,6 +197,8 @@ export async function complete(opts: {
   model: string;
   messages: ChatMessage[];
   tools?: ToolDef[];
+  /** "none" forces a plain text reply (a wrap-up); tools stay in the request because Anthropic requires them when the history has tool calls. */
+  toolChoice?: "auto" | "none";
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
@@ -232,7 +236,7 @@ export async function complete(opts: {
   };
   if (opts.tools?.length) {
     body.tools = provider.baseUrl.includes("generativelanguage.googleapis.com") ? (geminiSafeSchema(opts.tools) as ToolDef[]) : opts.tools;
-    body.tool_choice = "auto";
+    body.tool_choice = opts.toolChoice ?? "auto";
     // Only OpenAI itself gets this flag: on OpenRouter it narrows the provider pool, elsewhere it may be rejected.
     if (provider.baseUrl.includes("api.openai.com")) body.parallel_tool_calls = false;
   }

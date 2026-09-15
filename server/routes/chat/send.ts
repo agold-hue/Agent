@@ -2,12 +2,12 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../../lib/chat.js";
 import { appendTranscript } from "../../../lib/memory.js";
-import { isApprovalReply } from "../../../lib/policy.js";
+import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
 import { tierFor, upgradedModel } from "../../../lib/router.js";
-import { appendAssistantMessage, appendUserEcho, appendUserMessage, updateSession, UsageCapError } from "../../../lib/sessions.js";
+import { appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, updateSession, UsageCapError } from "../../../lib/sessions.js";
 import { resolvePending } from "../../../lib/tools.js";
 import { stampMessage } from "../../../lib/transcript.js";
 
@@ -59,6 +59,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         await updateSession(session.id, { model });
       }
       await appendUserMessage(session, stampMessage(t, text, "chat"), undefined, reaction);
+      // A code sent before the agent asked for it (the user saw the text arrive mid-login): make
+      // sure it gets typed into the site rather than read as chat.
+      const code = codeIn(text);
+      if (code) await appendHostNote(session, codeHint(code));
       action = "sent";
     }
     if (willResearch && (action === "started" || action === "sent")) {
