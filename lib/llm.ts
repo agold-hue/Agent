@@ -152,12 +152,12 @@ export async function complete(opts: {
   if (opts.tools?.length) {
     body.tools = opts.tools;
     body.tool_choice = "auto";
-    // Only OpenAI-style endpoints know this flag; Google's compatibility layer may reject unknown fields.
-    if (isOpenRouter() || provider.baseUrl.includes("api.openai.com")) body.parallel_tool_calls = false;
+    // Only OpenAI itself gets this flag: on OpenRouter it narrows the provider pool, elsewhere it may be rejected.
+    if (provider.baseUrl.includes("api.openai.com")) body.parallel_tool_calls = false;
   }
   if (isOpenRouter()) {
     // Cheapest healthy provider for the chosen model; fall back to others if it fails.
-    body.provider = { sort: "price", allow_fallbacks: true, require_parameters: true };
+    body.provider = { sort: "price", allow_fallbacks: true };
     body.usage = { include: true };
   }
   const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` };
@@ -187,6 +187,13 @@ export async function complete(opts: {
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      // OpenRouter found no provider for this exact parameter set: retry without routing preferences.
+      if (res.status === 404 && body.provider && /No endpoints/i.test(text)) {
+        console.error(`[llm] ${model}: no endpoint for the routing preferences, retrying without them`);
+        delete body.provider;
+        attempt--;
+        continue;
+      }
       // A provider that rejects cache markers gets the same request with fewer of them, then none.
       if (res.status === 400 && cacheLevel !== "none" && /cache_control|content|invalid/i.test(text)) {
         cacheLevel = cacheLevel === "full" ? "system" : "none";

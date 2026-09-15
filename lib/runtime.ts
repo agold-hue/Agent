@@ -148,9 +148,10 @@ function compact(messages: ChatMessage[]): void {
 
 /** Fire-and-forget: ask a worker to continue this session. */
 export async function kick(sessionId: string): Promise<void> {
-  const url = `${env.appUrl()}/api/run?session=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(env.cronSecret())}`;
+  const url = `${env.appUrl()}/api/run?session=${encodeURIComponent(sessionId)}`;
   try {
-    await fetch(url, { method: "POST", signal: AbortSignal.timeout(3000) });
+    // The secret travels in a header, never in the URL, so request logs do not carry it.
+    await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${env.cronSecret()}` }, signal: AbortSignal.timeout(3000) });
   } catch {
     /* the cron sweep picks it up if the kick did not land */
   }
