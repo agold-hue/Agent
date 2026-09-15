@@ -7,6 +7,7 @@ import checkout from "../server/routes/billing/checkout.js";
 import portal from "../server/routes/billing/portal.js";
 import history from "../server/routes/chat/history.js";
 import send from "../server/routes/chat/send.js";
+import react from "../server/routes/chat/react.js";
 import upload from "../server/routes/chat/upload.js";
 import cron from "../server/routes/cron.js";
 import drafts from "../server/routes/drafts.js";
@@ -41,6 +42,7 @@ const routes: Record<string, Handler> = {
   "chat/history": history,
   "chat/send": send,
   "chat/upload": upload,
+  "chat/react": react,
   cron,
   drafts,
   "google/callback": googleCallback,

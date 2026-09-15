@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Secretary</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Bodoni+Moda:wght@500&display=swap">
 <meta name="theme-color" content="#111318">
 <style>
   :root { color-scheme: light dark; --bg:#f6f7f9; --panel:#fff; --ink:#15171c; --muted:#6b7280; --me:#1f5eff; --me-ink:#fff; --tool:#fff7e6; --tool-edge:#f5b200; --edge:#e5e7eb; }
@@ -75,6 +77,150 @@
   .draft.gone-left { transform:translateX(-120%); opacity:0; }
   #mic.rec { background:#dc2626; color:#fff; border-color:transparent; }
   .empty { color:var(--muted); font-size:14px; padding:6px 0; }
+
+  /* ===== Chats, after the Oepfiles desk: one white surface, the list on the left, the room on the right ===== */
+  :root { --ink:#1F1F1F; --muted:#5F6368; --faint:#9AA0A6; --copper:#C26F34; --copper-hover:#A85D28; --line:#E3E6EA; --blue:#1A73E8; --blue-ink:#1A56C4; --blue-soft:#E8F0FE; --font-body:"IBM Plex Sans"; --font-didone:"Bodoni Moda"; }
+  body { font-family: var(--font-body), system-ui, -apple-system, "Segoe UI", sans-serif; font-size:14px; color:var(--ink); background:#fff; }
+  header { background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { font-family: var(--font-didone), Georgia, serif; font-weight:500; font-size:22px; letter-spacing:-0.01em; }
+  header h1::before { content:""; display:inline-block; width:8px; height:8px; margin:0 8px 2px 0; border-radius:50%; background:linear-gradient(135deg,#F0A65E,var(--copper)); box-shadow:0 0 0 4px rgba(194,111,52,.18); }
+  nav button { color:var(--muted); font-weight:500; border-radius:999px; }
+  nav button.on { background:rgba(194,111,52,.12); color:var(--copper-hover); }
+  main#chats { flex:1; min-height:0; display:grid; grid-template-columns:minmax(250px,300px) minmax(0,1fr); gap:0; padding:0 16px 0 12px; overflow:hidden; background:#fff; }
+  .inboxCol { display:flex; flex-direction:column; min-width:0; min-height:0; border-right:1px solid var(--line); padding:12px 10px 8px 0; }
+  .chatSearchBar { display:flex; align-items:center; gap:12px; margin:0 0 10px; padding:0 16px; height:46px; border-radius:26px; background:var(--blue-soft); color:#444746; }
+  .chatSearchBar input { flex:1; min-width:0; border:0; background:transparent; font:inherit; font-size:15px; color:var(--ink); outline:none; }
+  .chatSearchBar input::placeholder { color:var(--muted); }
+  .pageHead { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:2px 0 8px; }
+  .pageTitle { font-family:var(--font-didone), Georgia, serif; font-weight:400; font-size:24px; line-height:1.25; margin:0; color:var(--ink); }
+  .pageMeta { font-size:12px; font-weight:500; color:var(--muted); }
+  .inboxList { display:flex; flex-direction:column; gap:4px; overflow-y:auto; padding:6px 0 6px 0; }
+  .inboxItem { position:relative; display:grid; grid-template-columns:34px 1fr auto; gap:10px; align-items:start; padding:10px 10px; border:0; border-radius:10px; background:transparent; color:inherit; text-align:left; font:inherit; cursor:pointer; }
+  .inboxItem:hover { background:rgba(20,20,20,.04); }
+  .inboxItemOn, .inboxItemOn:hover { background:var(--blue-soft); }
+  .inboxItemUnread .inboxWho, .inboxItemUnread .inboxPreview { color:var(--ink); font-weight:700; }
+  .avatarCircle { display:inline-flex; width:34px; height:34px; border-radius:50%; align-items:center; justify-content:center; font-weight:700; color:#fff; letter-spacing:.02em; line-height:1; font-size:13px; flex:none; }
+  .inboxBody { min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .inboxTop { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .inboxWho { font-size:13.5px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .inboxWhen { font-size:10.5px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .inboxSub { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .inboxPreview { font-size:12.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .inboxBadge { align-self:center; min-width:20px; padding:2px 6px; border-radius:999px; background:var(--copper); color:#fff; font-size:10.5px; font-weight:800; text-align:center; }
+  .room { display:flex; flex-direction:column; min-width:0; min-height:0; padding:10px 0 8px 20px; }
+  .roomHead { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-bottom:10px; margin-bottom:4px; border-bottom:1px solid var(--line); min-width:0; }
+  .roomTitle { font-family:var(--font-didone), Georgia, serif; font-size:22px; color:var(--ink); line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .roomSub { font-size:11.5px; font-weight:500; color:var(--muted); }
+  .roomTools { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
+  .toolChip { display:inline-flex; align-items:center; gap:5px; padding:4px 11px; border:1px solid #D9D2C6; border-radius:999px; background:#fff; color:var(--ink); font:inherit; font-size:12.5px; font-weight:600; cursor:pointer; }
+  .toolChip:hover { border-color:var(--copper); color:var(--copper); }
+  .toolChipOn { border-color:var(--copper); background:rgba(194,111,52,.1); color:var(--copper); }
+  .backChip { display:none; }
+  .chatSearch { margin:6px 0 4px; padding:8px 14px; border:1px solid #E4DCD0; border-radius:999px; background:#FFFDFB; font:inherit; font-size:13.5px; color:var(--ink); width:100%; box-sizing:border-box; }
+  .chatSearch:focus { outline:none; border-color:rgba(194,111,52,.7); }
+  .chatListWrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; }
+  .chatList { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:4px 6px 10px; background:#fff; }
+  .chatEmpty { display:grid; gap:6px; place-items:center; text-align:center; padding:56px 20px; color:#7B766E; border:1px dashed #DED6CA; border-radius:12px; background:#F8F9FA; }
+  .chatEmptyMark { font-size:34px; }
+  .chatDay { display:flex; align-items:center; gap:12px; margin:14px 0 8px; font-size:12px; font-weight:500; color:var(--muted); }
+  .chatDay::before, .chatDay::after { content:""; flex:1; height:1px; background:#ECEAE6; }
+  .chatMsg { position:relative; display:grid; grid-template-columns:36px 1fr; gap:12px; padding:4px 2px 2px; border-radius:12px; touch-action:pan-y pinch-zoom; user-select:none; }
+  .chatMsg .chatBody { user-select:text; }
+  .chatMsgGrouped { padding-top:0; }
+  .chatMsgMine { grid-template-columns:1fr; }
+  .chatMsgMine .chatGutter { display:none; }
+  .chatMsgMine .chatMain { display:flex; flex-direction:column; align-items:flex-end; }
+  .chatMsgMine .chatHead { flex-direction:row-reverse; }
+  .chatMsgMine .chatName { display:none; }
+  .chatGutter { width:36px; }
+  .chatMain { min-width:0; position:relative; }
+  .chatHead { display:flex; align-items:baseline; gap:8px; margin-bottom:3px; }
+  .chatName { font-size:13px; font-weight:600; color:var(--ink); }
+  .chatTime { font-size:11.5px; color:var(--faint); }
+  .chatNotice { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--copper); }
+  .chatStack { position:relative; display:inline-flex; flex-direction:column; max-width:70%; }
+  .chatBubble { position:relative; display:inline-block; max-width:100%; padding:8px 12px; border-radius:18px; border-top-left-radius:6px; background:#F1F3F4; border:1px solid #D3D8DE; font-size:14px; line-height:1.45; color:var(--ink); box-shadow:none; }
+  .chatBubbleMine { background:var(--blue-soft); border:1px solid #B9CEF2; border-radius:18px; border-top-right-radius:6px; }
+  .chatBubbleEmoji .chatBody { font-size:250%; line-height:1.15; }
+  .chatBody { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .chatCard h4 { margin:0 0 6px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--copper); }
+  .chatCard .actions { display:flex; gap:8px; margin-top:10px; }
+  .chatCard.resolved { opacity:.65; }
+  .chatCard.resolved .actions { display:none; }
+  .btnPri { display:inline-flex; align-items:center; justify-content:center; padding:8px 16px; border:1px solid var(--copper); border-radius:999px; background:var(--copper); color:#fff; font:inherit; font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; cursor:pointer; }
+  .btnPri:hover { background:var(--copper-hover); border-color:var(--copper-hover); }
+  .btn { display:inline-flex; align-items:center; padding:7px 14px; border:1px solid #D9D2C6; border-radius:999px; background:#fff; color:var(--ink); font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
+  .btn:hover { border-color:var(--copper); color:var(--copper); }
+  .chatReacts { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .chatMsgMine .chatReacts { justify-content:flex-end; }
+  .chatReact { display:inline-flex; align-items:center; gap:5px; height:26px; padding:0 8px; border:1px solid #DADCE0; border-radius:8px; background:#F1F3F4; font:inherit; font-size:14px; line-height:1; cursor:pointer; }
+  .chatReactMine { border-color:#A8C7FA; background:var(--blue-soft); }
+  .gcBar { position:absolute; bottom:100%; left:0; z-index:3; display:inline-flex; align-items:center; gap:6px; padding-bottom:6px; opacity:0; visibility:hidden; }
+  .chatMsgMine .gcBar { left:auto; right:0; }
+  .chatStack:hover .gcBar, .gcBar:hover { opacity:1; visibility:visible; }
+  .chatStack:hover { z-index:8; }
+  .gcQuick { display:inline-flex; align-items:center; gap:2px; padding:3px 6px; border-radius:12px; background:#F1F3F4; border:1px solid var(--line); }
+  .gcEm { border:0; background:transparent; font:inherit; font-size:20px; line-height:1; padding:4px 5px; border-radius:8px; cursor:pointer; }
+  .gcEm:hover { background:var(--line); }
+  .gcActs { display:inline-flex; align-items:center; gap:2px; padding:3px 4px; border-radius:12px; background:#fff; border:1px solid #DDE1E6; }
+  .gcIcon { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:0; border-radius:8px; background:transparent; color:#444746; cursor:pointer; }
+  .gcIcon:hover { background:#E8EAED; color:var(--ink); }
+  @media (hover:none) { .gcBar { display:none; } }
+  .chatSwipeMark { position:absolute; left:-44px; top:50%; transform:translateY(-50%) scale(.7); opacity:0; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; background:rgba(20,20,20,.08); color:var(--muted); font-size:16px; pointer-events:none; }
+  .chatMsgMine .chatSwipeMark { left:auto; right:-44px; }
+  .chatSwipeArmed { background:var(--copper); color:#fff; }
+  .chatSheet { position:fixed; z-index:130; display:flex; flex-direction:column; gap:6px; width:280px; }
+  .chatSheetReacts { display:flex; align-items:center; justify-content:space-between; gap:2px; padding:6px 8px; border-radius:999px; background:#fff; box-shadow:0 6px 22px rgba(20,20,20,.16), 0 1px 3px rgba(20,20,20,.06); }
+  .chatSheetEm { border:0; background:transparent; font-size:26px; line-height:1; padding:5px; border-radius:50%; cursor:pointer; }
+  .chatSheetEm:hover { background:#F1F3F4; }
+  .chatSheetMenu { display:flex; flex-direction:column; border-radius:14px; background:#fff; box-shadow:0 8px 28px rgba(20,20,20,.16), 0 1px 3px rgba(20,20,20,.06); overflow:hidden; }
+  .chatSheetItem { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border:0; border-bottom:1px solid #F1F3F4; background:transparent; font:inherit; font-size:15px; color:var(--ink); text-align:left; cursor:pointer; }
+  .chatSheetItem:last-child { border-bottom:0; }
+  .chatSheetItem:hover { background:#F8F9FA; }
+  .chatDown { position:absolute; right:16px; bottom:16px; z-index:3; display:inline-flex; align-items:center; justify-content:center; width:42px; height:42px; padding:0; border:1px solid #D3D8DE; border-radius:50%; background:#fff; color:var(--blue); cursor:pointer; box-shadow:0 6px 18px rgba(20,20,20,.16), 0 1px 2px rgba(20,20,20,.06); }
+  .chatDown:hover { background:var(--blue-soft); }
+  .chatDownBadge { position:absolute; top:-7px; right:-7px; min-width:22px; height:22px; padding:0 6px; box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; border:2px solid #fff; border-radius:999px; background:var(--blue); color:#fff; font-size:11.5px; font-weight:700; line-height:1; }
+  .chatTyping { min-height:18px; display:flex; align-items:center; gap:8px; padding:0 6px 4px; font-size:11.5px; color:var(--muted); }
+  .chatDots { display:inline-flex; gap:3px; }
+  .chatDots i { width:5px; height:5px; border-radius:50%; background:var(--copper); animation:dotBounce 1.2s ease-in-out infinite; }
+  .chatDots i:nth-child(2) { animation-delay:.15s; } .chatDots i:nth-child(3) { animation-delay:.3s; }
+  @keyframes dotBounce { 0%,60%,100% { transform:translateY(0); opacity:.5; } 30% { transform:translateY(-4px); opacity:1; } }
+  .gcSmart { display:flex; gap:8px; padding:6px 4px 2px; flex-wrap:wrap; }
+  .gcSmartChip { padding:6px 16px; border:1px solid #C2D7FA; border-radius:999px; background:#fff; color:var(--blue-ink); font:inherit; font-size:13.5px; font-weight:600; cursor:pointer; }
+  .gcSmartChip:hover { background:var(--blue-soft); }
+  form.chatComposer { display:block; padding:4px 0 calc(4px + env(safe-area-inset-bottom)); border:0; background:transparent; }
+  .chatReplyCard { display:grid; grid-template-columns:auto 1fr auto; column-gap:8px; align-items:start; margin:0 0 6px; padding:8px 8px 8px 10px; border:1px solid #DDE3EA; border-radius:14px; background:#fff; color:#3C4043; font-size:13px; }
+  .chatQuoteMark { font-size:16px; line-height:1; color:#34A853; }
+  .chatQuoteWho { font-weight:600; color:var(--ink); }
+  .chatReplyCardText { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#3C4043; }
+  .chatReplyCardClose { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border:0; border-radius:50%; background:transparent; color:#444746; cursor:pointer; font-size:16px; }
+  .chatReplyCardClose:hover { background:#F1F3F4; }
+  .chatDrawer { display:grid; grid-template-columns:repeat(auto-fill, minmax(46px, 1fr)); gap:6px; padding:12px; margin-bottom:6px; border:1px solid #ECE6DE; border-radius:14px; background:#fff; max-height:220px; overflow-y:auto; }
+  .chatDrawerEm { border:0; background:transparent; font-size:24px; line-height:1; padding:8px 0; border-radius:10px; cursor:pointer; }
+  .chatDrawerEm:hover { background:#FFF4E8; }
+  .chatRow { display:flex; align-items:center; gap:4px; }
+  .chatIcon { flex-shrink:0; display:inline-flex; align-items:center; justify-content:center; width:40px; height:40px; border:0; border-radius:50%; background:transparent; color:#444746; cursor:pointer; padding:0; }
+  .chatIcon:hover, .chatIconOn { background:#F1F3F4; }
+  .chatPlus { background:var(--blue-soft); color:var(--blue-ink); }
+  .chatPlus:hover { background:#C2D7FA; }
+  .rcBox { flex:1; min-width:0; min-height:40px; max-height:200px; resize:none; padding:10px 16px; border:1px solid transparent; border-radius:24px; background:#F0F4F9; font:inherit; font-size:14px; line-height:1.5; color:var(--ink); outline:none; }
+  .rcBox:focus { border-color:#C2D7FA; background:#EDF2FA; }
+  .chatSide { display:inline-flex; align-items:center; gap:4px; }
+  .chatSend { width:40px; height:40px; padding:0; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; border:0; background:var(--copper); color:#fff; cursor:pointer; }
+  .chatSend:hover { background:var(--copper-hover); }
+  .chatSend:disabled { opacity:.6; }
+  .chatMic.rec { background:#FCE8E6; color:#C5221F; }
+  #status { color:var(--muted); }
+  @media (max-width: 900px) {
+    main#chats { grid-template-columns:1fr; padding:0 12px; }
+    .inboxCol { display:none; border-right:0; padding-right:0; }
+    main#chats.showList .inboxCol { display:flex; }
+    main#chats.showList .room { display:none; }
+    .backChip { display:inline-flex; }
+    .chatStack { max-width:84%; }
+    .room { padding-left:0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .chatDots i { animation:none; } }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -82,8 +228,8 @@
 <header>
   <h1>Secretary</h1>
   <nav>
+    <button data-tab="chat" class="on">Chats</button>
     <button data-tab="home">Home</button>
-    <button data-tab="chat" class="on">Chat</button>
     <button data-tab="inbox" id="inboxTab" hidden>Inbox</button>
     <button data-tab="settings">Settings</button>
     <button data-tab="logins">Logins</button>
@@ -92,14 +238,53 @@
   <span id="status">connecting</span>
 </header>
 
-<main id="log"></main>
-<form id="composer">
-  <textarea id="text" rows="1" placeholder="Message… (Enter to send, Shift+Enter for a new line)" autofocus></textarea>
-  <input type="file" id="file" multiple hidden>
-  <button type="button" id="attach" title="Attach photos or documents">📎</button>
-  <button type="button" id="mic" title="Dictate">🎤</button>
-  <button class="primary" type="submit" id="send">Send</button>
-</form>
+<main id="chats">
+  <aside class="inboxCol">
+    <div class="chatSearchBar">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="roomSearch" placeholder="Search chats" autocomplete="off">
+    </div>
+    <div class="pageHead"><h2 class="pageTitle">Chats</h2><span class="pageMeta" id="chatsMeta"></span></div>
+    <div class="inboxList" id="roomList"></div>
+  </aside>
+  <section class="room">
+    <div class="roomHead">
+      <div style="min-width:0;display:flex;align-items:center;gap:8px">
+        <button type="button" class="toolChip backChip" id="backChip" aria-label="All chats">‹</button>
+        <div style="min-width:0"><div class="roomTitle" id="roomTitle">Secretary</div><div class="roomSub" id="roomSub">Your personal secretary · always on</div></div>
+      </div>
+      <span class="roomTools">
+        <button type="button" class="toolChip" id="findChip" title="Search this conversation" aria-label="Search this conversation"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+        <button type="button" class="toolChip" id="notifyChip" title="Desktop notifications" aria-label="Desktop notifications"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 17h12l-1.5-2V11a4.5 4.5 0 0 0-9 0v4L6 17zM10 20h4"/></svg></button>
+      </span>
+    </div>
+    <input id="findBox" class="chatSearch" placeholder="Search this conversation…" hidden>
+    <div class="chatListWrap">
+      <div class="chatList" id="list"></div>
+      <button type="button" id="down" class="chatDown" hidden title="Jump to the latest" aria-label="Jump to the latest"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span id="downBadge" class="chatDownBadge" hidden></span></button>
+    </div>
+    <div class="chatTyping" id="typing" aria-live="polite"></div>
+    <div class="gcSmart" id="smart" hidden></div>
+    <form id="composer" class="chatComposer">
+      <div id="replyCard" class="chatReplyCard" hidden>
+        <span class="chatQuoteMark" aria-hidden="true">❝</span>
+        <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span class="chatQuoteWho" id="replyWho"></span><span class="chatReplyCardText" id="replyText"></span></span>
+        <button type="button" class="chatReplyCardClose" id="replyClose" aria-label="Cancel reply">×</button>
+      </div>
+      <div id="emojiDrawer" class="chatDrawer" hidden></div>
+      <div class="chatRow">
+        <button type="button" id="attach" class="chatIcon chatPlus" title="Attach a photo or document" aria-label="Attach"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+        <textarea id="text" class="rcBox" rows="1" placeholder="Message Secretary" autofocus></textarea>
+        <span class="chatSide">
+          <button type="button" id="emojiBtn" class="chatIcon" title="Emoji" aria-label="Emoji"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8M9 10h.01M15 10h.01"/></svg></button>
+          <button type="button" id="mic" class="chatIcon chatMic" title="Voice" aria-label="Voice"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"/></svg></button>
+          <button type="submit" id="send" class="chatSend" hidden aria-label="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 2.6a1 1 0 0 1 1.05-.14l17 8.5a1 1 0 0 1 0 1.8l-17 8.5A1 1 0 0 1 3 20.4l1.7-6.9L13 12 4.7 10.5 3 3.6a1 1 0 0 1 .4-1z"/></svg></button>
+        </span>
+      </div>
+      <input type="file" id="file" multiple hidden>
+    </form>
+  </section>
+</main>
 
 <main id="home" hidden><div class="panel">
   <div class="card">
@@ -202,15 +387,14 @@
   const rendered = new Map();
   const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
   const fmtTime = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch { return ""; } };
-  const scroll = () => { const m = $("log"); m.scrollTop = m.scrollHeight; };
+  const scroll = () => { const m = $("list"); m.scrollTop = m.scrollHeight; };
   const setStatus = (s, label) => { const el = $("status"); el.className = s; el.textContent = label || s; };
 
   // ---- tabs
   document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
   function showTab(name) {
     document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-    for (const id of ["home", "log", "inbox", "settings", "logins", "billing"]) $(id).hidden = (id === "log" ? "chat" : id) !== name;
-    $("composer").hidden = name !== "chat";
+    for (const id of ["home", "chats", "inbox", "settings", "logins", "billing"]) $(id).hidden = (id === "chats" ? "chat" : id) !== name;
     if (name === "logins") loadVault();
     if (name === "home") loadHome();
     if (name === "inbox") loadDrafts();
@@ -344,98 +528,241 @@
     if (r.ok) { for (const id of ["v_domain", "v_user", "v_pass", "v_totp", "v_notes"]) $(id).value = ""; loadVault(); }
   };
 
-  // ---- chat
-  function bubble(cls, id) {
-    let el = id && rendered.get(id);
-    if (!el) { el = document.createElement("div"); el.className = `msg ${cls}`; $("log").appendChild(el); if (id) rendered.set(id, el); }
+  // ---- chats: the room, built the way the office's app draws it
+  const AGENT = "Secretary";
+  const QUICK = ["👍", "😊", "🎉"];
+  const SHEET_QUICK = ["👍", "😊", "🙏", "❤️", "😅"];
+  const DRAWER = ["😀","😂","🙂","😉","😍","🤔","😅","😢","😡","🙏","👍","👎","👏","🙌","🤝","💪","❤️","🔥","✨","🎉","✅","❌","⏰","📅","📦","💵","🛒","✉️","🔐","🔍","📞","🏠","🚗","✈️","☕","🍕"];
+  const SMART = ["Thanks!", "Yes, do it", "What's today?"];
+  let items = [], status = "none", pending = null, currentRoom = "secretary", replyTo = null, findQuery = "", lastSeen = {};
+  try { lastSeen = JSON.parse(localStorage.getItem("secretary:seen") || "{}"); } catch {}
+  const saveSeen = () => { try { localStorage.setItem("secretary:seen", JSON.stringify(lastSeen)); } catch {} };
+  const esc2 = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const DAY_KEY = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  function dayLabel(iso) { const k = DAY_KEY(iso), t = DAY_KEY(new Date()), y = DAY_KEY(new Date(Date.now() - 86400000)); if (k === t) return "Today"; if (k === y) return "Yesterday"; return new Date(iso).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }); }
+  function agoText(iso) { const ms = Date.now() - new Date(iso).getTime(); if (ms < 60000) return "now"; if (ms < 3600000) return `${Math.round(ms / 60000)} min`; if (ms < 86400000) return fmtTime(iso); return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" }); }
+  const isEmojiOnly = (t) => /^[\p{Extended_Pictographic}\p{Emoji_Presentation}️‍\s]{1,8}$/u.test((t || "").trim()) && /\p{Extended_Pictographic}/u.test(t || "");
+  const initials = (name) => name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  function face(name, size, hue) { const el = document.createElement("span"); el.className = "avatarCircle"; el.style.width = el.style.height = size + "px"; el.style.fontSize = Math.round(size * 0.38) + "px"; el.style.background = hue; el.textContent = initials(name); return el; }
+  const AGENT_HUE = "linear-gradient(135deg,#F0A65E,#C26F34)";
+  const NOTICE_HUE = "linear-gradient(135deg,#8AB4F8,#1A56C4)";
+  const rooms = () => ([
+    { id: "secretary", name: AGENT, sub: "Your personal secretary · always on", hue: AGENT_HUE, items: items.filter((i) => i.kind !== "status") },
+    { id: "notices", name: "Reminders & heads-ups", sub: "Timers, the morning brief, things it noticed", hue: NOTICE_HUE, items: items.filter((i) => i.kind === "agent" && i.notice) },
+  ]);
+  const textOf = (i) => i.kind === "tool" ? (i.name === "checkpoint" ? "Needs your ok: " + (i.input.summary || "") : i.name === "send_email" ? "Ok to send an email?" : "Quick question") : (i.text || "");
+
+  // ---- the left column
+  function renderRooms() {
+    const box = $("roomList"); box.innerHTML = "";
+    const q = ($("roomSearch").value || "").trim().toLowerCase();
+    let total = 0, unreadTotal = 0;
+    for (const r of rooms()) {
+      const last = r.items[r.items.length - 1];
+      if (q && !(r.name.toLowerCase().includes(q) || r.items.some((i) => textOf(i).toLowerCase().includes(q)))) continue;
+      total++;
+      const agentCount = r.items.filter((i) => i.kind !== "user").length;
+      const unread = Math.max(0, agentCount - (lastSeen[r.id] ?? agentCount));
+      unreadTotal += unread;
+      const b = document.createElement("button"); b.type = "button"; b.className = `inboxItem ${r.id === currentRoom ? "inboxItemOn" : ""} ${unread ? "inboxItemUnread" : ""}`;
+      b.appendChild(face(r.name, 34, r.hue));
+      const body = document.createElement("span"); body.className = "inboxBody";
+      body.innerHTML = `<span class="inboxTop"><span class="inboxWho">${esc2(r.name)}</span><span class="inboxWhen">${last ? esc2(agoText(last.at)) : ""}</span></span><span class="inboxSub">${esc2(r.sub)}</span><span class="inboxPreview">${last ? (last.kind === "user" ? "You: " : "") + esc2(textOf(last).slice(0, 90)) : "No messages yet"}</span>`;
+      b.appendChild(body);
+      if (unread) { const badge = document.createElement("span"); badge.className = "inboxBadge"; badge.textContent = unread; b.appendChild(badge); }
+      b.onclick = () => openRoom(r.id);
+      box.appendChild(b);
+    }
+    $("chatsMeta").textContent = `${total} conversation${total === 1 ? "" : "s"}${unreadTotal ? ` · ${unreadTotal} unread` : " · all caught up"}`;
+  }
+  function openRoom(id) {
+    currentRoom = id;
+    const r = rooms().find((x) => x.id === id);
+    $("roomTitle").textContent = r.name; $("roomSub").textContent = r.sub;
+    $("composer").hidden = id !== "secretary";
+    $("chats").classList.remove("showList");
+    markSeen(); renderRooms(); renderList(true);
+  }
+  function markSeen() { const r = rooms().find((x) => x.id === currentRoom); if (!r) return; lastSeen[currentRoom] = r.items.filter((i) => i.kind !== "user").length; saveSeen(); }
+  $("roomSearch").addEventListener("input", renderRooms);
+  $("backChip").onclick = () => $("chats").classList.add("showList");
+
+  // ---- one row
+  function row(item, grouped) {
+    const mine = item.kind === "user";
+    const el = document.createElement("div");
+    el.className = `chatMsg ${mine ? "chatMsgMine" : ""} ${grouped ? "chatMsgGrouped" : ""}`;
+    el.dataset.id = item.id;
+    const mark = document.createElement("span"); mark.className = "chatSwipeMark"; mark.textContent = "↩"; el.appendChild(mark);
+    const gutter = document.createElement("div"); gutter.className = "chatGutter"; if (!grouped && !mine) gutter.appendChild(face(AGENT, 30, AGENT_HUE)); el.appendChild(gutter);
+    const main = document.createElement("div"); main.className = "chatMain"; el.appendChild(main);
+    if (!grouped) {
+      const head = document.createElement("div"); head.className = "chatHead";
+      head.innerHTML = `<span class="chatName">${mine ? "You" : esc2(AGENT)}</span>${item.notice ? `<span class="chatNotice">${esc2(item.notice)}</span>` : ""}<span class="chatTime" title="${esc2(fmtTime(item.at))}">${esc2(agoText(item.at))}</span>`;
+      main.appendChild(head);
+    }
+    const stack = document.createElement("div"); stack.className = "chatStack"; main.appendChild(stack);
+    if (!mine) {
+      const bar = document.createElement("div"); bar.className = "gcBar";
+      bar.innerHTML = `<span class="gcQuick">${QUICK.map((q) => `<button type="button" class="gcEm" data-em="${q}" title="React ${q}">${q}</button>`).join("")}</span><span class="gcActs"><button type="button" class="gcIcon" data-act="reply" title="Reply" aria-label="Reply"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8L5 12l5 4"/><path d="M5 12h9a5 5 0 0 1 5 5v1"/></svg></button><button type="button" class="gcIcon" data-act="copy" title="Copy text" aria-label="Copy text"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button></span>`;
+      bar.querySelectorAll(".gcEm").forEach((b) => b.onclick = (e) => { e.stopPropagation(); react(item, b.dataset.em); });
+      bar.querySelector('[data-act="reply"]').onclick = (e) => { e.stopPropagation(); reply(item); };
+      bar.querySelector('[data-act="copy"]').onclick = (e) => { e.stopPropagation(); copyText(item); };
+      stack.appendChild(bar);
+    }
+    const bubble = document.createElement("div");
+    bubble.className = `chatBubble ${mine ? "chatBubbleMine" : ""} ${item.kind !== "tool" && isEmojiOnly(item.text) ? "chatBubbleEmoji" : ""}`;
+    if (item.kind === "tool") {
+      bubble.classList.add("chatCard"); if (item.resolved) bubble.classList.add("resolved");
+      const i = item.input; const h = document.createElement("h4"); const body = document.createElement("div"); body.className = "chatBody";
+      if (item.name === "checkpoint") { h.textContent = "Need your ok"; body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}` + (i.recommendation ? `\n\n${i.recommendation}` : "") + ((i.options_considered || []).length ? `\nOther options: ` + i.options_considered.join("; ") : ""); }
+      else if (item.name === "send_email") { h.textContent = "Ok to send?"; body.textContent = `${i.purpose ? i.purpose + "\n\n" : ""}To: ${i.to}${i.cc ? "\nCc: " + i.cc : ""}\nSubject: ${i.subject}\n\n${i.body}`; }
+      else { h.textContent = "Quick question"; const qs = i.questions || []; body.textContent = qs.length === 1 ? `${qs[0].question}\n(no answer = ${qs[0].default})` : qs.map((q, n) => `${n + 1}. ${q.question} (default: ${q.default})`).join("\n"); }
+      bubble.append(h, body);
+      const actions = document.createElement("div"); actions.className = "actions";
+      if (item.name === "checkpoint" || item.name === "send_email") { const yes = document.createElement("button"); yes.type = "button"; yes.className = "btnPri"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve"; yes.onclick = () => send("yes"); const no = document.createElement("button"); no.type = "button"; no.className = "btn"; no.textContent = "Change…"; no.onclick = () => $("text").focus(); actions.append(yes, no); }
+      else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = "Answer in the box below."; actions.append(hint); }
+      bubble.appendChild(actions);
+    } else {
+      const body = document.createElement("span"); body.className = "chatBody"; body.textContent = item.text; bubble.appendChild(body);
+    }
+    stack.appendChild(bubble);
+    if (item.reaction) {
+      const reacts = document.createElement("div"); reacts.className = "chatReacts";
+      const chip = document.createElement("button"); chip.type = "button"; chip.className = `chatReact ${mine ? "" : "chatReactMine"}`; chip.textContent = item.reaction; chip.title = mine ? "Secretary reacted" : "Your reaction · tap to remove";
+      if (!mine) chip.onclick = (e) => { e.stopPropagation(); react(item, item.reaction); };
+      reacts.appendChild(chip); main.appendChild(reacts);
+    }
+    if (!mine && item.kind === "agent") gestures(el, bubble, item);
     return el;
   }
-  function render(item) {
-    if (item.kind === "user" || item.kind === "agent") {
-      const el = bubble(item.kind, item.id);
-      el.classList.remove("streaming"); el.textContent = item.text;
-      if (item.notice) { const tag = document.createElement("div"); tag.className = "notice"; tag.textContent = item.notice; el.prepend(tag); }
-      const t = document.createElement("div"); t.className = "time"; t.textContent = fmtTime(item.at); el.appendChild(t);
-      if (item.reaction) { const r = document.createElement("span"); r.className = "reaction"; r.textContent = item.reaction; el.appendChild(r); }
-    } else if (item.kind === "delta") {
-      const el = bubble("agent streaming", item.id); el.classList.add("streaming"); el.textContent += item.text;
-    } else if (item.kind === "tool") {
-      const el = bubble("tool", item.id);
-      el.classList.toggle("resolved", !!item.resolved); el.innerHTML = "";
-      const h = document.createElement("h4"); const body = document.createElement("div");
-      const i = item.input;
-      if (item.name === "checkpoint") {
-        h.textContent = "Need your ok";
-        body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}` + (i.recommendation ? `\n\n${i.recommendation}` : "") + ((i.options_considered || []).length ? `\nOther options: ` + i.options_considered.join("; ") : "");
-      } else if (item.name === "send_email") {
-        h.textContent = "Ok to send?";
-        body.textContent = `${i.purpose ? i.purpose + "\n\n" : ""}To: ${i.to}${i.cc ? "\nCc: " + i.cc : ""}\nSubject: ${i.subject}${(i.attachments || []).length ? "\nAttachments: " + i.attachments.join(", ") : ""}\n\n${i.body}`;
-      } else {
-        h.textContent = "Quick question";
-        const qs = i.questions || [];
-        body.textContent = qs.length === 1 ? `${qs[0].question}\n(no answer = ${qs[0].default})` : qs.map((q, n) => `${n + 1}. ${q.question} (default: ${q.default})`).join("\n");
-      }
-      el.append(h, body);
-      const actions = document.createElement("div"); actions.className = "actions";
-      if (item.name === "checkpoint" || item.name === "send_email") {
-        const yes = document.createElement("button"); yes.className = "primary"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve"; yes.onclick = () => send("yes");
-        const no = document.createElement("button"); no.textContent = "Change…"; no.onclick = () => $("text").focus();
-        actions.append(yes, no);
-      } else { const hint = document.createElement("span"); hint.className = "time"; hint.textContent = "Answer in the box below."; actions.append(hint); }
-      el.appendChild(actions);
-    } else if (item.kind === "tool_resolved") {
-      const el = rendered.get(item.id); if (el) el.classList.add("resolved");
-    } else if (item.kind === "status") {
-      if (item.status === "running") setStatus("running", "working…");
-      else if (item.status === "waiting") setStatus("idle", "waiting for you");
-      else if (item.status === "idle") setStatus("idle", "ready");
-      else if (item.status === "error") setStatus("", "stopped on an error");
-      else if (item.status === "terminated") { setStatus("", "session ended"); sessionId = null; }
+
+  // ---- gestures: double-tap 👍, long press for the sheet, swipe right to reply
+  function gestures(el, bubble, item) {
+    let taps = 0, tapTimer = null, holdTimer = null, held = false, drag = null;
+    const paint = (dx) => { el.style.transform = dx ? `translate3d(${dx}px,0,0)` : ""; const mk = el.querySelector(".chatSwipeMark"); mk.style.opacity = String(Math.min(1, dx / 56)); mk.style.transform = `translateY(-50%) scale(${0.7 + 0.45 * Math.min(1, dx / 56)})`; mk.classList.toggle("chatSwipeArmed", dx >= 56); };
+    el.addEventListener("pointerdown", (e) => { if (e.target.closest("button, a")) return; drag = { x: e.clientX, y: e.clientY, live: false, dx: 0 }; held = false; clearTimeout(holdTimer); holdTimer = setTimeout(() => { if (drag && !drag.live) { held = true; openSheet(item, bubble); } }, 480); });
+    el.addEventListener("pointermove", (e) => { const d = drag; if (!d) return; const rx = e.clientX - d.x, ry = e.clientY - d.y; if (!d.live) { if (Math.abs(rx) > 5 || Math.abs(ry) > 5) clearTimeout(holdTimer); if (Math.abs(ry) > 6 && Math.abs(ry) > Math.abs(rx)) { drag = null; return; } if (rx > 5) { d.live = true; try { el.setPointerCapture(e.pointerId); } catch {} } else return; } e.preventDefault(); d.dx = rx <= 36 ? Math.max(0, rx) : 36 + 60 * (1 - Math.exp(-(rx - 36) / 60)); paint(d.dx); });
+    const up = () => { clearTimeout(holdTimer); const d = drag; drag = null; el.style.transition = "transform 320ms cubic-bezier(0.2,0.9,0.25,1.15)"; paint(0); setTimeout(() => { el.style.transition = ""; }, 340); if (d?.live && d.dx >= 56) reply(item); };
+    el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+    bubble.addEventListener("click", (e) => { if (held) { held = false; return; } if (e.target.closest("button, a")) return; taps++; if (taps === 2) { clearTimeout(tapTimer); taps = 0; react(item, "👍"); try { navigator.vibrate?.(10); } catch {} return; } clearTimeout(tapTimer); tapTimer = setTimeout(() => { const hover = window.matchMedia?.("(hover: hover)").matches; if (taps === 1 && !hover) openSheet(item, bubble); taps = 0; }, 280); });
+  }
+  function openSheet(item, bubble) {
+    closeSheet();
+    const r = bubble.getBoundingClientRect();
+    const sheet = document.createElement("div"); sheet.className = "chatSheet"; sheet.id = "sheet";
+    sheet.innerHTML = `<div class="chatSheetReacts">${SHEET_QUICK.map((em) => `<button type="button" class="chatSheetEm" data-em="${em}">${em}</button>`).join("")}</div><div class="chatSheetMenu"><button type="button" class="chatSheetItem" data-act="reply"><span>Quote in reply</span>↩</button><button type="button" class="chatSheetItem" data-act="copy"><span>Copy text</span>⧉</button></div>`;
+    document.body.appendChild(sheet);
+    const h = sheet.offsetHeight, w = sheet.offsetWidth;
+    const top = r.top - 8 - h >= 8 ? r.top - 8 - h : Math.min(window.innerHeight - h - 8, r.bottom + 8);
+    sheet.style.top = top + "px"; sheet.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+    sheet.querySelectorAll(".chatSheetEm").forEach((b) => b.onclick = () => { closeSheet(); react(item, b.dataset.em); });
+    sheet.querySelector('[data-act="reply"]').onclick = () => { closeSheet(); reply(item); };
+    sheet.querySelector('[data-act="copy"]').onclick = () => { closeSheet(); copyText(item); };
+    setTimeout(() => document.addEventListener("pointerdown", onAway, true), 0);
+  }
+  function onAway(e) { if (!e.target.closest("#sheet")) closeSheet(); }
+  function closeSheet() { $("sheet")?.remove(); document.removeEventListener("pointerdown", onAway, true); }
+  async function react(item, emoji) {
+    const before = item.reaction; item.reaction = item.reaction === emoji ? undefined : emoji; renderList(false);
+    try { const r = await api("/api/chat/react", { method: "POST", body: JSON.stringify({ id: item.id, emoji }) }); if (!r.ok) throw new Error(); } catch { item.reaction = before; renderList(false); }
+  }
+  function reply(item) { replyTo = item; $("replyWho").textContent = AGENT; $("replyText").textContent = textOf(item).slice(0, 140); $("replyCard").hidden = false; $("text").focus(); }
+  $("replyClose").onclick = () => { replyTo = null; $("replyCard").hidden = true; };
+  function copyText(item) { try { navigator.clipboard?.writeText(textOf(item)); } catch {} }
+
+  // ---- the list
+  let behind = 0;
+  const nearBottom = () => { const el = $("list"); return el.scrollHeight - el.scrollTop - el.clientHeight < 80; };
+  function renderList(jump) {
+    const list = $("list");
+    const wasNear = nearBottom();
+    const prevTop = list.scrollTop;
+    const r = rooms().find((x) => x.id === currentRoom) || rooms()[0];
+    const q = findQuery.trim().toLowerCase();
+    const shown = q ? r.items.filter((i) => textOf(i).toLowerCase().includes(q)) : r.items;
+    const frag = document.createDocumentFragment();
+    if (!shown.length) { const e = document.createElement("div"); e.className = "chatEmpty"; e.innerHTML = `<div class="chatEmptyMark">💬</div><div>${q ? "Nothing matches." : "Say hello. It remembers everything from here on."}</div>`; frag.appendChild(e); }
+    let lastDay = null, lastAuthor = null, lastAt = 0;
+    for (const item of shown) {
+      const day = DAY_KEY(item.at);
+      if (day !== lastDay) { const d = document.createElement("div"); d.className = "chatDay"; d.innerHTML = `<span>${esc2(dayLabel(item.at))}</span>`; frag.appendChild(d); lastDay = day; lastAuthor = null; }
+      const author = item.kind === "user" ? "me" : (item.notice ? "notice:" + item.notice : "agent");
+      const at = new Date(item.at).getTime();
+      const grouped = author === lastAuthor && at - lastAt < 5 * 60 * 1000 && item.kind !== "tool";
+      frag.appendChild(row(item, grouped));
+      lastAuthor = author; lastAt = at;
     }
-    scroll();
+    list.innerHTML = ""; list.appendChild(frag);
+    if (jump || wasNear) { list.scrollTop = list.scrollHeight; behind = 0; } else list.scrollTop = prevTop;
+    updateDown();
+    renderSmart();
+  }
+  function updateDown() { const near = nearBottom(); $("down").hidden = near && !behind; $("downBadge").hidden = !behind; $("downBadge").textContent = behind > 99 ? "99+" : behind; if (near) { behind = 0; $("downBadge").hidden = true; } }
+  $("list").addEventListener("scroll", updateDown, { passive: true });
+  $("down").onclick = () => { $("list").scrollTop = $("list").scrollHeight; behind = 0; updateDown(); };
+  function renderSmart() {
+    const box = $("smart"); const last = items[items.length - 1];
+    const offer = currentRoom === "secretary" && last && last.kind === "agent" && status !== "running" && !pending && !$("text").value.trim();
+    box.hidden = !offer; if (!offer) return;
+    box.innerHTML = SMART.map((t) => `<button type="button" class="gcSmartChip">${esc2(t)}</button>`).join("");
+    box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
+  }
+  function setTyping(on) { $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>${AGENT} is typing…` : ""; }
+  $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
+  $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
+  $("notifyChip").onclick = async () => { try { if (window.Notification) { const p = await Notification.requestPermission(); $("notifyChip").classList.toggle("toolChipOn", p === "granted"); } } catch {} };
+  try { if (window.Notification && Notification.permission === "granted") $("notifyChip").classList.add("toolChipOn"); } catch {}
+
+  // ---- data
+  function applyHistory(data) {
+    const prevAgent = items.filter((i) => i.kind !== "user").length;
+    items = data.items.filter((i) => i.kind !== "status" && i.kind !== "tool_resolved");
+    for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
+    sessionId = data.session_id; status = data.status; pending = data.pending;
+    const nowAgent = items.filter((i) => i.kind !== "user").length;
+    const wasNear = nearBottom();
+    if (nowAgent > prevAgent && !wasNear) behind += nowAgent - prevAgent;
+    if (!$("chats").hidden && document.visibilityState === "visible" && wasNear) markSeen();
+    renderRooms(); renderList(false); announce(data.items);
+    setTyping(status === "running");
+    setStatus(status === "running" ? "running" : "idle", status === "none" ? "ready" : pending ? "waiting for you" : status === "running" ? "working…" : "ready");
   }
   async function loadHistory() {
     const r = await api("/api/chat/history");
     if (r.status === 401) { location.href = "/"; return; }
     if (r.status === 402) { showTab("billing"); return; }
-    const data = await r.json();
-    $("log").innerHTML = ""; rendered.clear(); sessionId = data.session_id;
-    for (const item of data.items) render(item);
-    announce(data.items);
-    setStatus(data.status === "running" ? "running" : "idle", data.status === "none" ? "ready" : data.pending ? "waiting for you" : data.status === "running" ? "working…" : "ready");
-    if (sessionId && data.status === "running") openStream();
+    applyHistory(await r.json());
+    if (sessionId && status === "running") openStream();
   }
-  // Poll while the agent works; the history endpoint is cheap (one row).
   let pollTimer = null;
   function openStream() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
-      if (document.hidden || $("log").hidden) return;
+      if (document.hidden || $("chats").hidden) return;
       const r = await api("/api/chat/history"); if (!r.ok) return;
-      const data = await r.json();
-      const running = data.status === "running";
-      const before = $("log").childElementCount;
-      $("log").innerHTML = ""; rendered.clear(); sessionId = data.session_id;
-      for (const item of data.items) render(item);
-      announce(data.items);
-      if ($("log").childElementCount !== before) scroll();
-      setStatus(running ? "running" : "idle", running ? "working…" : data.pending ? "waiting for you" : "ready");
-      if (!running) { clearInterval(pollTimer); pollTimer = null; }
+      applyHistory(await r.json());
+      if (status !== "running") { clearInterval(pollTimer); pollTimer = null; }
     }, 2500);
+  }
+  function optimistic(text, reaction) {
+    const it = { kind: "user", id: "tmp-" + Date.now(), text, at: new Date().toISOString(), reaction };
+    items.push(it); renderRooms(); renderList(true); return it;
   }
   async function send(text) {
     text = (text || $("text").value).trim(); if (!text) return;
+    if (replyTo) { text = `Re: "${textOf(replyTo).slice(0, 120)}"\n${text}`; replyTo = null; $("replyCard").hidden = true; }
     $("send").disabled = true;
     try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch {}
-    const optimistic = bubble("user"); optimistic.textContent = text;
-    $("text").value = ""; autosize(); scroll();
+    const it = optimistic(text);
+    $("text").value = ""; autosize(); $("emojiDrawer").hidden = true;
     try {
       const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text }) });
       const data = await r.json();
-      if (!r.ok) { optimistic.textContent += `\n(${data.error || "failed"})`; if (r.status === 402) showTab("billing"); return; }
-      if (data.reaction) { const rx = document.createElement("span"); rx.className = "reaction"; rx.textContent = data.reaction; optimistic.appendChild(rx); }
-      sessionId = data.session_id; setStatus("running", "working…"); openStream();
-    } catch (e) { optimistic.textContent += "\n(failed to send)"; }
+      if (!r.ok) { it.text += `\n(${data.error || "failed"})`; renderList(false); if (r.status === 402) showTab("billing"); return; }
+      if (data.reaction) { it.reaction = data.reaction; renderList(false); }
+      sessionId = data.session_id; status = "running"; setTyping(true); setStatus("running", "working…"); openStream();
+    } catch (e) { it.text += "\n(failed to send)"; renderList(false); }
     finally { $("send").disabled = false; $("text").focus(); }
   }
   $("attach").onclick = () => $("file").click();
@@ -444,20 +771,20 @@
     for (const f of files) {
       if (f.size > 4 * 1024 * 1024) { alert(`${f.name} is over 4 MB; email it instead.`); continue; }
       const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(f); });
-      const note = bubble("user"); note.textContent = `Uploading ${f.name}…`;
+      const note = optimistic(`Uploading ${f.name}…`);
       try {
         const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: f.name, mimeType: f.type || "application/octet-stream", data }) });
         const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
-        note.textContent = `Attached ${f.name}`;
+        note.text = `Attached ${f.name}`; renderList(false);
         if (out.session_id) { sessionId = out.session_id; openStream(); }
-      } catch (e) { note.textContent = `Could not attach ${f.name}: ${e.message}`; }
+      } catch (e) { note.text = `Could not attach ${f.name}: ${e.message}`; renderList(false); }
     }
-    scroll();
   });
-  function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 160) + "px"; }
+  function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; $("send").hidden = !t.value.trim(); $("mic").hidden = !!t.value.trim(); renderSmart(); }
   $("text").addEventListener("input", autosize);
-  $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+  $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } if (e.key === "Escape") { replyTo = null; $("replyCard").hidden = true; $("emojiDrawer").hidden = true; } });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+  $("emojiBtn").onclick = () => { const d = $("emojiDrawer"); if (d.hidden && !d.childElementCount) d.innerHTML = DRAWER.map((em) => `<button type="button" class="chatDrawerEm">${em}</button>`).join(""); d.hidden = !d.hidden; $("emojiBtn").classList.toggle("chatIconOn", !d.hidden); d.querySelectorAll("button").forEach((b) => b.onclick = () => { const t = $("text"); const s0 = t.selectionStart ?? t.value.length; t.value = t.value.slice(0, s0) + b.textContent + t.value.slice(s0); t.focus(); t.selectionStart = t.selectionEnd = s0 + b.textContent.length; autosize(); }); };
   // Voice: hold the mic to record a voice note (server transcribes) when enabled; otherwise browser dictation.
   let micReady = false;
   function setupMic() {
@@ -466,7 +793,7 @@
     if (me.voice_notes && navigator.mediaDevices && window.MediaRecorder) {
       mic.title = "Hold to record a voice note";
       let rec = null, chunks = [], startedAt = 0;
-      const start = async (e) => { e.preventDefault(); if (rec) return; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : ""; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); chunks = []; rec.ondataavailable = (ev) => chunks.push(ev.data); rec.onstop = async () => { stream.getTracks().forEach((t) => t.stop()); const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" }); rec = null; mic.classList.remove("rec"); mic.textContent = "🎤"; if (Date.now() - startedAt < 600 || blob.size < 1000) return; await sendVoice(blob); }; rec.start(); startedAt = Date.now(); mic.classList.add("rec"); mic.textContent = "●"; } catch { alert("Microphone not available."); rec = null; } };
+      const start = async (e) => { e.preventDefault(); if (rec) return; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : ""; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); chunks = []; rec.ondataavailable = (ev) => chunks.push(ev.data); rec.onstop = async () => { stream.getTracks().forEach((t) => t.stop()); const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" }); rec = null; mic.classList.remove("rec"); if (Date.now() - startedAt < 600 || blob.size < 1000) return; await sendVoice(blob); }; rec.start(); startedAt = Date.now(); mic.classList.add("rec"); } catch { alert("Microphone not available."); rec = null; } };
       const stop = (e) => { if (e) e.preventDefault(); if (rec && rec.state === "recording") rec.stop(); };
       mic.addEventListener("pointerdown", start); mic.addEventListener("pointerup", stop); mic.addEventListener("pointerleave", stop); mic.addEventListener("pointercancel", stop);
       mic.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -474,25 +801,26 @@
     }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { mic.hidden = true; return; }
-    mic.onclick = () => { const r = new SR(); r.lang = navigator.language || "en-US"; mic.textContent = "●"; r.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); }; r.onend = () => { mic.textContent = "🎤"; }; r.start(); };
+    mic.title = "Dictate";
+    mic.onclick = () => { const r = new SR(); r.lang = navigator.language || "en-US"; mic.classList.add("rec"); r.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); }; r.onend = () => { mic.classList.remove("rec"); }; r.start(); };
   }
   async function sendVoice(blob) {
     const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(blob); });
-    const note = bubble("user"); note.textContent = "🎤 sending voice note…"; scroll();
+    const note = optimistic("🎤 sending voice note…");
     try {
       const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
       const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: `voice.${ext}`, mimeType: blob.type || "audio/webm", data, voice: true }) });
       const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
-      note.textContent = `🎤 ${out.text}`;
-      sessionId = out.session_id; setStatus("running", "working…"); openStream();
-    } catch (e) { note.textContent = `Voice note failed: ${e.message}`; }
+      note.text = `🎤 ${out.text}`; renderList(false);
+      sessionId = out.session_id; status = "running"; setTyping(true); setStatus("running", "working…"); openStream();
+    } catch (e) { note.text = `Voice note failed: ${e.message}`; renderList(false); }
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me) loadHistory(); });
-  setInterval(() => { if (me && !$("log").hidden && $("status").className !== "running") loadHistory(); }, 10_000);
+  setInterval(() => { if (me && !$("chats").hidden && status !== "running") loadHistory(); }, 10_000);
   // A reminder or heads-up that arrives while the tab is idle: flash the title and, if allowed, a system notification.
   let lastAgentKey = null, baseTitle = document.title;
-  function announce(items) {
-    const last = [...items].reverse().find((i) => i.kind === "agent");
+  function announce(all) {
+    const last = [...all].reverse().find((i) => i.kind === "agent");
     if (!last) return;
     const key = last.id + ":" + (last.text || "").length;
     if (lastAgentKey === null) { lastAgentKey = key; return; }
@@ -505,6 +833,7 @@
       try { if (window.Notification && Notification.permission === "granted") new Notification("Secretary", { body: (last.text || "").slice(0, 140) }); } catch {}
     }
   }
+  renderRooms();
   loadMe();
 })();
 </script>
