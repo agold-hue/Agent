@@ -470,7 +470,9 @@ export function estimateTokens(messages: ChatMessage[]): number {
   let chars = 0;
   for (const m of messages) {
     if (typeof m.content === "string") chars += m.content.length;
-    else for (const p of m.content ?? []) chars += p.type === "text" ? p.text.length : 1500;
+    // A screenshot costs far more than a snippet of text; count it near its real token weight so a
+    // vision-heavy task triggers compaction instead of quietly re-sending huge uncached contexts.
+    else for (const p of m.content ?? []) chars += p.type === "text" ? p.text.length : 5000;
     for (const tc of m.tool_calls ?? []) chars += tc.function.arguments.length + 40;
   }
   return Math.round(chars / 3.5);

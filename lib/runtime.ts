@@ -203,8 +203,29 @@ function lastAssistantText(messages: ChatMessage[]): string {
  * Keep the context under budget: old tool results (page snapshots) shrink to a one-line stub, and
  * old screenshots are dropped. The system prompt and the last few turns are always kept.
  */
+/**
+ * Old screenshots are dead weight once the model has acted on them: keep only the most recent image,
+ * replacing earlier ones with their text (or a stub). A long browser task otherwise re-sends every
+ * past screenshot on every turn, and images are by far the most expensive thing in the context.
+ * Operates on copies; the stored conversation keeps every screenshot.
+ */
+export function dropStaleScreenshots(messages: ChatMessage[]): ChatMessage[] {
+  let keptImage = false;
+  for (let i = messages.length - 1; i >= 1; i--) {
+    const m = messages[i];
+    if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p) => p.type === "image_url")) continue;
+    if (!keptImage) {
+      keptImage = true;
+      continue;
+    }
+    const text = m.content.filter((p) => p.type === "text");
+    m.content = text.length ? text : "(earlier screenshot dropped to save context)";
+  }
+  return messages;
+}
+
 function compacted(stored: ChatMessage[]): ChatMessage[] {
-  const messages = stored.map((m) => ({ ...m }));
+  const messages = dropStaleScreenshots(stored.map((m) => ({ ...m })));
   if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
   const keepTail = 12;
   for (let i = 1; i < messages.length - keepTail; i++) {
