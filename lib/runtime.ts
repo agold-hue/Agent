@@ -102,8 +102,9 @@ async function finish(t: Tenant, row: SessionRow, report: string, status: "idle"
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
   await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
   if (report && !silent) {
-    const holdable = ["followup", "triage"].includes(row.kind);
-    if (holdable && shouldDefer(t, report)) await deferToDigest(t, row.kind === "followup" ? "Follow-up" : "From your mail", report);
+    // Mail triage can wait for the check-in times; a timer the user or the agent set fires on time.
+    const holdable = row.kind === "triage";
+    if (holdable && shouldDefer(t, report)) await deferToDigest(t, "From your mail", report);
     else await notifyOwner(t, row, report, row.kind === "review" ? "Morning brief" : row.kind === "weekly" ? "Week ahead" : row.kind === "digest" ? "Heads-ups" : undefined);
     await appendTranscript(t, { channel: row.channel, role: "agent", text: report }).catch(() => {});
   }

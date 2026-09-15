@@ -118,8 +118,8 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const step = repeat ? durationMs(repeat) : null;
         if (repeat && step == null) return { text: "Could not parse 'repeat'. Use '30m', '1d', '1w'." };
         if (step != null && step < 15 * 60_000) return { text: "Watches may not repeat more often than every 15 minutes." };
-        const item = await addFollowUp(t.id, { due, what: s("what"), project: args.project ? s("project") : undefined, repeatMs: step ?? undefined, until: args.until ? new Date(s("until")) : undefined });
-        return { text: JSON.stringify({ scheduled: true, id: item.id, due: item.due, repeat: repeat ?? null }) };
+        const item = await addFollowUp(t.id, { due, what: s("what"), project: args.project ? s("project") : undefined, repeatMs: step ?? undefined, until: args.until ? new Date(s("until")) : undefined, channel: row.channel === "email" ? "email" : "chat" });
+        return { text: JSON.stringify({ scheduled: true, id: item.id, due: item.due, repeat: repeat ?? null, note: "When it fires, your report from that session is delivered to the user immediately (chat and, if enabled, email)." }) };
       }
       case "checkpoint": {
         const cp = args as unknown as CheckpointInput;

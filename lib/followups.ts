@@ -10,6 +10,7 @@ export interface FollowUp {
   repeat_ms: string | null;
   until_at: Date | null;
   fired: number;
+  channel: "chat" | "email";
   created_at: Date;
 }
 
@@ -30,10 +31,10 @@ export function parseWhen(when: string, now = new Date()): Date | null {
   return t.getTime() < now.getTime() - 60_000 ? null : t;
 }
 
-export async function addFollowUp(userId: string, f: { due: Date; what: string; project?: string; repeatMs?: number; until?: Date }): Promise<FollowUp> {
+export async function addFollowUp(userId: string, f: { due: Date; what: string; project?: string; repeatMs?: number; until?: Date; channel?: "chat" | "email" }): Promise<FollowUp> {
   const r = await one<FollowUp>(
-    "insert into followups (user_id, due, what, project, repeat_ms, until_at) values ($1,$2,$3,$4,$5,$6) returning *",
-    [userId, f.due, f.what, f.project ?? null, f.repeatMs ?? null, f.until ?? null],
+    "insert into followups (user_id, due, what, project, repeat_ms, until_at, channel) values ($1,$2,$3,$4,$5,$6,$7) returning *",
+    [userId, f.due, f.what, f.project ?? null, f.repeatMs ?? null, f.until ?? null, f.channel ?? "chat"],
   );
   return r!;
 }

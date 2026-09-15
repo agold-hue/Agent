@@ -207,3 +207,6 @@ create index if not exists receipts_user on receipts(user_id, created_at desc);
 alter table agent_sessions add column if not exists cached_tokens bigint not null default 0;
 alter table usage add column if not exists prompt_tokens bigint not null default 0;
 alter table usage add column if not exists cached_tokens bigint not null default 0;
+
+-- Timers remember the channel they were set from so their report lands where the user is
+alter table followups add column if not exists channel text not null default 'chat';

@@ -45,7 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!t) continue;
     await start(t, "followups", () =>
       createSession(t, {
-        channel: "email",
+        channel: f.channel === "email" && env.mail.configured() ? "email" : "chat",
         kind: "followup",
         title: `Follow-up: ${f.what.slice(0, 80)}`,
         text: stampMessage(
@@ -55,7 +55,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ``,
             f.what,
             ``,
-            `Read the project file and recent conversations/ for what has happened since (a reply may have arrived). Then do what the note says. Report to the owner only if something changed or needs them; otherwise reply with exactly NO_REPORT.`,
+            `If the note is a reminder for the owner, deliver it now: your final reply IS the reminder, one line, delivered to them immediately. Otherwise read the project file and recent conversations/ for what has happened since (a reply may have arrived), do what the note says, and report to the owner only if something changed or needs them; if nothing did, reply with exactly NO_REPORT.`,
           ].join("\n"),
           "email",
         ),

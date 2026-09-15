@@ -396,6 +396,7 @@
     const data = await r.json();
     $("log").innerHTML = ""; rendered.clear(); sessionId = data.session_id;
     for (const item of data.items) render(item);
+    announce(data.items);
     setStatus(data.status === "running" ? "running" : "idle", data.status === "none" ? "ready" : data.pending ? "waiting for you" : data.status === "running" ? "working…" : "ready");
     if (sessionId && data.status === "running") openStream();
   }
@@ -411,6 +412,7 @@
       const before = $("log").childElementCount;
       $("log").innerHTML = ""; rendered.clear(); sessionId = data.session_id;
       for (const item of data.items) render(item);
+      announce(data.items);
       if ($("log").childElementCount !== before) scroll();
       setStatus(running ? "running" : "idle", running ? "working…" : data.pending ? "waiting for you" : "ready");
       if (!running) { clearInterval(pollTimer); pollTimer = null; }
@@ -419,6 +421,7 @@
   async function send(text) {
     text = (text || $("text").value).trim(); if (!text) return;
     $("send").disabled = true;
+    try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch {}
     const optimistic = bubble("user"); optimistic.textContent = text;
     $("text").value = ""; autosize(); scroll();
     try {
@@ -479,7 +482,23 @@
     } catch (e) { note.textContent = `Voice note failed: ${e.message}`; }
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me) loadHistory(); });
-  setInterval(() => { if (!document.hidden && me && !$("log").hidden && $("status").className !== "running") loadHistory(); }, 90_000);
+  setInterval(() => { if (me && !$("log").hidden && $("status").className !== "running") loadHistory(); }, 10_000);
+  // A reminder or heads-up that arrives while the tab is idle: flash the title and, if allowed, a system notification.
+  let lastAgentKey = null, baseTitle = document.title;
+  function announce(items) {
+    const last = [...items].reverse().find((i) => i.kind === "agent");
+    if (!last) return;
+    const key = last.id + ":" + (last.text || "").length;
+    if (lastAgentKey === null) { lastAgentKey = key; return; }
+    if (key === lastAgentKey) return;
+    lastAgentKey = key;
+    if (document.hidden) {
+      document.title = "● " + baseTitle;
+      const restore = () => { document.title = baseTitle; document.removeEventListener("visibilitychange", restore); };
+      document.addEventListener("visibilitychange", restore);
+      try { if (window.Notification && Notification.permission === "granted") new Notification("Secretary", { body: (last.text || "").slice(0, 140) }); } catch {}
+    }
+  }
   loadMe();
 })();
 </script>
