@@ -5,11 +5,11 @@
 const RULES: Array<[RegExp, string]> = [
   [/\b(remind|reminder|timer|alarm|in \d+ ?(min|minutes|hours?|h|m)\b|at \d{1,2}(:\d{2})? ?(am|pm))/i, "⏰"],
   [/\b(refund|return (it|this|the)|money back|chargeback|dispute)\b/i, "💸"],
+  [/\b(log ?in|login|sign ?in|password|account)\b/i, "🔐"],
   [/\b(buy|order|purchase|reorder|cart|checkout|amazon|cheapest|price)\b/i, "🛒"],
   [/\b(pay|bill|payment|invoice|utility|con ?ed(ison)?|national grid|pseg|peco)\b/i, "💵"],
   [/\b(book|appointment|reserve|reservation|schedule|calendar|meeting|table for)\b/i, "📅"],
   [/\b(email|e-mail|write to|send (a )?(message|note)|draft|reply to)\b/i, "✉️"],
-  [/\b(log ?in|login|sign ?in|password|account)\b/i, "🔐"],
   [/\b(flight|hotel|trip|travel|airbnb|uber|train)\b/i, "✈️"],
   [/\b(package|delivery|tracking|shipped|where'?s my)\b/i, "📦"],
   [/\b(call|phone|dial)\b/i, "📞"],
