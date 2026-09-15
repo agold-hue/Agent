@@ -95,3 +95,11 @@ test("closing filler is stripped from replies; real content and questions stay",
   assert.equal(unfilled("The bill says #6L but you're in 6A. Want me to ask Con Ed to move the account to 6A?"), "The bill says #6L but you're in 6A. Want me to ask Con Ed to move the account to 6A?");
   assert.equal(unfilled("Anything else?"), "Anything else?"); // never empty a reply
 });
+
+import { isQuickQuestion } from "../lib/router.js";
+
+test("quick questions are greetings, thanks and status; approvals, skepticism, codes and requests are not", () => {
+  for (const q of ["what's up", "[2026-09-15 Tue 03:10 America/New_York via chat]\nwhats up", "hi Pete", "thanks!", "how's it going?", "you there?", "any news?"]) assert.ok(isQuickQuestion(q), q);
+  for (const n of ["yes", "ok do it", "Hmmm", "try again", "905168", "(Attached file: bill.pdf; PDF)", "check my con ed balance", "how much is an uber to JFK", 'Re: your message "Want me to ask Con Ed?"\nsure'])
+    assert.ok(!isQuickQuestion(n), n);
+});

@@ -41,6 +41,24 @@ export function tierFor(text: string, kind: string): Tier {
   return "chat";
 }
 
+/** Replies that reopen the last task rather than chat: approvals, skepticism, "again". */
+const REOPENS = /^(hmm+|really|seriously|that'?s it|come on|try again|again|keep going|continue|go on|more|retry)\b/i;
+
+/**
+ * A message that deserves a one-line answer in seconds, not a task: a greeting, "what's up", a
+ * thank-you, a status question, small talk. It runs on the chat model with a tight step budget.
+ * Approvals ("yes", "do it"), skeptical nudges ("hmmm"), codes, attachments and anything with a
+ * task keyword are not quick.
+ */
+export function isQuickQuestion(text: string): boolean {
+  const t = text.replace(/^\[[^\]]*\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
+  if (!t || t.startsWith("(") || /^\d[\d\s-]{2,9}\d$/.test(t)) return false;
+  if (REOPENS.test(t)) return false;
+  const first = t.split(/\r?\n/)[0].toLowerCase();
+  if (/^(yes|y|yes please|approve|approved|ok|okay|go|go ahead|do it|confirm|confirmed|proceed|send it|sure|👍)\b/.test(first)) return false;
+  return tierFor(t, "chat") === "chat" && t.split(/\s+/).length <= 40;
+}
+
 export function nextTier(current: Tier): Tier | null {
   return current === "chat" ? "task" : current === "task" ? "hard" : null;
 }

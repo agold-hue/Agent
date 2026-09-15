@@ -6,8 +6,8 @@ import { tools } from "./agent-config.js";
 import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
 import { appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
-import { modelFor, tierOfModel } from "./router.js";
-import { acquireLease, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { isQuickQuestion, modelFor, tierOfModel } from "./router.js";
+import { acquireLease, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool } from "./tools.js";
 
@@ -27,6 +27,9 @@ const MAX_SESSION_TURNS = Number(process.env.MAX_TURNS_PER_SESSION ?? 300);
 const TASK_TIME_LIMIT_MS = Number(process.env.TASK_TIME_LIMIT_MINUTES ?? 15) * 60_000;
 // After this long with nothing shown to the user, the model is told to post a one-line progress note.
 const PROGRESS_NOTE_MS = Number(process.env.PROGRESS_NOTE_MINUTES ?? 3) * 60_000;
+// A quick question ("what's up", "thanks", "how's it going") gets this many tool steps, then a reply.
+const QUICK_STEPS = Number(process.env.QUICK_STEPS ?? 3);
+const QUICK_TIME_MS = Number(process.env.QUICK_SECONDS ?? 75) * 1000;
 const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 40_000);
 // Compact down to this share of the budget so the prefix then stays stable (and cached) for many turns.
 const COMPACT_TARGET = 0.6;
@@ -110,8 +113,20 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         const summary = await wrapUp(t, row, `You have been on this task for ${mins} minutes without finishing.`, `I've been on this for ${mins} minutes without finishing, so I stopped.`);
         return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
       }
+      // A quick question must not turn into a task: a few lookups, then the reply. Past that, the
+      // model is told to answer with what it has; if it still will not, the host wraps it up.
+      const quick = isQuickQuestion(taskUserText(row.messages));
+      if (quick && (steps >= QUICK_STEPS || elapsed > QUICK_TIME_MS)) {
+        if (hasHostNote(row.messages, QUICK_NOTE) && steps >= QUICK_STEPS + 2) {
+          return await finish(t, row, persisted, await wrapUp(t, row, "This was a quick question and you kept working instead of answering.", "Here's where things stand."), "idle");
+        }
+        if (!hasHostNote(row.messages, QUICK_NOTE)) {
+          row.messages.push({ role: "user", content: QUICK_NOTE });
+          await save();
+        }
+      }
       // A long task with nothing said yet: ask for a one-line progress note (once per task).
-      if (PROGRESS_NOTE_MS > 0 && elapsed > PROGRESS_NOTE_MS && !shownSinceTaskStart(row.messages) && !hasHostNote(row.messages, PROGRESS_NOTE)) {
+      if (!quick && PROGRESS_NOTE_MS > 0 && elapsed > PROGRESS_NOTE_MS && !shownSinceTaskStart(row.messages) && !hasHostNote(row.messages, PROGRESS_NOTE)) {
         row.messages.push({ role: "user", content: PROGRESS_NOTE });
         await save();
       }
@@ -371,6 +386,9 @@ export function unfilled(text: string): string {
   }
   return out.trim() ? out : text;
 }
+
+/** The host's note when a greeting or status question is turning into a task. */
+export const QUICK_NOTE = "(That was a quick question, not a task. Reply now, in one or two lines, from what you already know and what you just looked up. Do not open the browser or start on open items; if something needs doing, say so in half a line and wait for the go-ahead.)";
 
 /** The host's request for a progress line during a long, silent task. */
 export const PROGRESS_NOTE = "(Several minutes in and the user has heard nothing. Call tell_user now with one line on where you are and what comes next, then continue the task.)";

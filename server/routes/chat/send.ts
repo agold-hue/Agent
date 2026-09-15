@@ -7,7 +7,7 @@ import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
-import { tierFor, upgradedModel } from "../../../lib/router.js";
+import { isQuickQuestion, modelFor, tierFor, tierOfModel, upgradedModel } from "../../../lib/router.js";
 import { activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
 import { resolvePending } from "../../../lib/tools.js";
 import { stampMessage } from "../../../lib/transcript.js";
@@ -100,7 +100,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await resolvePending(t, session, forModel, null);
       action = "question_answered";
     } else {
-      const model = upgradedModel(session.model ?? "", text, t);
+      // Up to the tier the message needs; and back down to the fast chat model for a quick question
+      // on an idle thread ("what's up" after a bill was handled on the strong model), so a greeting
+      // answers in seconds. A thread mid-task keeps its model.
+      const idle = session.status !== "running" && !session.pending_kind;
+      const model = upgradedModel(session.model ?? "", text, t) ?? (idle && isQuickQuestion(text) && tierOfModel(session.model ?? "", t) !== "chat" ? modelFor("chat", t) : undefined);
       if (model) {
         console.log(`[route] ${session.id}: ${session.model} -> ${model} for "${text.slice(0, 60)}"`);
         await updateSession(session.id, { model });

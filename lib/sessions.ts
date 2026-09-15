@@ -86,6 +86,12 @@ export function taskClockStart(messages: ChatMessage[]): number | undefined {
   return undefined;
 }
 
+/** The user's message that started the current task, without the stamp. */
+export function taskUserText(messages: ChatMessage[]): string {
+  const m = messages[taskStart(messages)];
+  return m ? messageText(m).replace(/^\[[^\]]+\]\n/, "") : "";
+}
+
 /** How many model turns the current task has used. */
 export function taskTurns(messages: ChatMessage[]): number {
   let n = 0;
