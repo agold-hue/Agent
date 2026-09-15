@@ -37,10 +37,12 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       if (row.turns >= MAX_TURNS) return await finish(t, row, "I've hit the step limit for one task. Here's where I got to:\n\n" + (lastAssistantText(row.messages) || "(no summary)"), "idle");
       if (sessionCap > 0 && row.cost_cents >= sessionCap) return await finish(t, row, `Hit the per-task spend cap, so I paused. Say "continue" if you want me to keep going.\n\n${lastAssistantText(row.messages)}`, "idle");
 
-      compact(row.messages);
+      // The stored conversation is the user's record and is never trimmed; the model gets a working copy
+      // kept under the context budget.
+      const context = compacted(row.messages);
       let completion;
       try {
-        completion = await complete({ model: row.model!, messages: row.messages, tools });
+        completion = await complete({ model: row.model!, messages: context, tools });
       } catch (err) {
         if (err instanceof LLMError && err.retryable) throw err; // worker will retry via cron sweep
         return await finish(t, row, `The AI provider rejected the request (${err instanceof Error ? err.message.slice(0, 200) : "error"}). Try again or tell me to use a different approach.`, "error");
@@ -127,19 +129,20 @@ function lastAssistantText(messages: ChatMessage[]): string {
  * Keep the context under budget: old tool results (page snapshots) shrink to a one-line stub, and
  * old screenshots are dropped. The system prompt and the last few turns are always kept.
  */
-function compact(messages: ChatMessage[]): void {
-  if (estimateTokens(messages) < CONTEXT_TOKENS) return;
+function compacted(stored: ChatMessage[]): ChatMessage[] {
+  const messages = stored.map((m) => ({ ...m }));
+  if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
   const keepTail = 12;
   for (let i = 1; i < messages.length - keepTail; i++) {
     const m = messages[i];
     if (m.role === "tool" && typeof m.content === "string" && m.content.length > 300) {
       m.content = m.content.slice(0, 200) + "\n... [older tool output trimmed]";
     } else if (m.role === "user" && Array.isArray(m.content)) {
-      m.content = m.content.filter((p) => p.type === "text").map((p) => (p.type === "text" ? p : p)) as ChatMessage["content"];
-      if (Array.isArray(m.content) && !m.content.length) m.content = "(screenshot removed)";
+      const text = m.content.filter((p) => p.type === "text");
+      m.content = text.length ? text : "(screenshot removed)";
     }
   }
-  if (estimateTokens(messages) < CONTEXT_TOKENS) return;
+  if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
   // Still too big: drop the oldest middle turns entirely, keeping system + first user message.
   // Go well under the budget in one pass: every drop changes the prefix and invalidates the cache.
   while (estimateTokens(messages) >= CONTEXT_TOKENS * COMPACT_TARGET && messages.length > keepTail + 2) {
@@ -148,6 +151,7 @@ function compact(messages: ChatMessage[]): void {
     // Never leave a dangling tool result without its call, or a call without its result.
     if (victim.role === "assistant" && victim.tool_calls) while (messages[2]?.role === "tool") messages.splice(2, 1);
   }
+  return messages;
 }
 
 /** Fire-and-forget: ask a worker to continue this session. */

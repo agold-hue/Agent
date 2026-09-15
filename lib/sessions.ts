@@ -155,7 +155,7 @@ export async function latestChatSession(userId: string, maxAgeHours: number): Pr
 }
 
 /** Every chat session in the window, oldest first, so the page can show the full conversation history. */
-export async function chatSessionsSince(userId: string, since: Date, limit = 40): Promise<SessionRow[]> {
+export async function chatSessionsSince(userId: string, since: Date, limit = 200): Promise<SessionRow[]> {
   const rows = await q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = 'chat' and created_at > $2 order by created_at desc limit $3", [userId, since, limit]);
   return rows.reverse();
 }

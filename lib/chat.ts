@@ -59,7 +59,7 @@ export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> 
 }
 
 /** The whole conversation for the page: every chat session in the window, oldest first; only the current one carries a status. */
-export async function chatHistory(t: Tenant, current: SessionRow | undefined, days = 7): Promise<ChatItem[]> {
+export async function chatHistory(t: Tenant, current: SessionRow | undefined, days = 30): Promise<ChatItem[]> {
   const rows = await chatSessionsSince(t.id, new Date(Date.now() - days * 86_400_000));
   const out: ChatItem[] = [];
   for (const row of rows) {
