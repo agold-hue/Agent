@@ -11,6 +11,8 @@ import type { Tenant } from "./tenant.js";
  */
 const MAX_TEXT = 6000;
 const MAX_ELEMENTS = 250;
+/** A click or a keystroke returns a shorter snapshot; browser_snapshot gives the whole page. */
+const ACTION_ELEMENTS = Number(process.env.ACTION_SNAPSHOT_ELEMENTS ?? 140);
 
 async function handleFor(t: Tenant, row: SessionRow): Promise<BrowserHandle> {
   if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, memory, calendar and email, and tell the user browsing is not enabled.");
@@ -166,15 +168,15 @@ const SNAPSHOT_FN = `(max, offset) => {
 
 type FrameSnapshot = { title: string; url: string; headings: string[]; lines: string[]; total: number };
 
-export async function snapshot(page: Page): Promise<string> {
+export async function snapshot(page: Page, max = MAX_ELEMENTS): Promise<string> {
   const out: string[] = [];
   let offset = 0;
   let total = 0;
   let title = "";
   let url = "";
   for (const frame of page.frames()) {
-    if (offset >= MAX_ELEMENTS) break;
-    const data = (await frame.evaluate(`(${SNAPSHOT_FN})(${MAX_ELEMENTS - offset}, ${offset})`).catch((e: unknown) => {
+    if (offset >= max) break;
+    const data = (await frame.evaluate(`(${SNAPSHOT_FN})(${max - offset}, ${offset})`).catch((e: unknown) => {
       console.error(`[browser] snapshot of frame ${frameHost(frame.url())} failed: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     })) as FrameSnapshot | null;
@@ -191,9 +193,11 @@ export async function snapshot(page: Page): Promise<string> {
     total += data.total;
   }
   out.unshift(`${title}\n${url}`);
-  if (total > MAX_ELEMENTS) out.push(`... ${total - MAX_ELEMENTS} more elements not shown; scroll or use browser_text`);
+  if (total > max) out.push(`... ${total - max} more elements not shown; browser_snapshot lists up to ${MAX_ELEMENTS}, or scroll, or browser_text`);
   return out.join("\n");
 }
+/** The snapshot that comes back with an action: enough to take the next step, not the whole page. */
+const after = (page: Page) => snapshot(page, ACTION_ELEMENTS);
 
 export interface BrowserResult {
   text: string;
@@ -246,7 +250,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       return withPage(t, row, async (page) => {
         await (await ref(page, str("ref"))).click({ timeout: 10_000 });
         await settle(page);
-        return { text: `clicked [${str("ref")}] -> ${page.url()}\n\n${await snapshot(page)}` };
+        return { text: `clicked [${str("ref")}] -> ${page.url()}\n\n${await after(page)}` };
       });
     case "browser_type":
       return withPage(t, row, async (page) => {
@@ -257,11 +261,11 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         if (a.enter) {
           await loc.press("Enter");
           await settle(page);
-          return { text: `typed + Enter\n\n${await snapshot(page)}` };
+          return { text: `typed + Enter\n\n${await after(page)}` };
         }
         // Address and search boxes answer typing with a suggestion list that must be clicked; show it.
         await page.waitForTimeout(1200);
-        return { text: `typed into [${str("ref")}]\n\n${await snapshot(page)}` };
+        return { text: `typed into [${str("ref")}]\n\n${await after(page)}` };
       });
     case "browser_select":
       return withPage(t, row, async (page) => {
@@ -275,13 +279,13 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       return withPage(t, row, async (page) => {
         await page.keyboard.press(str("key"));
         await settle(page, 800);
-        return { text: `pressed ${str("key")}\n\n${await snapshot(page)}` };
+        return { text: `pressed ${str("key")}\n\n${await after(page)}` };
       });
     case "browser_scroll":
       return withPage(t, row, async (page) => {
         await page.mouse.wheel(0, str("direction") === "up" ? -700 : 700);
         await page.waitForTimeout(500);
-        return { text: await snapshot(page) };
+        return { text: await after(page) };
       });
     case "browser_text":
       return withPage(t, row, async (page) => {

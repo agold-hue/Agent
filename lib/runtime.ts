@@ -482,8 +482,21 @@ export function dropStaleScreenshots(messages: ChatMessage[]): ChatMessage[] {
  * Keep the context under budget: old tool results (page snapshots) shrink to a one-line stub, and
  * old screenshots are dropped. The system prompt and the last few turns are always kept.
  */
+/** Tool results (page snapshots, memory files) older than this many are stubbed on every call: once acted on, a snapshot is dead weight. */
+const RECENT_TOOL_RESULTS = Number(process.env.RECENT_TOOL_RESULTS ?? 6);
+
 export function compacted(stored: ChatMessage[]): ChatMessage[] {
   const messages = dropStaleScreenshots(stored.map((m) => ({ ...m })));
+  // Always: keep only the newest tool results in full. The user's messages and the assistant's own
+  // words stay, so the model remembers what it found; the raw page it found it on does not need to
+  // ride along on every later call. The stable prefix keeps the prompt cache warm.
+  let recent = 0;
+  for (let i = messages.length - 1; i >= 1; i--) {
+    const m = messages[i];
+    if (m.role !== "tool" || typeof m.content !== "string") continue;
+    if (recent < RECENT_TOOL_RESULTS) recent++;
+    else if (m.content.length > 400) m.content = m.content.slice(0, 240) + "\n... [older output trimmed; call the tool again if you need it]";
+  }
   if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
   const keepTail = 12;
   for (let i = 1; i < messages.length - keepTail; i++) {
@@ -512,7 +525,9 @@ export async function kick(sessionId: string): Promise<void> {
   const url = `${env.appUrl()}/api/run?session=${encodeURIComponent(sessionId)}`;
   try {
     // The secret travels in a header, never in the URL, so request logs do not carry it.
-    await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${env.cronSecret()}` }, signal: AbortSignal.timeout(3000) });
+    // The worker runs its whole slice before answering, so this never completes; it only needs to
+    // be delivered. A short wait keeps the chat request snappy; the cron sweep is the backstop.
+    await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${env.cronSecret()}` }, signal: AbortSignal.timeout(Number(process.env.KICK_WAIT_MS ?? 1200)) });
   } catch {
     /* the cron sweep picks it up if the kick did not land */
   }

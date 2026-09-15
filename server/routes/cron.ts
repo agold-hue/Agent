@@ -119,7 +119,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     }
 
-    const weekly = (t.settings.weekly_review ?? "").match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})$/i);
+    // A week-ahead text on Sunday evening unless the user set another time or "off".
+    const weekly = (t.settings.weekly_review || "Sun 18").match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})$/i);
     if (weekly && clock.weekday.toLowerCase() === weekly[1].toLowerCase() && clock.h === Number(weekly[2]) && !(await hasSessionOfKindToday(t.id, "weekly", clock.day))) {
       await start(t, "weekly", () =>
         createSession(t, {

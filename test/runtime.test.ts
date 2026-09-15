@@ -103,3 +103,17 @@ test("quick questions are greetings, thanks and status; approvals, skepticism, c
   for (const n of ["yes", "ok do it", "Hmmm", "try again", "905168", "(Attached file: bill.pdf; PDF)", "check my con ed balance", "how much is an uber to JFK", 'Re: your message "Want me to ask Con Ed?"\nsure'])
     assert.ok(!isQuickQuestion(n), n);
 });
+
+import { compacted } from "../lib/runtime.js";
+
+test("old tool output is stubbed on every call; the newest few stay whole", () => {
+  const messages: ChatMessage[] = [{ role: "system", content: "s" }, user("do the thing")];
+  for (let i = 0; i < 10; i++) messages.push(call("browser_snapshot"), { role: "tool", tool_call_id: "c", content: `page ${i} ` + "x".repeat(1000) });
+  const out = compacted(messages);
+  const tools = out.filter((m) => m.role === "tool").map((m) => m.content as string);
+  assert.equal(tools.length, 10);
+  assert.ok(tools.slice(0, 4).every((c) => c.includes("[older output trimmed")));
+  assert.ok(tools.slice(4).every((c) => c.length > 1000));
+  // The stored conversation is untouched.
+  assert.ok((messages[3].content as string).length > 1000);
+});
