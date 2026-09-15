@@ -710,7 +710,7 @@
     box.innerHTML = SMART.map((t) => `<button type="button" class="gcSmartChip">${esc2(t)}</button>`).join("");
     box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
   }
-  function setTyping(on) { $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>${AGENT} is typing…` : ""; }
+  function setTyping(on, activity) { const label = activity || `${AGENT} is typing…`; $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>${label.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}` : ""; }
   $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
   $("notifyChip").onclick = async () => { try { if (window.Notification) { const p = await Notification.requestPermission(); $("notifyChip").classList.toggle("toolChipOn", p === "granted"); } } catch {} };
@@ -727,8 +727,8 @@
     if (nowAgent > prevAgent && !wasNear) behind += nowAgent - prevAgent;
     if (!$("chats").hidden && document.visibilityState === "visible" && wasNear) markSeen();
     renderRooms(); renderList(false); announce(data.items);
-    setTyping(status === "running");
-    setStatus(status === "running" ? "running" : "idle", status === "none" ? "ready" : pending ? "waiting for you" : status === "running" ? "working…" : "ready");
+    setTyping(status === "running", data.activity);
+    setStatus(status === "running" ? "running" : "idle", status === "none" ? "ready" : pending ? "waiting for you" : status === "running" ? (data.activity || "working…") : "ready");
   }
   async function loadHistory() {
     const r = await api("/api/chat/history");

@@ -1,4 +1,5 @@
 import { releaseBrowser } from "./browser.js";
+import { disconnectBrowser } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
 import { tools } from "./agent-config.js";
@@ -51,6 +52,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       // The stored conversation is the user's record and is never trimmed; the model gets a working copy
       // kept under the context budget.
       const context = compacted(row.messages);
+      const turnStart = Date.now();
+      const timings: string[] = [];
       let completion;
       try {
         completion = await complete({ model: row.model!, messages: context, tools });
@@ -58,6 +61,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (err instanceof LLMError && err.retryable) throw err; // worker will retry via cron sweep
         return await finish(t, row, `The AI provider rejected the request (${err instanceof Error ? err.message.slice(0, 200) : "error"}). Try again or tell me to use a different approach.`, "error");
       }
+      timings.push(`llm=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
       const cost = costCents(completion.model, completion.usage);
       row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
       row.prompt_tokens = Number(row.prompt_tokens) + completion.usage.prompt_tokens;
@@ -72,6 +76,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 
       const calls = completion.message.tool_calls ?? [];
       if (!calls.length) {
+        console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} reply`);
         const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
         return await finish(t, row, text, "idle");
       }
@@ -84,8 +89,11 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           row.messages.push({ role: "tool", tool_call_id: call.id, content: "Invalid JSON arguments; call again with valid JSON." });
           continue;
         }
+        const toolStart = Date.now();
         const out = await executeTool(t, row, call.function.name, args, call.id);
+        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s`);
         if (out.pending) {
+          console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} pending:${out.pending}`);
           row.status = "waiting";
           await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status: "waiting", pending_kind: out.pending, pending_event_id: call.id, lease_until: null });
           return "waiting";
@@ -102,6 +110,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         }
       }
       await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model });
+      console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} total=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
     }
     // Out of time for this invocation; a follow-up kick continues it.
     await updateSession(row.id, { lease_until: null });
@@ -131,7 +140,10 @@ async function finish(t: Tenant, row: SessionRow, report: string, status: "idle"
     else await notifyOwner(t, row, report, row.kind === "review" ? "Morning brief" : row.kind === "weekly" ? "Week ahead" : row.kind === "digest" ? "Heads-ups" : undefined);
     await appendTranscript(t, { channel: row.channel, role: "agent", text: report }).catch(() => {});
   }
-  if (proactive && row.browserbase_session_id) await releaseBrowser(row.browserbase_session_id).catch(() => {});
+  if (row.browserbase_session_id) {
+    await disconnectBrowser(row.browserbase_session_id);
+    if (proactive) await releaseBrowser(row.browserbase_session_id).catch(() => {});
+  }
   return status === "error" ? "error" : "done";
 }
 

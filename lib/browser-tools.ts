@@ -22,17 +22,50 @@ async function handleFor(t: Tenant, row: SessionRow): Promise<BrowserHandle> {
   return h;
 }
 
+/**
+ * One CDP connection per hosted browser, kept open between tool calls within this worker: connecting
+ * to the hosted browser costs one to two seconds, and a task makes dozens of calls. A connection that
+ * died (the worker was frozen, the session ended) is replaced on the next call.
+ */
+const connections = new Map<string, Browser>();
+
+async function connect(handle: BrowserHandle): Promise<Browser> {
+  const cached = connections.get(handle.sessionId);
+  if (cached?.isConnected()) return cached;
+  connections.delete(handle.sessionId);
+  const browser = await chromium.connectOverCDP(handle.connectUrl, { timeout: 30_000 });
+  connections.set(handle.sessionId, browser);
+  browser.on("disconnected", () => {
+    if (connections.get(handle.sessionId) === browser) connections.delete(handle.sessionId);
+  });
+  return browser;
+}
+
+/** Drop the cached connection for a session (the hosted browser was released). */
+export async function disconnectBrowser(sessionId: string): Promise<void> {
+  const b = connections.get(sessionId);
+  connections.delete(sessionId);
+  await b?.close().catch(() => {});
+}
+
 async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser: Browser, handle: BrowserHandle) => Promise<T>): Promise<T> {
   const handle = await handleFor(t, row);
-  const browser = await chromium.connectOverCDP(handle.connectUrl, { timeout: 30_000 });
-  try {
+  const run = async () => {
+    const browser = await connect(handle);
     const context = browser.contexts()[0] ?? (await browser.newContext());
     let pages = context.pages();
     if (!pages.length) pages = [await context.newPage()];
     const page = pages[pages.length - 1];
     return await fn(page, browser, handle);
-  } finally {
-    await browser.close().catch(() => {});
+  };
+  try {
+    return await run();
+  } catch (err) {
+    // A stale connection fails on first use; reconnect once and repeat the call.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/closed|disconnected|Target|has been destroyed|WebSocket/i.test(msg)) throw err;
+    await disconnectBrowser(handle.sessionId);
+    return await run();
   }
 }
 

@@ -158,6 +158,17 @@ export function withCacheMarkers(messages: ChatMessage[], level: "full" | "syste
   return out;
 }
 
+/** "a,b,c" -> primary a with fallbacks b and c (OpenRouter tries the next when one is down or rate-limited). */
+export function modelList(spec: string): string[] {
+  return spec.split(",").map((m) => m.trim()).filter(Boolean);
+}
+
+/** How OpenRouter picks among the providers serving a model: LLM_SORT=price (default), throughput or latency. */
+function providerSort(): "price" | "throughput" | "latency" {
+  const v = (process.env.LLM_SORT ?? "price").toLowerCase();
+  return v === "throughput" || v === "latency" ? v : "price";
+}
+
 export async function complete(opts: {
   model: string;
   messages: ChatMessage[];
@@ -166,8 +177,10 @@ export async function complete(opts: {
   maxTokens?: number;
   signal?: AbortSignal;
 }): Promise<Completion> {
-  const { provider, model } = resolveModel(opts.model);
+  const ids = modelList(opts.model);
+  const { provider, model } = resolveModel(ids[0] ?? opts.model);
   const isOpenRouter = () => provider.baseUrl.includes("openrouter.ai");
+  const started = Date.now();
   let cacheLevel: "full" | "system" | "none" = wantsCacheMarkers(model) ? "full" : "none";
   const body: Record<string, unknown> = {
     model,
@@ -182,9 +195,11 @@ export async function complete(opts: {
     if (provider.baseUrl.includes("api.openai.com")) body.parallel_tool_calls = false;
   }
   if (isOpenRouter()) {
-    // Cheapest healthy provider for the chosen model; fall back to others if it fails.
-    body.provider = { sort: "price", allow_fallbacks: true };
+    // Cheapest (or fastest, LLM_SORT) healthy provider for the chosen model; fall back to others if it fails.
+    body.provider = { sort: providerSort(), allow_fallbacks: true };
     body.usage = { include: true };
+    // A model list becomes OpenRouter's fallback chain: the next model answers when the first is down.
+    if (ids.length > 1) body.models = ids.map((id) => resolveModel(id).model);
   }
   const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` };
   if (isOpenRouter()) {
@@ -240,6 +255,7 @@ export async function complete(opts: {
     const choice = data.choices?.[0];
     if (!choice) throw new LLMError("empty completion", 200, true);
     const msg = choice.message;
+    console.log(`[llm] ${data.model ?? model}: ${((Date.now() - started) / 1000).toFixed(1)}s in=${data.usage?.prompt_tokens ?? "?"} cached=${data.usage?.prompt_tokens_details?.cached_tokens ?? 0} out=${data.usage?.completion_tokens ?? "?"}${typeof data.usage?.cost === "number" ? ` $${data.usage.cost.toFixed(4)}` : ""}`);
     // Some providers return tool_calls with arguments as objects; normalize to strings.
     for (const tc of msg.tool_calls ?? []) {
       if (typeof (tc.function as { arguments: unknown }).arguments !== "string") tc.function.arguments = JSON.stringify(tc.function.arguments);

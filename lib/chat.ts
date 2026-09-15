@@ -63,6 +63,60 @@ export function toChatItems(row: SessionRow): ChatItem[] {
   return items;
 }
 
+/** What the agent is doing right now, for the typing line, from the last tool it called. */
+export function activityOf(row: SessionRow | undefined): string | null {
+  if (!row || row.status !== "running") return null;
+  for (let i = row.messages.length - 1; i >= 0; i--) {
+    const m = row.messages[i];
+    if (m.role !== "assistant" || !m.tool_calls?.length) continue;
+    const tc = m.tool_calls[m.tool_calls.length - 1];
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(tc.function.arguments);
+    } catch {
+      /* ignore */
+    }
+    const host = (u: unknown) => {
+      try {
+        return new URL(String(u)).hostname.replace(/^www\./, "");
+      } catch {
+        return "";
+      }
+    };
+    switch (tc.function.name) {
+      case "browser_open":
+      case "browser_goto":
+        return host(args.url) ? `Opening ${host(args.url)}…` : "Opening the browser…";
+      case "login":
+        return `Signing in to ${args.domain ?? "the site"}…`;
+      case "web_search":
+        return "Searching the web…";
+      case "browser_watch":
+        return "Waiting for a reply on the site…";
+      case "browser_screenshot":
+        return "Looking at the page…";
+      case "memory_read":
+      case "memory_grep":
+      case "memory_list":
+        return "Checking my notes…";
+      case "memory_write":
+      case "memory_append":
+        return "Taking notes…";
+      case "calendar":
+        return "Checking the calendar…";
+      case "owner_inbox":
+        return "Reading your mail…";
+      case "send_email":
+        return "Writing an email…";
+      case "escalate_model":
+        return "Bringing in a stronger model…";
+      default:
+        return tc.function.name.startsWith("browser_") ? "Working on the site…" : "Working…";
+    }
+  }
+  return "Thinking…";
+}
+
 /** Heads-ups from sessions the agent started on its own, so they show in chat as well as email. */
 export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> {
   const out: ChatItem[] = [];
