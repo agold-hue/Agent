@@ -6,6 +6,7 @@ import { tools } from "./agent-config.js";
 import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage } from "./llm.js";
 import { appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
+import { modelFor, tierOfModel } from "./router.js";
 import { acquireLease, getMessages, getSession, persistTurn, releaseLease, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool } from "./tools.js";
@@ -24,6 +25,8 @@ const COMPACT_TARGET = 0.6;
 // silence the chat.
 const CHAT_ROLLOVER_TURNS = Number(process.env.CHAT_ROLLOVER_TURNS ?? 60);
 const CHAT_ROLLOVER_SHARE = 0.6;
+// How many identical tool calls in a row count as a stuck loop (a real failure hit ~40).
+const LOOP_LIMIT = Number(process.env.LOOP_LIMIT ?? 6);
 
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
 
@@ -52,6 +55,11 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   // Everything up to here is already in the DB; the loop only ever appends beyond this index, so a
   // message the user sends mid-task (its own atomic append) is never overwritten.
   let persisted = row.messages.length;
+  // Loop guard: a cheap model can get wedged repeating one action (40x browser_press in a real case),
+  // burning the whole step budget with zero progress. Track recent tool calls; on a run of identical
+  // ones, escalate once to a stronger model, then stop with a clear message rather than spin.
+  const sigs: string[] = [];
+  let escalatedForLoop = false;
 
   try {
     while (Date.now() - started < budgetMs) {
@@ -148,6 +156,32 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the notes above.)` });
         }
       }
+
+      // Loop guard: count how many of the most recent tool calls are the exact same call. Polling
+      // waits (browser_watch/browser_wait_for) are meant to repeat, so they don't count.
+      for (const c of calls) if (!/^browser_(watch|wait_for)$/.test(c.function.name)) sigs.push(`${c.function.name}:${c.function.arguments}`);
+      if (sigs.length > 24) sigs.splice(0, sigs.length - 24);
+      const lastSig = sigs[sigs.length - 1];
+      let repeat = 0;
+      for (let i = sigs.length - 1; i >= 0 && sigs[i] === lastSig; i--) repeat++;
+      if (lastSig && repeat >= LOOP_LIMIT) {
+        await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model });
+        persisted = row.messages.length;
+        if (!escalatedForLoop && tierOfModel(row.model ?? "", t) !== "hard") {
+          // Give it one real chance to break out on a stronger model before giving up.
+          escalatedForLoop = true;
+          row.model = modelFor("hard", t);
+          sigs.length = 0;
+          row.messages.push({ role: "user", content: "(You have repeated the exact same step several times with no progress — this is a dead end. Stop repeating it. Read the page fresh and take a completely different approach. If a login failed, a code or captcha is blocking you, or the site simply will not let you through, do NOT keep trying: stop and tell the user in one line exactly what is blocking you and what you need from them. You are now on a stronger model.)" });
+          await persistTurn(row.id, row.messages.slice(persisted), { model: row.model });
+          persisted = row.messages.length;
+          console.log(`[turn] ${row.id} #${row.turns} loop on ${lastSig.slice(0, 40)} -> escalate`);
+          continue;
+        }
+        console.log(`[turn] ${row.id} #${row.turns} loop on ${lastSig.slice(0, 40)} -> stop`);
+        return await finish(t, row, persisted, stuckMessage(row), "idle");
+      }
+
       await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model });
       persisted = row.messages.length;
       console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} total=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
@@ -237,9 +271,22 @@ export function stallNudge(row: SessionRow, reply: string): string | undefined {
 function lastAssistantText(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === "assistant" && typeof m.content === "string" && m.content.trim()) return m.content.trim();
+    // Skip the ephemeral "on it" ack, or a step-limit summary would just quote "On it, Boss".
+    if (m.role === "assistant" && !m.ephemeral && typeof m.content === "string" && m.content.trim()) return m.content.trim();
   }
   return "";
+}
+
+/** A useful message when the loop guard trips: tailored if the recent tool results show a login/verification wall. */
+function stuckMessage(row: SessionRow): string {
+  const recent = row.messages.slice(-12).map((m) => (typeof m.content === "string" ? m.content : "")).join("\n").toLowerCase();
+  if (/needs_user|password form is still|rejected the login|no_credentials|sign ?in|log ?in/.test(recent)) {
+    return "I couldn't get signed in — the site blocked the automated login (it likely needs a code, a captcha, or the saved login is off). I stopped instead of spinning on it. Want me to try again, or check the login under Settings › Logins?";
+  }
+  if (/captcha|verify you are human|are you a robot|challenge/.test(recent)) {
+    return "The site threw up a verification wall I can't get past on my own. I stopped rather than keep trying. Want to take it from here in the browser, or should I try a different route?";
+  }
+  return "I got stuck repeating the same step without making progress, so I stopped instead of burning time. Tell me to retry or point me at a different approach and I'll jump back on it.";
 }
 
 /**
