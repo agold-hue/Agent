@@ -1,4 +1,3 @@
-import { waitUntil } from "@vercel/functions";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { env } from "../lib/env.js";
 import { kick, runSession } from "../lib/runtime.js";
@@ -19,7 +18,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const outcome = await runSession(sessionId, { budgetMs: 235_000 });
     console.log(`[run] ${sessionId}: ${outcome} after ${Math.round((Date.now() - started) / 1000)}s`);
-    if (outcome === "continue") waitUntil(kick(sessionId));
+    if (outcome === "continue") await kick(sessionId); // 3 s cap; the cron sweep is the backstop
     return res.status(200).json({ session: sessionId, outcome });
   } catch (err) {
     console.error(`[run] ${sessionId}:`, err);
