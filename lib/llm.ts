@@ -168,9 +168,20 @@ export async function complete(opts: {
 
   let lastErr: LLMError | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(`${provider.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
+    // A hung provider must fail fast enough for the loop to retry within its slice.
+    const signal = opts.signal ?? AbortSignal.timeout(Number(process.env.LLM_TIMEOUT_MS ?? 120_000));
+    let res: Response;
+    try {
+      res = await fetch(`${provider.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal });
+    } catch (e) {
+      lastErr = new LLMError(`provider unreachable: ${e instanceof Error ? e.message : String(e)}`, undefined, true);
+      console.error(`[llm] ${model}: ${lastErr.message}`);
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      continue;
+    }
     if (res.status === 429 || res.status >= 500) {
       lastErr = new LLMError(`${res.status} ${await res.text().catch(() => "")}`.slice(0, 500), res.status, true);
+      console.error(`[llm] ${model}: ${lastErr.message}`);
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
       continue;
     }
@@ -183,6 +194,7 @@ export async function complete(opts: {
         attempt--;
         continue;
       }
+      console.error(`[llm] ${model}: ${res.status} ${text.slice(0, 300)}`);
       throw new LLMError(`${res.status} ${text}`.slice(0, 1000), res.status, false);
     }
     const data = (await res.json()) as {

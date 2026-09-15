@@ -11,17 +11,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (token !== env.cronSecret() && (req.headers.authorization ?? "") !== `Bearer ${env.cronSecret()}`) return res.status(401).end();
   const sessionId = typeof req.query.session === "string" ? req.query.session : "";
   if (!sessionId) return res.status(400).json({ error: "session required" });
-  // Respond at once so the caller never waits on the loop. Vercel freezes a function after its
-  // response unless the work is registered with waitUntil, so the loop runs inside it.
-  const work = (async () => {
-    try {
-      const outcome = await runSession(sessionId, { budgetMs: 235_000 });
-      if (outcome === "continue") await kick(sessionId);
-    } catch (err) {
-      console.error(`[run] ${sessionId}:`, err);
-    }
-  })();
-  waitUntil(work);
-  res.status(202).json({ accepted: sessionId });
-  await work;
+  // The whole loop runs before the response. Vercel ends a function once it has responded, and on
+  // this project the after-response keep-alive did not hold, so nothing is sent until the slice is
+  // done. Callers use kick(), which fires and forgets, so nobody waits on this.
+  console.log(`[run] ${sessionId}: start`);
+  const started = Date.now();
+  try {
+    const outcome = await runSession(sessionId, { budgetMs: 235_000 });
+    console.log(`[run] ${sessionId}: ${outcome} after ${Math.round((Date.now() - started) / 1000)}s`);
+    if (outcome === "continue") waitUntil(kick(sessionId));
+    return res.status(200).json({ session: sessionId, outcome });
+  } catch (err) {
+    console.error(`[run] ${sessionId}:`, err);
+    return res.status(500).json({ session: sessionId, error: err instanceof Error ? err.message : String(err) });
+  }
 }
