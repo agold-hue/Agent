@@ -794,6 +794,8 @@
   function applyHistory(data) {
     const prevAgent = items.filter((i) => i.kind !== "user").length;
     items = data.items.filter((i) => i.kind !== "status" && i.kind !== "tool_resolved");
+    // Belt and braces: the same agent line twice in a row within a minute is one line.
+    items = items.filter((it, i) => !(i > 0 && it.kind === "agent" && items[i - 1].kind === "agent" && items[i - 1].text === it.text && Math.abs(new Date(it.at) - new Date(items[i - 1].at)) < 60_000));
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
     sessionId = data.session_id; status = data.status; pending = data.pending; liveViewUrl = data.live_view_url || null; tasks = data.tasks || [];
     renderTasks();
@@ -839,8 +841,11 @@
       const data = await r.json();
       if (!r.ok) { it.text += `\n(${data.error || "failed"})`; renderList(false); if (r.status === 402) showTab("billing"); return; }
       if (data.reaction) { it.reaction = data.reaction; renderList(false); }
-      if (data.ack) { items.push({ kind: "agent", id: "ack-" + Date.now(), text: data.ack, at: new Date().toISOString() }); renderList(true); }
-      sessionId = data.session_id; status = "running"; setTyping(true); setStatus("running", "working…"); openStream();
+      // The server already stored the "on it" line; refresh rather than add a local copy that a poll
+      // racing this request would leave next to the server's, showing it twice.
+      sessionId = data.session_id; status = "running"; setTyping(true); setStatus("running", "working…");
+      if (data.ack) loadHistory().catch(() => {});
+      openStream();
     } catch (e) { it.text += "\n(failed to send)"; renderList(false); }
     finally { $("send").disabled = false; $("text").focus(); }
   }

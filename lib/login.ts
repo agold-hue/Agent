@@ -233,12 +233,16 @@ export async function loginToSite(t: Tenant, opts: {
   connectUrl: string;
   domain: string;
   accountHint?: string;
+  /** The email or phone the user gave in chat for a site with nothing in the vault: a passwordless (texted code) sign-in is attempted. */
+  username?: string;
   /** A code the user sent from their phone: typed into the verification field on the current page. */
   code?: string;
 }): Promise<LoginResult> {
   const domain = registrableDomain(opts.domain);
   if (opts.code) return enterCode(opts.connectUrl, domain, opts.code);
-  const cred = await findCredential(t, domain, opts.accountHint);
+  // A vault record, or the identifier the user just gave (Uber, Lyft and most apps sign in with a phone
+  // number and a texted code; no password exists). An empty password means passwordless.
+  const cred = (await findCredential(t, domain, opts.accountHint)) ?? (opts.username ? { username: opts.username.trim(), password: "", totp: undefined } : undefined);
   if (!cred) return { status: "no_credentials", domain };
 
   const { browser, page } = await attach(opts.connectUrl, domain);
@@ -265,17 +269,22 @@ export async function loginToSite(t: Tenant, opts: {
       await user.fill(cred.username);
     }
     if (!pass) {
-      // Two-step forms: username first, then password on the next screen.
+      // Two-step forms: username first, then password (or a texted code) on the next screen.
       await clickSubmit(page, user);
       await settle(page);
       await tagFields(page);
       pass = await firstVisible(page, PASS_SELECTORS);
     }
-    if (!pass) {
-      return { status: "needs_user", reason: "No password field appeared after entering the username (passwordless or passkey flow?).", url: page.url() };
+    if (pass && !cred.password) {
+      return { status: "needs_user", reason: `${domain} asks for a password after the ${/^\+?[\d\s()-]{7,}$/.test(cred.username) ? "phone number" : "email"}, and none is saved. Look for a "text me a code" or "sign in with code" option on the page and use it (then request_code); otherwise ask the user in one line to add the password under Settings > Logins, or use Forgot password with get_email_code.`, url: page.url() };
     }
-    await pass.fill(cred.password);
-    await clickSubmit(page, pass);
+    if (!pass && !(await firstVisible(page, OTP_SELECTORS)) && !(await isMfaChooser(page)) && !(await isSignedIn(page))) {
+      return { status: "needs_user", reason: cred.password ? "No password field appeared after entering the username (passwordless or passkey flow?). Snapshot the page and look for a code or sign-in option." : "Nothing asked for a code after the identifier. Snapshot the page: look for a \"text me a code\" or \"continue with phone\" option, click it, then request_code.", url: page.url() };
+    }
+    if (pass) {
+      await pass.fill(cred.password);
+      await clickSubmit(page, pass);
+    }
     await settle(page, 4000);
     // A bot check after submit: the hosted browser solves most of them given a moment.
     if (BOT_WALL.test(await pageText(page).catch(() => ""))) {
@@ -319,6 +328,9 @@ export async function loginToSite(t: Tenant, opts: {
       }
       if (BOT_WALL.test(text)) return { status: "needs_user", reason: `The site's bot check rejected the automated sign-in. Do not retry. ${TAKEOVER}`, url: page.url() };
       return { status: "needs_user", reason: `Password form is still showing after submit; the site may have shown a challenge. Take one screenshot; if it is a bot check or the same form, do not retry. ${TAKEOVER}`, url: page.url() };
+    }
+    if (!cred.password && !(await isSignedIn(page)) && (await firstVisible(page, OTP_SELECTORS))) {
+      return { status: "needs_user", reason: "The code field is still showing after the code; the site may have rejected it. Ask the user for a fresh one.", url: page.url() };
     }
     return { status: "logged_in", url: page.url(), title: await page.title(), account: cred.username };
   } finally {

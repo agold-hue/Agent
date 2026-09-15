@@ -69,16 +69,18 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
       case "login": {
         const browser = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
         if (!browser) return { text: "No active browser. Call browser_open first." };
-        const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined, code: args.code ? s("code") : undefined });
+        const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined, username: args.username ? s("username") : undefined, code: args.code ? s("code") : undefined });
         console.log(`[login] ${row.id} ${s("domain")}: ${result.status}${"reason" in result ? ` (${result.reason})` : ""}`);
         const payload: Record<string, unknown> = { ...result };
         if (result.status === "needs_user") payload.live_view_url = browser.liveViewUrl;
         if (result.status === "needs_user" && /code/i.test(result.reason)) payload.hint = "If the site offers to text or email a code, click that, then request_code.";
-        if (result.status === "no_credentials") payload.note = "The user can add this login under Settings > Logins, or you can sign up (checkpoint first) and save_login.";
+        if (result.status === "no_credentials") payload.note = "Nothing saved for this site. If the user gave you their phone or email for it in chat, call login again with `username` set to it (most apps then text a code: request_code, then login with the code). Otherwise ask them in one line for the login, or to add it under Settings > Logins.";
+        if (result.status === "logged_in" && args.username && !args.code) payload.note = "Signed in with the identifier from chat. Call save_login with this username and no password so next time it is known, and note it in facts.md.";
         return { text: JSON.stringify(payload) };
       }
       case "save_login": {
-        const id = await saveCredential(t, { domain: registrableDomain(s("domain")), username: s("username"), password: s("password"), notes: args.notes ? s("notes") : undefined });
+        // Phone-and-code accounts (Uber, Lyft, many apps) have no password: the username alone is saved.
+        const id = await saveCredential(t, { domain: registrableDomain(s("domain")), username: s("username"), password: args.password ? s("password") : "", notes: args.notes ? s("notes") : undefined });
         return { text: JSON.stringify({ saved: true, id }) };
       }
       case "get_email_code": {
