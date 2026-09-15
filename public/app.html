@@ -370,6 +370,7 @@
     <div class="row"><button class="primary" id="vAdd">Save login</button><span class="hint" id="vMsg"></span></div>
   </div>
   <div class="card"><h3>Saved</h3><table><thead><tr><th>Site</th><th>Account</th><th>2FA</th><th></th></tr></thead><tbody id="vList"></tbody></table></div>
+  <div class="card"><h3>Browser sessions</h3><p>Every hosted browser the secretary used: watch one live, replay a recording of what it did, or stop one that is still running.</p><table><thead><tr><th>Task</th><th>When</th><th>State</th><th></th></tr></thead><tbody id="bsList"></tbody></table><span class="hint" id="bsMsg"></span></div>
 </div></main>
 
 <main id="billing" hidden><div class="panel">
@@ -511,7 +512,29 @@
   }
 
   // ---- vault
+  async function loadBrowserSessions() {
+    const box = $("bsList"); if (!box) return;
+    try {
+      const r = await fetch("/api/browser/sessions"); const d = await r.json();
+      box.innerHTML = "";
+      if (!d.configured) { $("bsMsg").textContent = "The hosted browser is not set up on this server."; return; }
+      if (!d.items.length) { $("bsMsg").textContent = "No browser sessions yet."; return; }
+      $("bsMsg").textContent = "";
+      for (const it of d.items) {
+        const tr = document.createElement("tr");
+        const when = it.started_at ? new Date(it.started_at).toLocaleString() : "";
+        const links = [];
+        if (it.live_view_url) links.push(`<a href="${it.live_view_url}" target="_blank" rel="noopener">Watch</a>`);
+        links.push(`<a href="${it.recording_url}" target="_blank" rel="noopener">Recording</a>`);
+        if (it.state === "running") links.push(`<a href="#" data-stop="${it.browser_session_id}">Stop</a>`);
+        tr.innerHTML = `<td>${(it.task || "").replace(/[<>&]/g, "")}</td><td>${when}</td><td>${it.state}</td><td>${links.join(" · ")}</td>`;
+        box.appendChild(tr);
+      }
+      box.querySelectorAll("[data-stop]").forEach((a) => a.addEventListener("click", async (e) => { e.preventDefault(); await fetch(`/api/browser/sessions?id=${encodeURIComponent(a.dataset.stop)}`, { method: "DELETE" }); loadBrowserSessions(); }));
+    } catch (e) { $("bsMsg").textContent = "Could not load browser sessions."; }
+  }
   async function loadVault() {
+    loadBrowserSessions();
     const r = await api("/api/vault"); if (!r.ok) return;
     const { items } = await r.json();
     $("vList").innerHTML = "";

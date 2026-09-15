@@ -3,6 +3,7 @@ import { ensureSchema } from "../lib/db.js";
 import logout from "../server/routes/auth/logout.js";
 import requestCode from "../server/routes/auth/request-code.js";
 import verify from "../server/routes/auth/verify.js";
+import browserSessions from "../server/routes/browser-sessions.js";
 import checkout from "../server/routes/billing/checkout.js";
 import portal from "../server/routes/billing/portal.js";
 import history from "../server/routes/chat/history.js";
@@ -52,6 +53,7 @@ const routes: Record<string, Handler> = {
   "mail-inbound": mailInbound,
   me,
   models,
+  "browser/sessions": browserSessions,
   receipts,
   run,
   stats,
