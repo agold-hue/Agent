@@ -68,21 +68,36 @@ function providers(): Record<string, { base_url: string; api_key: string }> {
 export const GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 /**
- * True when calls go to Google's own Gemini endpoint. GEMINI_API_KEY wins whenever it is set (a Google
- * key is usually the one with credit); LLM_PROVIDER=openrouter forces the OpenRouter key instead.
+ * True when calls go to Google's own Gemini endpoint: LLM_PROVIDER=gemini, or a GEMINI_API_KEY with no
+ * LLM_API_KEY, or an LLM_BASE_URL pointing at Google. With both keys set, OpenRouter is the default
+ * because it fronts every model and normalizes tool schemas.
  */
 export function geminiDirect(): boolean {
+  if (process.env.LLM_PROVIDER === "gemini") return !!process.env.GEMINI_API_KEY;
   if (process.env.LLM_PROVIDER === "openrouter") return false;
-  if (process.env.GEMINI_API_KEY) return true;
-  return !!process.env.LLM_API_KEY && (process.env.LLM_BASE_URL ?? "").includes("generativelanguage.googleapis.com");
+  if (process.env.LLM_API_KEY) return (process.env.LLM_BASE_URL ?? "").includes("generativelanguage.googleapis.com");
+  return !!process.env.GEMINI_API_KEY;
+}
+
+/** Google's function-calling schema is a subset of JSON Schema: no additionalProperties, objects need properties. */
+function geminiSafeSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(geminiSafeSchema);
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema as Record<string, unknown>)) {
+    if (k === "additionalProperties" || k === "$schema") continue;
+    out[k] = geminiSafeSchema(v);
+  }
+  if (out.type === "object" && !out.properties) out.properties = {};
+  return out;
 }
 
 export function resolveModel(model: string): { provider: Provider; model: string } {
   for (const [prefix, p] of Object.entries(providers())) {
     if (model.startsWith(prefix)) return { provider: { baseUrl: p.base_url.replace(/\/$/, ""), apiKey: p.api_key }, model: model.slice(prefix.length) };
   }
-  // GEMINI_API_KEY routes everything to Google's OpenAI-compatible endpoint (unless LLM_PROVIDER=openrouter).
-  if (process.env.GEMINI_API_KEY && process.env.LLM_PROVIDER !== "openrouter") {
+  // Google direct: GEMINI_API_KEY as the only key, or LLM_PROVIDER=gemini.
+  if (process.env.GEMINI_API_KEY && (process.env.LLM_PROVIDER === "gemini" || !process.env.LLM_API_KEY)) {
     return { provider: { baseUrl: GEMINI_OPENAI_URL, apiKey: process.env.GEMINI_API_KEY }, model: model.replace(/^google\//, "") };
   }
   const k = process.env.LLM_API_KEY;
@@ -154,7 +169,7 @@ export async function complete(opts: {
     max_tokens: opts.maxTokens ?? 4000,
   };
   if (opts.tools?.length) {
-    body.tools = opts.tools;
+    body.tools = provider.baseUrl.includes("generativelanguage.googleapis.com") ? (geminiSafeSchema(opts.tools) as ToolDef[]) : opts.tools;
     body.tool_choice = "auto";
     // Only OpenAI itself gets this flag: on OpenRouter it narrows the provider pool, elsewhere it may be rejected.
     if (provider.baseUrl.includes("api.openai.com")) body.parallel_tool_calls = false;
