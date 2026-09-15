@@ -6,7 +6,7 @@ import { tools } from "./agent-config.js";
 import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage } from "./llm.js";
 import { appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
-import { acquireLease, getSession, releaseLease, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { acquireLease, getMessages, getSession, persistTurn, releaseLease, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool } from "./tools.js";
 
@@ -49,11 +49,25 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   // today's settings, and which services (browser, mail, Google) are available right now.
   if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t) };
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
+  // Everything up to here is already in the DB; the loop only ever appends beyond this index, so a
+  // message the user sends mid-task (its own atomic append) is never overwritten.
+  let persisted = row.messages.length;
 
   try {
     while (Date.now() - started < budgetMs) {
-      if (row.turns >= MAX_TURNS) return await finish(t, row, "I've hit the step limit for one task, so I stopped here. Here's where I got to:\n\n" + (lastAssistantText(row.messages) || "(no summary)") + "\n\nSend the next message and I'll pick it up fresh.", "idle");
-      if (sessionCap > 0 && row.cost_cents >= sessionCap) return await finish(t, row, `Hit the per-task spend cap, so I paused here. Say "continue" and I'll keep going in a fresh task.\n\n${lastAssistantText(row.messages)}`, "idle");
+      if (row.turns >= MAX_TURNS) return await finish(t, row, persisted, "I've hit the step limit for one task, so I stopped here. Here's where I got to:\n\n" + (lastAssistantText(row.messages) || "(no summary)") + "\n\nSend the next message and I'll pick it up fresh.", "idle");
+      if (sessionCap > 0 && row.cost_cents >= sessionCap) return await finish(t, row, persisted, `Hit the per-task spend cap, so I paused here. Say "continue" and I'll keep going in a fresh task.\n\n${lastAssistantText(row.messages)}`, "idle");
+
+      // Resync to the DB (the source of truth) so a message the user sent mid-task is picked up and
+      // handled in this same session, never lost. The DB only grows (every writer appends), so adopt
+      // it whenever it is longer, keeping our freshly rebuilt system prompt in slot 0.
+      const dbMsgs = await getMessages(sessionId).catch(() => null);
+      if (dbMsgs && dbMsgs.length > row.messages.length) {
+        const sys = row.messages[0];
+        row.messages = dbMsgs;
+        if (sys?.role === "system" && row.messages[0]?.role === "system") row.messages[0] = sys;
+      }
+      persisted = row.messages.length;
 
       // The stored conversation is the user's record and is never trimmed; the model gets a working copy
       // kept under the context budget.
@@ -65,7 +79,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         completion = await complete({ model: row.model!, messages: context, tools });
       } catch (err) {
         if (err instanceof LLMError && err.retryable) throw err; // worker will retry via cron sweep
-        return await finish(t, row, `The AI provider rejected the request (${err instanceof Error ? err.message.slice(0, 200) : "error"}). Try again or tell me to use a different approach.`, "error");
+        return await finish(t, row, persisted, `The AI provider rejected the request (${err instanceof Error ? err.message.slice(0, 200) : "error"}). Try again or tell me to use a different approach.`, "error");
       }
       timings.push(`llm=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
       const cost = costCents(completion.model, completion.usage);
@@ -87,12 +101,22 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (nudge) {
           // The model "ended" with a promise or a question it should not ask; send it back to work.
           row.messages.push({ role: "user", content: nudge });
-          await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens });
+          await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens });
+          persisted = row.messages.length;
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
           continue;
         }
+        // The task looks done. If the user sent something while we were finishing, handle it too
+        // instead of ending: persist this reply and loop, where the top picks the new message up.
+        const pending = await getMessages(sessionId).catch(() => null);
+        if (pending && pending.length > persisted) {
+          await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens });
+          persisted = row.messages.length;
+          console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} reply+more`);
+          continue;
+        }
         console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} reply`);
-        return await finish(t, row, text, "idle");
+        return await finish(t, row, persisted, text, "idle");
       }
 
       for (const call of calls) {
@@ -109,7 +133,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (out.pending) {
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} pending:${out.pending}`);
           row.status = "waiting";
-          await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status: "waiting", pending_kind: out.pending, pending_event_id: call.id, lease_until: null });
+          await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status: "waiting", pending_kind: out.pending, pending_event_id: call.id, lease_until: null });
+          persisted = row.messages.length;
           return "waiting";
         }
         row.messages.push({ role: "tool", tool_call_id: call.id, content: out.text || "(ok)" });
@@ -123,7 +148,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the notes above.)` });
         }
       }
-      await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model });
+      await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model });
+      persisted = row.messages.length;
       console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} total=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
     }
     // Out of time for this invocation; a follow-up kick continues it.
@@ -136,7 +162,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 }
 
 /** The task ended for this turn: deliver the report on the right channel and mark idle. */
-async function finish(t: Tenant, row: SessionRow, report: string, status: "idle" | "error"): Promise<RunOutcome> {
+async function finish(t: Tenant, row: SessionRow, persisted: number, report: string, status: "idle" | "error"): Promise<RunOutcome> {
   const proactive = ["review", "weekly", "followup", "triage", "digest"].includes(row.kind);
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
   // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
@@ -148,7 +174,17 @@ async function finish(t: Tenant, row: SessionRow, report: string, status: "idle"
   // resumable) so the next message continues it with full context. Only the real limits roll over.
   const rollOver = row.kind === "chat" && (limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
   if (rollOver) status = "terminated" as typeof status;
-  await updateSession(row.id, { messages: row.messages, turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
+  // Append-only: never overwrite the whole array, or a message the user just sent is lost.
+  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
+  // A message that landed while we were finishing: flip back to running and re-kick so it gets
+  // answered now, instead of sitting idle until the user sends something else.
+  if (!rollOver && status === "idle") {
+    const after = await getMessages(row.id).catch(() => null);
+    if (after && after.length > row.messages.length) {
+      await updateSession(row.id, { status: "running", lease_until: null });
+      void kick(row.id);
+    }
+  }
   if (report && !silent) {
     // Mail triage can wait for the check-in times; a timer the user or the agent set fires on time.
     const holdable = row.kind === "triage";

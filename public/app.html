@@ -655,7 +655,7 @@
       bubble.append(h, body);
       const actions = document.createElement("div"); actions.className = "actions";
       if (item.name === "checkpoint" || item.name === "send_email") { const yes = document.createElement("button"); yes.type = "button"; yes.className = "btnPri"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve"; yes.onclick = () => send("yes"); const no = document.createElement("button"); no.type = "button"; no.className = "btn"; no.textContent = "Change…"; no.onclick = () => $("text").focus(); actions.append(yes, no); }
-      else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = item.name === "request_code" ? "Send the code in the box below, or type it into the page yourself:" : "Answer in the box below."; actions.append(hint); if (item.name === "request_code" && liveViewUrl && !item.resolved) { const a = document.createElement("a"); a.href = liveViewUrl; a.target = "_blank"; a.rel = "noopener"; a.className = "btn"; a.textContent = "Open the browser"; actions.append(a); } }
+      else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = item.name === "request_code" ? "Send the code in the box below." : "Answer in the box below."; actions.append(hint); }
       bubble.appendChild(actions);
     } else {
       const body = document.createElement("span"); body.className = "chatBody"; body.textContent = item.text; bubble.appendChild(body);
@@ -743,14 +743,13 @@
     box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
   }
   let liveViewUrl = null;
-  const watchLink = () => liveViewUrl ? ` <a href="${liveViewUrl.replace(/"/g, "&quot;")}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;margin-left:8px">Watch the browser ↗</a>` : "";
-  // During tool work show a calm status line (no dots): "Opening uber.com…". The bouncing "typing"
-  // dots appear only when the agent is composing a reply with no tool running, i.e. a post is imminent.
+  // Never reveal the site or a link to the browser: a calm status line during tool work, and the
+  // bouncing "typing" dots only while composing a reply (a post is imminent).
   function setTyping(on, activity) {
     const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
-    if (!on) { $("typing").innerHTML = pending && liveViewUrl ? `Browser is open, waiting for you.${watchLink()}` : ""; return; }
-    if (activity) { $("typing").innerHTML = `<span class="chatStatus">${esc(activity)}</span>${watchLink()}`; return; }
-    $("typing").innerHTML = `<span class="chatDots"><i></i><i></i><i></i></span>${esc(AGENT + " is typing…")}${watchLink()}`;
+    if (!on) { $("typing").innerHTML = ""; return; }
+    if (activity) { $("typing").innerHTML = `<span class="chatStatus">${esc(activity)}</span>`; return; }
+    $("typing").innerHTML = `<span class="chatDots"><i></i><i></i><i></i></span>${esc(AGENT + " is typing…")}`;
   }
   $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });

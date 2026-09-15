@@ -174,10 +174,39 @@ export async function appendUserMessage(row: SessionRow, text: string, images?: 
   await q("update agent_sessions set messages = messages || $2::jsonb, status = 'running', updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
+/** Just the message array, re-read fresh — used by the loop to pick up a message the user sent while it was working. */
+export async function getMessages(id: string): Promise<ChatMessage[]> {
+  const r = await one<{ messages: ChatMessage[] }>("select messages from agent_sessions where id = $1", [id]);
+  return r?.messages ?? [];
+}
+
+/**
+ * Append messages to a session AND set scalar fields in one atomic write, without ever overwriting
+ * the whole messages array. This is how the running loop persists each turn: a full-array overwrite
+ * would clobber a message the user sent (a separate atomic append) while the loop was working, which
+ * made typed chats vanish. `messages` in the patch is ignored; pass the new messages in `append`.
+ */
+export async function persistTurn(id: string, append: ChatMessage[], patch: Partial<SessionRow> = {}): Promise<void> {
+  const vals: unknown[] = [id, JSON.stringify(append)];
+  const sets = ["messages = messages || $2::jsonb"];
+  for (const [k, v] of Object.entries(patch)) {
+    if (k === "messages" || k === "id") continue;
+    vals.push(v !== null && typeof v === "object" && !(v instanceof Date) ? JSON.stringify(v) : v);
+    sets.push(`${k} = $${vals.length}`);
+  }
+  await q(`update agent_sessions set ${sets.join(", ")}, updated_at = now() where id = $1`, vals);
+}
+
 /** Append an assistant bubble (e.g. the instant "on it" ack). Ephemeral ones show in chat but are never sent to the model. */
 export async function appendAssistantMessage(row: SessionRow, text: string, ephemeral = false): Promise<void> {
   const msg: ChatMessage = ephemeral ? { role: "assistant", content: text, ephemeral: true } : { role: "assistant", content: text };
   await q("update agent_sessions set messages = messages || $2::jsonb, updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
+}
+
+/** Show the user's own text as a chat bubble (with its reaction) when it answered a question. UI-only: the model gets the answer via the tool result, so this echo is ephemeral. */
+export async function appendUserEcho(row: SessionRow, text: string, reaction?: string): Promise<void> {
+  const msg: ChatMessage = { role: "user", content: text, ephemeral: true, ...(reaction ? { reaction } : {}) };
+  await q("update agent_sessions set messages = messages || $2::jsonb where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
 /** Append a tool result for a pending call and mark runnable. */

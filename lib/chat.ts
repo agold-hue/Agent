@@ -76,25 +76,20 @@ export function activityOf(row: SessionRow | undefined): string | null {
     } catch {
       /* ignore */
     }
-    const host = (u: unknown) => {
-      try {
-        return new URL(String(u)).hostname.replace(/^www\./, "");
-      } catch {
-        return "";
-      }
-    };
+    // Never name the site or reveal a URL in the status line; keep it to what Pete is doing.
     switch (tc.function.name) {
       case "browser_open":
       case "browser_goto":
-        return host(args.url) ? `Opening ${host(args.url)}…` : "Opening the browser…";
+        return "Looking that up…";
       case "login":
-        return `Signing in to ${args.domain ?? "the site"}…`;
+        return "Signing you in…";
       case "web_search":
-        return "Searching the web…";
+        return "Searching…";
       case "browser_watch":
-        return "Waiting for a reply on the site…";
+      case "browser_wait_for":
+        return "Waiting on the page…";
       case "browser_screenshot":
-        return "Looking at the page…";
+        return "Reading the page…";
       case "memory_read":
       case "memory_grep":
       case "memory_list":
@@ -111,7 +106,7 @@ export function activityOf(row: SessionRow | undefined): string | null {
       case "escalate_model":
         return "Bringing in a stronger model…";
       default:
-        return tc.function.name.startsWith("browser_") ? "Working on the site…" : "Working…";
+        return "Working…";
     }
   }
   return "Thinking…";

@@ -7,9 +7,15 @@ import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
 import { tierFor, upgradedModel } from "../../../lib/router.js";
-import { appendAssistantMessage, appendUserMessage, updateSession, UsageCapError } from "../../../lib/sessions.js";
+import { appendAssistantMessage, appendUserEcho, appendUserMessage, updateSession, UsageCapError } from "../../../lib/sessions.js";
 import { resolvePending } from "../../../lib/tools.js";
 import { stampMessage } from "../../../lib/transcript.js";
+
+/** Show the user's answer as a chat bubble, except when it is a verification code (the pending call is request_code) — codes never render. */
+async function echoAnswer(session: { messages: Array<{ role: string; tool_calls?: Array<{ id: string; function: { name: string } }> }>; pending_event_id: string | null }, text: string, reaction: string): Promise<void> {
+  const isCode = session.messages.some((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === session.pending_event_id && c.function.name === "request_code"));
+  if (!isCode) await appendUserEcho(session as never, text, reaction);
+}
 
 /** POST { text } -> { session_id, action }. Sends into the live chat session (or starts one) and kicks the worker. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -39,9 +45,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       session = await startChatSession(t, text, undefined, reaction);
       action = "started";
     } else if (session.pending_kind === "checkpoint" || session.pending_kind === "send_email") {
+      await echoAnswer(session, text, reaction);
       await resolvePending(t, session, text, isApprovalReply(text));
       action = `${session.pending_kind}_resolved`;
     } else if (session.pending_kind === "ask_user") {
+      await echoAnswer(session, text, reaction);
       await resolvePending(t, session, text, null);
       action = "question_answered";
     } else {
