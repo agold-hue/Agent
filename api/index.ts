@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { ensureSchema } from "../lib/db.js";
 import logout from "../server/routes/auth/logout.js";
 import requestCode from "../server/routes/auth/request-code.js";
 import verify from "../server/routes/auth/verify.js";
@@ -81,6 +82,7 @@ function pathOf(req: VercelRequest): string {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const route = routes[pathOf(req)];
   if (!route) return res.status(404).json({ error: "not found" });
+  await ensureSchema(); // one cached check per process; applies schema changes after a deploy
   if (req.method !== "GET" && req.method !== "HEAD") {
     let raw: Buffer;
     try {

@@ -54,14 +54,25 @@ export async function one<T extends pg.QueryResultRow = pg.QueryResultRow>(text:
 }
 
 let schemaReady: Promise<void> | undefined;
-/** First request on a fresh database applies db/schema.sql (idempotent), so a new deploy needs no manual migrate step. */
+/**
+ * Keep the database in step with db/schema.sql. Every statement there is idempotent, so the whole
+ * file is applied whenever its hash differs from the one recorded in schema_meta: a fresh database
+ * gets everything, an existing one picks up new columns and tables on the first request after a
+ * deploy. Checked once per process (one small query on cold start).
+ */
 export async function ensureSchema(): Promise<void> {
   schemaReady ??= (async () => {
-    const r = await q<{ ok: string | null }>("select to_regclass('public.users')::text as ok");
-    if (r[0]?.ok) return;
     const fs = await import("node:fs");
     const path = await import("node:path");
-    await exec(fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8"));
+    const { createHash } = await import("node:crypto");
+    const sql = fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8");
+    const hash = createHash("sha256").update(sql).digest("hex");
+    await exec("create table if not exists schema_meta (key text primary key, value text not null, updated_at timestamptz not null default now())");
+    const r = await q<{ value: string }>("select value from schema_meta where key = 'schema_hash'");
+    if (r[0]?.value === hash) return;
+    await exec(sql);
+    await q("insert into schema_meta (key, value) values ('schema_hash', $1) on conflict (key) do update set value = $1, updated_at = now()", [hash]);
+    console.log(`[db] schema applied (${hash.slice(0, 12)})`);
   })().catch((e) => {
     schemaReady = undefined;
     throw e;
