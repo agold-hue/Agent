@@ -17,7 +17,8 @@ const RULES: Array<[RegExp, string]> = [
   [/\b(remember|note that|fyi|just so you know|i have an?|i'?m (in|at|going))\b/i, "📝"],
   [/\b(thanks|thank you|great|perfect|you rock|awesome)\b/i, "🙌"],
   [/\b(why (didn'?t|did not)|you (forgot|didn'?t|never)|still waiting|not working|mistake|wrong)\b/i, "🙏"],
-  [/^(yes|yep|ok|okay|do it|go ahead|approved|sure|y)\b/i, "✅"],
+  [/^(yes|yep|ok|okay|do it|go ahead|approved|sure|y|done|added|saved|updated|finished|fixed|it'?s (in|there|done))\b/i, "✅"],
+  [/\b(logins?|credentials?|vault|added (it|them|my))\b/i, "🔐"],
   [/^(no|nope|don'?t|stop|cancel|wait)\b/i, "✋"],
   [/\?\s*$/, "💬"],
 ];
@@ -25,5 +26,5 @@ const RULES: Array<[RegExp, string]> = [
 export function reactionFor(text: string): string {
   const t = text.trim();
   for (const [re, emoji] of RULES) if (re.test(t)) return emoji;
-  return "👀";
+  return "👍";
 }

@@ -40,7 +40,18 @@ interface Row {
 
 export async function findCredential(t: Tenant, domain: string, accountHint?: string): Promise<SiteCredential | undefined> {
   const d = registrableDomain(domain);
-  const rows = await q<Row>("select * from credentials where user_id = $1 and (domain = $2 or domain like $3) order by updated_at desc", [t.id, d, `%.${d}`]);
+  let rows = await q<Row>("select * from credentials where user_id = $1 and (domain = $2 or domain like $3) order by updated_at desc", [t.id, d, `%.${d}`]);
+  if (!rows.length) {
+    // People type "coned", "Con Edison", "www.coned.com/login": match on the site's name, not its exact spelling.
+    const base = d.split(".")[0].replace(/[^a-z0-9]/g, "");
+    if (base.length >= 3) {
+      const all = await q<Row>("select * from credentials where user_id = $1 order by updated_at desc", [t.id]);
+      rows = all.filter((r) => {
+        const rb = registrableDomain(r.domain).split(".")[0].replace(/[^a-z0-9]/g, "");
+        return rb === base || rb.startsWith(base) || base.startsWith(rb);
+      });
+    }
+  }
   if (!rows.length) return undefined;
   const pick = (accountHint && rows.find((r) => r.username.toLowerCase().includes(accountHint.toLowerCase()))) || rows[0];
   const seed = pick.totp_secret_enc ? decrypt(pick.totp_secret_enc, t.id) : undefined;

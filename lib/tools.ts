@@ -70,6 +70,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const browser = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
         if (!browser) return { text: "No active browser. Call browser_open first." };
         const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined });
+        console.log(`[login] ${row.id} ${s("domain")}: ${result.status}${"reason" in result ? ` (${result.reason})` : ""}`);
         const payload: Record<string, unknown> = { ...result };
         if (result.status === "needs_user") payload.live_view_url = browser.liveViewUrl;
         if (result.status === "no_credentials") payload.note = "The user can add this login under Settings > Logins, or you can sign up (checkpoint first) and save_login.";
