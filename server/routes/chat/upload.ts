@@ -70,7 +70,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
   // A bill, a statement, a photo of something: reading it well is judgment work, so it runs on the
   // strong model whatever tier the thread started on (never down mid-conversation).
-  if (session && tierOfModel(session.model ?? "", t) !== "hard") await updateSession(session.id, { model: modelFor("hard", t) });
+  if (session && tierOfModel(session.model ?? "", t) === "chat") await updateSession(session.id, { model: modelFor("task", t) });
   if (!session) session = await startChatSession(t, `${text}\n${handle}`, images);
   else if (session.pending_kind) {
     await answerPendingWith(session, isImage ? "a photo" : "a file");

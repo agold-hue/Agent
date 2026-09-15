@@ -13,7 +13,7 @@ export async function startChatSession(t: Tenant, firstMessage: string, images?:
   const recap = await recentRecap(t);
   // A thread that opens with a document or photo starts on the strong model.
   const document = !!images?.length || firstMessage.startsWith("(Attached");
-  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, quote, recap, ...(document ? { tier: "hard" as const } : {}) });
+  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, quote, recap, ...(document ? { tier: "task" as const } : {}) });
 }
 
 /**

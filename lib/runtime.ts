@@ -141,7 +141,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         completion = await complete({ model: row.model!, messages: context, tools });
       } catch (err) {
         if (err instanceof LLMError && err.retryable) throw err; // worker will retry via cron sweep
-        return await finish(t, row, persisted, `The AI provider rejected the request (${err instanceof Error ? err.message.slice(0, 200) : "error"}). Try again or tell me to use a different approach.`, "error");
+        return await finish(t, row, persisted, providerProblem(err), "error");
       }
       timings.push(`llm=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
       await charge(t, row, completion);
@@ -238,6 +238,15 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
     await updateSession(row.id, { lease_until: null, error: (err instanceof Error ? err.message : String(err)).slice(0, 500) });
     throw err;
   }
+}
+
+/** A provider failure in the user's words, not the provider's JSON. */
+function providerProblem(err: unknown): string {
+  const status = err instanceof LLMError ? err.status : undefined;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (status === 402) return "I can't run right now: the AI account is out of credits. Add credits at openrouter.ai/credits, then say \"try again\" and I'll pick up where I was.";
+  if (status === 401 || status === 403) return "I can't reach the AI provider: the API key was rejected. Check LLM_API_KEY in the server settings, then say \"try again\".";
+  return `The AI provider rejected the request (${msg.replace(/\s+/g, " ").slice(0, 160)}). Say "try again", or tell me to use a different approach.`;
 }
 
 /** Book a completion's cost and tokens on the session and the month. */

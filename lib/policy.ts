@@ -28,12 +28,17 @@ export function autoApprove(t: Tenant, input: CheckpointInput): { ok: boolean; r
  * Only short messages count: a long sentence with a number in it is not a code.
  */
 export function codeIn(text: string): string | undefined {
-  const t = text.trim().replace(/^\[[^\]]+\]\n/, "");
+  const t = text.trim().replace(/^\[[^\]]+\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "");
   if (t.length > 80) return undefined;
-  const m = t.match(/(?:^|\b(?:code|is|it'?s|:)\s*)(\d[\d\s-]{2,9}\d)\s*[.!]?$/i) ?? t.match(/^\s*(\d{4,8})\s*$/);
-  if (!m) return undefined;
-  const digits = m[1].replace(/\D/g, "");
-  return digits.length >= 4 && digits.length <= 8 ? digits : undefined;
+  // "905168", "code is 905168", "it's 12 34 56", "8442 is my email code", "the text code: 4471"
+  const all = [...t.matchAll(/\d[\d\s-]*\d|\d/g)].map((m) => m[0].replace(/\D/g, ""));
+  const runs = all.filter((d) => d.length >= 4 && d.length <= 8);
+  if (runs.length !== 1) return undefined;
+  const bare = /^\s*[\d\s-]+\s*[.!]?$/.test(t);
+  const saysCode = /\b(code|otp|pin|passcode|verification|verify)\b/i.test(t);
+  // "it's 905168" counts only when no phone or order number is in the same line.
+  const saysIs = /\b(is|it'?s)\s*:?\s*\d/i.test(t) && !all.some((d) => d.length > 8);
+  return bare || saysCode || saysIs ? runs[0] : undefined;
 }
 
 /** The host's hint to the model when a code arrives, so it is entered instead of read as chat. */

@@ -13,6 +13,11 @@ test("codeIn finds a verification code in a short message and nothing else", () 
   assert.equal(codeIn("call me at 2025"), undefined);
   assert.equal(codeIn("I bought it in 2019 and the order number is 112-4471-99887766 for the record"), undefined);
   assert.equal(codeIn("yes"), undefined);
+  assert.equal(codeIn("8442 is my email code"), "8442");
+  assert.equal(codeIn("the text code: 4471, use that"), "4471");
+  assert.equal(codeIn("Log into uber, my phone number is 7186371177"), undefined); // 10 digits: a phone, not a code
+  assert.equal(codeIn("meet at 1230 and 1545"), undefined); // two runs, no "code"
+  assert.equal(codeIn('Re: your message "Code needed"\n905168'), "905168");
 });
 
 test("toChatItems hides host notes, shows user messages with their own times, and the progress line", () => {

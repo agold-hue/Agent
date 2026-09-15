@@ -104,6 +104,8 @@ const MFA_NEXT = /^(continue|next|submit|verify)$/i;
 const BOT_WALL = /verify you are human|are you a robot|not a robot|captcha|access denied|unusual traffic|press and hold|checking your browser|attention required|request blocked|bot detection|security check|verify your browser|one more step/i;
 /** How the user gets past a wall the automation cannot: they sign in once themselves in the hosted browser, the cookies stick. */
 export const TAKEOVER = "Ask the user to sign in once themselves: Logins tab > Watch the browser opens the same browser, they log in there, and the sign-in sticks for next time. Then they say 'done' and you call login again (it will find the session signed in). One line, no apology, no explanation of bot walls.";
+/** After a code, the site asks for another one (Uber: a texted code, then an emailed one). */
+const NEXT_CODE = /(sent|emailed|texted|check)\b[^.\n]{0,60}\b(email|e-mail|inbox|phone|text|sms)\b|enter the (\d-digit )?code (we |that was )?(sent|emailed|texted)|verify your (email|phone)/i;
 /** Signed in already: the page offers to sign out. */
 const SIGNED_IN = /\b(sign out|log out|logout|my account|hello,)\b/i;
 /** The site said no to the saved password (or locked the account); retrying will not help. */
@@ -350,7 +352,15 @@ export async function enterCode(connectUrl: string, domain: string, code: string
     }
     await tagFields(page);
     if (await firstVisible(page, OTP_SELECTORS)) {
-      return { status: "needs_user", reason: "The code field is still showing; the site may have rejected the code (expired or mistyped). Ask the user for a fresh one.", url: page.url() };
+      const text = await pageText(page).catch(() => "");
+      if (REJECTED.test(text) || /(invalid|incorrect|wrong|expired)\b[^.\n]{0,30}\bcode|code[^.\n]{0,30}\b(invalid|incorrect|wrong|expired)/i.test(text)) {
+        return { status: "needs_user", reason: "The site rejected that code (expired or mistyped). Ask the user for a fresh one with request_code.", url: page.url() };
+      }
+      const where = /email|e-mail|inbox/i.test(text.match(NEXT_CODE)?.[0] ?? "") ? "email" : "phone";
+      return { status: "needs_code", ask: `The code was accepted and the site now asks for a second code, sent to the user's ${where}. Call request_code now saying so (or get_email_code if their mail is forwarded), then login again with the new code.`, url: page.url() };
+    }
+    if (!(await isSignedIn(page)) && NEXT_CODE.test(await pageText(page).catch(() => ""))) {
+      return { status: "needs_code", ask: "The site says another code was sent (email or phone). Snapshot the page to see where, click any 'send' option it shows, then request_code and login again with that code.", url: page.url() };
     }
     return { status: "logged_in", url: page.url(), title: await page.title(), account: "code accepted" };
   } finally {

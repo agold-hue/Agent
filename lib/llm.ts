@@ -277,6 +277,17 @@ export async function complete(opts: {
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
       continue;
     }
+    // Out of credits, or credits held by in-flight requests (parallel tasks): wait for them to settle.
+    if (res.status === 402) {
+      const text = await res.text().catch(() => "");
+      lastErr = new LLMError("The model provider account is out of credits (OpenRouter 402). Add credits at openrouter.ai/credits, then say \"try again\".", 402, false);
+      console.error(`[llm] ${model}: 402 ${text.slice(0, 200)}`);
+      if (/in-flight/i.test(text) && attempt < 2) {
+        await new Promise((r) => setTimeout(r, 4000 * (attempt + 1)));
+        continue;
+      }
+      throw lastErr;
+    }
     if (res.status === 429 || res.status >= 500) {
       lastErr = new LLMError(`${res.status} ${await res.text().catch(() => "")}`.slice(0, 500), res.status, true);
       console.error(`[llm] ${model}: ${lastErr.message}`);
