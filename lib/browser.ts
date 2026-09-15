@@ -61,6 +61,23 @@ export async function liveViewUrl(sessionId: string): Promise<string> {
   return live.debuggerFullscreenUrl;
 }
 
+const liveCache = new Map<string, { at: number; url: string | null }>();
+
+/** Live-view link for a hosted browser that is still running, cached a minute per worker (the page polls often). */
+export async function liveViewIfRunning(sessionId: string): Promise<string | null> {
+  const hit = liveCache.get(sessionId);
+  if (hit && Date.now() - hit.at < 60_000) return hit.url;
+  let url: string | null = null;
+  try {
+    const s = await browserbase().sessions.retrieve(sessionId);
+    if (s.status === "RUNNING") url = await liveViewUrl(sessionId);
+  } catch {
+    url = null;
+  }
+  liveCache.set(sessionId, { at: Date.now(), url });
+  return url;
+}
+
 /** Connect over CDP and return the page whose host matches `domain`, or the most recent page. */
 export async function attach(connectUrl: string, domain?: string): Promise<{ browser: Browser; page: Page }> {
   const browser = await chromium.connectOverCDP(connectUrl, { timeout: 30_000 });

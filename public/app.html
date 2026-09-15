@@ -623,7 +623,7 @@
       bubble.append(h, body);
       const actions = document.createElement("div"); actions.className = "actions";
       if (item.name === "checkpoint" || item.name === "send_email") { const yes = document.createElement("button"); yes.type = "button"; yes.className = "btnPri"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve"; yes.onclick = () => send("yes"); const no = document.createElement("button"); no.type = "button"; no.className = "btn"; no.textContent = "Change…"; no.onclick = () => $("text").focus(); actions.append(yes, no); }
-      else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = "Answer in the box below."; actions.append(hint); }
+      else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = item.name === "request_code" ? "Send the code in the box below, or type it into the page yourself:" : "Answer in the box below."; actions.append(hint); if (item.name === "request_code" && liveViewUrl && !item.resolved) { const a = document.createElement("a"); a.href = liveViewUrl; a.target = "_blank"; a.rel = "noopener"; a.className = "btn"; a.textContent = "Open the browser"; actions.append(a); } }
       bubble.appendChild(actions);
     } else {
       const body = document.createElement("span"); body.className = "chatBody"; body.textContent = item.text; bubble.appendChild(body);
@@ -710,7 +710,9 @@
     box.innerHTML = SMART.map((t) => `<button type="button" class="gcSmartChip">${esc2(t)}</button>`).join("");
     box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
   }
-  function setTyping(on, activity) { const label = activity || `${AGENT} is typing…`; $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>${label.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}` : ""; }
+  let liveViewUrl = null;
+  const watchLink = () => liveViewUrl ? ` <a href="${liveViewUrl.replace(/"/g, "&quot;")}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;margin-left:8px">Watch the browser ↗</a>` : "";
+  function setTyping(on, activity) { const label = activity || `${AGENT} is typing…`; $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>${label.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}${watchLink()}` : (pending && liveViewUrl ? `Browser is open, waiting for you.${watchLink()}` : ""); }
   $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
   $("notifyChip").onclick = async () => { try { if (window.Notification) { const p = await Notification.requestPermission(); $("notifyChip").classList.toggle("toolChipOn", p === "granted"); } } catch {} };
@@ -721,7 +723,7 @@
     const prevAgent = items.filter((i) => i.kind !== "user").length;
     items = data.items.filter((i) => i.kind !== "status" && i.kind !== "tool_resolved");
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
-    sessionId = data.session_id; status = data.status; pending = data.pending;
+    sessionId = data.session_id; status = data.status; pending = data.pending; liveViewUrl = data.live_view_url || null;
     const nowAgent = items.filter((i) => i.kind !== "user").length;
     const wasNear = nearBottom();
     if (nowAgent > prevAgent && !wasNear) behind += nowAgent - prevAgent;
