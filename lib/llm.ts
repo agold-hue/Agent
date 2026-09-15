@@ -27,6 +27,15 @@ export interface ChatMessage {
   ephemeral?: boolean;
   /** When the message was written (ISO). Set on everything the user sends and the agent says; the chat page shows it. */
   at?: string;
+  /** The earlier bubble this message replies to (UI-only; the model gets the quote as a "Re:" line in the text). */
+  quote?: MessageQuote;
+}
+
+export interface MessageQuote {
+  /** Chat item id of the quoted bubble ("<session>-<index>"). */
+  id: string;
+  who: "user" | "agent";
+  text: string;
 }
 
 /** Only the fields providers know; UI-only bubbles (reactions, the "on it" ack) stay out of the request. */

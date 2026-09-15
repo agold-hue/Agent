@@ -1,4 +1,4 @@
-import type { ChatMessage } from "./llm.js";
+import type { ChatMessage, MessageQuote } from "./llm.js";
 import { chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, type SessionRow } from "./sessions.js";
 import { stampMessage } from "./transcript.js";
 import type { Tenant } from "./tenant.js";
@@ -7,9 +7,22 @@ export async function currentChatSession(t: Tenant): Promise<SessionRow | undefi
   return latestChatSession(t.id, Number(t.settings.chat_session_max_age_hours ?? 12));
 }
 
-export async function startChatSession(t: Tenant, firstMessage: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string): Promise<SessionRow> {
+export async function startChatSession(t: Tenant, firstMessage: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string, quote?: MessageQuote): Promise<SessionRow> {
   const recap = await recentRecap(t);
-  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, recap });
+  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction, quote, recap });
+}
+
+/**
+ * What the model reads when the user replies to an earlier bubble: the quoted line first, then the
+ * message. One line, so the chat page can strip it again for display (see replyPrefix).
+ */
+export function withQuote(text: string, quote: MessageQuote | undefined): string {
+  if (!quote) return text;
+  return `${replyPrefix(quote)}${text}`;
+}
+export function replyPrefix(quote: MessageQuote): string {
+  const excerpt = quote.text.replace(/\s+/g, " ").trim().slice(0, 160);
+  return `Re: ${quote.who === "user" ? "my" : "your"} message "${excerpt}"\n`;
 }
 
 /**
@@ -30,7 +43,7 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
 }
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; at: string; reaction?: string }
+  | { kind: "user"; id: string; text: string; at: string; reaction?: string; quote?: MessageQuote }
   | { kind: "agent"; id: string; text: string; at: string; notice?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
@@ -39,15 +52,23 @@ export type ChatItem =
 export function toChatItems(row: SessionRow): ChatItem[] {
   const items: ChatItem[] = [];
   const answered = new Set(row.messages.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
-  // Messages from before timestamps were recorded fall back to the session's last update.
-  const fallbackAt = new Date(row.updated_at).toISOString();
+  // Times never go backwards down the list: a message from before timestamps were recorded takes
+  // the time of the one before it (the thread's start for the first), and a stamped one that is
+  // earlier than its predecessor is clamped. The history endpoint sorts bubbles by time, and a list
+  // that is not monotonic here would be reordered there: after timestamps were introduced, old
+  // bubbles fell back to the thread's last-update time, sorted below every new message, and a
+  // freshly typed line landed in the middle of the page, "invisible".
+  let last = new Date(row.created_at).toISOString();
   row.messages.forEach((m: ChatMessage, i) => {
-    const at = m.at ?? fallbackAt;
+    const at = m.at && m.at > last ? m.at : last;
+    last = at;
     if (m.role === "user") {
       const raw = messageText(m);
       // Host notes (nudges, recaps, screenshots, model switches) are never stamped; everything the user sent is.
       if (raw.startsWith("(")) return;
-      items.push({ kind: "user", id: `${row.id}-${i}`, text: raw.replace(/^\[[^\]]+\]\n/, ""), at, reaction: m.reaction });
+      let text = raw.replace(/^\[[^\]]+\]\n/, "");
+      if (m.quote && text.startsWith(replyPrefix(m.quote))) text = text.slice(replyPrefix(m.quote).length);
+      items.push({ kind: "user", id: `${row.id}-${i}`, text, at, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}) });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
       if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at });
@@ -63,7 +84,7 @@ export function toChatItems(row: SessionRow): ChatItem[] {
       }
     }
   });
-  items.push({ kind: "status", id: `${row.id}-status`, status: row.status, at: fallbackAt });
+  items.push({ kind: "status", id: `${row.id}-status`, status: row.status, at: last });
   return items;
 }
 

@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
-import { currentChatSession, startChatSession } from "../../../lib/chat.js";
+import { currentChatSession, startChatSession, withQuote } from "../../../lib/chat.js";
+import type { MessageQuote } from "../../../lib/llm.js";
 import { appendTranscript } from "../../../lib/memory.js";
 import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
@@ -11,10 +12,23 @@ import { appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessa
 import { resolvePending } from "../../../lib/tools.js";
 import { stampMessage } from "../../../lib/transcript.js";
 
-/** Show the user's answer as a chat bubble, except when it is a verification code (the pending call is request_code) — codes never render. */
-async function echoAnswer(session: { messages: Array<{ role: string; tool_calls?: Array<{ id: string; function: { name: string } }> }>; pending_event_id: string | null }, text: string, reaction: string): Promise<void> {
-  const isCode = session.messages.some((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === session.pending_event_id && c.function.name === "request_code"));
-  if (!isCode) await appendUserEcho(session as never, text, reaction);
+/**
+ * Show the user's answer as a chat bubble. Everything the user types must appear, or it looks lost:
+ * a verification code shows with its digits masked (the model still gets the real one through the
+ * tool result), and anything else they say while a code is pending ("didn't get one, resend it")
+ * shows as is.
+ */
+async function echoAnswer(session: { messages: Array<{ role: string; tool_calls?: Array<{ id: string; function: { name: string } }> }>; pending_event_id: string | null }, text: string, reaction: string, quote?: MessageQuote): Promise<void> {
+  const awaitingCode = session.messages.some((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === session.pending_event_id && c.function.name === "request_code"));
+  const shown = awaitingCode && codeIn(text) ? text.replace(/\d(?:[\d\s-]*\d)?/g, (d) => "•".repeat(d.replace(/\D/g, "").length)) : text;
+  await appendUserEcho(session as never, shown, reaction, quote);
+}
+
+/** A valid reply-to from the page: the bubble id, who wrote it, and a short excerpt. */
+function quoteOf(body: unknown): MessageQuote | undefined {
+  const q = (body as { reply_to?: { id?: unknown; who?: unknown; text?: unknown } })?.reply_to;
+  if (!q || typeof q.id !== "string" || typeof q.text !== "string" || !/^[\w-]{1,80}$/.test(q.id)) return undefined;
+  return { id: q.id, who: q.who === "user" ? "user" : "agent", text: q.text.replace(/\s+/g, " ").trim().slice(0, 200) };
 }
 
 /** POST { text } -> { session_id, action }. Sends into the live chat session (or starts one) and kicks the worker. */
@@ -24,6 +38,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!t) return;
   const text = String((req.body as { text?: unknown })?.text ?? "").trim();
   if (!text) return res.status(400).json({ error: "text required" });
+  const quote = quoteOf(req.body);
+  // The model reads the quoted line first; the page shows the quote as a card above the bubble.
+  const forModel = withQuote(text, quote);
 
   try {
     let session = await currentChatSession(t);
@@ -42,15 +59,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let ack: string | undefined;
     let action: string;
     if (!session) {
-      session = await startChatSession(t, text, undefined, reaction);
+      session = await startChatSession(t, forModel, undefined, reaction, quote);
       action = "started";
     } else if (session.pending_kind === "checkpoint" || session.pending_kind === "send_email") {
-      await echoAnswer(session, text, reaction);
-      await resolvePending(t, session, text, isApprovalReply(text));
+      await echoAnswer(session, text, reaction, quote);
+      await resolvePending(t, session, forModel, isApprovalReply(text));
       action = `${session.pending_kind}_resolved`;
     } else if (session.pending_kind === "ask_user") {
-      await echoAnswer(session, text, reaction);
-      await resolvePending(t, session, text, null);
+      await echoAnswer(session, text, reaction, quote);
+      await resolvePending(t, session, forModel, null);
       action = "question_answered";
     } else {
       const model = upgradedModel(session.model ?? "", text, t);
@@ -58,7 +75,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log(`[route] ${session.id}: ${session.model} -> ${model} for "${text.slice(0, 60)}"`);
         await updateSession(session.id, { model });
       }
-      await appendUserMessage(session, stampMessage(t, text, "chat"), undefined, reaction);
+      await appendUserMessage(session, stampMessage(t, forModel, "chat"), undefined, reaction, quote);
       // A code sent before the agent asked for it (the user saw the text arrive mid-login): make
       // sure it gets typed into the site rather than read as chat.
       const code = codeIn(text);

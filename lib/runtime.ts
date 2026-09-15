@@ -313,7 +313,11 @@ const NUDGES: Record<string, string> = {
   promise: `${NUDGE_PREFIX} that reply promised an action and then ended your turn, so nothing happened and the user is still waiting. A reply without a tool call ends the task. Do the step now with tools instead of describing it. If the same route already failed twice, take a different one: another site, a direct URL, web_search, or escalate_model. Then end with the result, or with exactly where you are stuck.)`,
   offer: `${NUDGE_PREFIX} you offered to look something up instead of looking it up. "Want me to check?" is never a reply. If it is something you can find yourself (a balance, a price, a page, a status, a date), do it now with tools and reply with what you found. Only a step that spends money, messages an outsider, or commits the user waits for a yes; if that is what you asked about, send the same reply again unchanged.)`,
   empty: `${NUDGE_PREFIX} that reply was empty, so the user saw nothing. Reply with the result, or with exactly where you are and what you need from them.)`,
+  gaveUp: `${NUDGE_PREFIX} that reply gives up after only a few steps. A capable assistant does not report failure until a different route has failed too: another page or a direct URL, the site's search, web_search for the answer or the right page, a fresh browser_wait_for and snapshot, or escalate_model. Try the next route now with tools. Report failure only after it fails as well, and then say exactly what you tried and what the user can do. If the request is genuinely impossible for you (a phone call, something physical), send the same reply again unchanged.)`,
 };
+const GAVE_UP = /\b(couldn'?t|could not|unable to|can'?t|cannot|wasn'?t able|not able to|failed to|didn'?t work|no luck|not possible)\b/i;
+/** A task that stops with a failure report before this many steps has not really tried. */
+const GAVE_UP_STEPS = Number(process.env.GAVE_UP_STEPS ?? 12);
 const PROMISED_ACTION =
   /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(now\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|search for|look (?:for|up)|open)\b|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
 const ASKS_FOR_ADDRESS = /\b(provide|tell me|what(?:'|’)?s|what is|send me|confirm|i need|share)\b[^.?\n]{0,60}\b(your|the)\s+(current\s+|pickup\s+|home\s+|starting\s+|exact\s+)?(location|address)\b/i;
@@ -339,7 +343,14 @@ export function stallNudge(row: SessionRow, reply: string): string | undefined {
   if (homeKnown && ASKS_FOR_ADDRESS.test(reply)) return pick("address");
   if (PROMISED_ACTION.test(reply)) return pick("promise");
   if (OFFERS_LOOKUP.test(reply)) return pick("offer");
+  // Giving up early on a task that used tools: a few steps in, the first failure is not the answer.
+  if (GAVE_UP.test(reply) && taskUsedTools(row.messages) && taskTurns(row.messages) < GAVE_UP_STEPS) return pick("gaveUp");
   return undefined;
+}
+
+function taskUsedTools(messages: ChatMessage[]): boolean {
+  for (let i = taskStart(messages); i < messages.length; i++) if (messages[i].role === "assistant" && messages[i].tool_calls?.length) return true;
+  return false;
 }
 
 /** The host's request for a progress line during a long, silent task. */

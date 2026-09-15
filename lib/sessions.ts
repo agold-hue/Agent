@@ -2,7 +2,7 @@ import { one, q } from "./db.js";
 import { loadSystemPrompt } from "./agent-config.js";
 import { randomToken } from "./crypto.js";
 import { env } from "./env.js";
-import type { ChatMessage } from "./llm.js";
+import type { ChatMessage, MessageQuote } from "./llm.js";
 import { ensureSeeded, readMemory } from "./memory.js";
 import { modelFor, tierFor } from "./router.js";
 import { ensureProvisioned, type Tenant } from "./tenant.js";
@@ -113,7 +113,7 @@ export async function monthUsageCents(t: Tenant): Promise<number> {
  */
 export async function createSession(
   t: Tenant,
-  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: "chat" | "task" | "hard"; reaction?: string; recap?: string },
+  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: "chat" | "task" | "hard"; reaction?: string; quote?: MessageQuote; recap?: string },
 ): Promise<SessionRow> {
   const cap = env.plans.monthlyCapUsd(t.plan) * 100;
   if (cap > 0 && (await monthUsageCents(t)) >= cap) {
@@ -128,6 +128,7 @@ export async function createSession(
     ? { role: "user", content: [{ type: "text", text: opts.text }, ...opts.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))], at: now() }
     : { role: "user", content: opts.text, at: now() };
   if (opts.reaction) first.reaction = opts.reaction;
+  if (opts.quote) first.quote = opts.quote;
   const messages: ChatMessage[] = [{ role: "system", content: await systemFor(t) }, ...(opts.recap ? [{ role: "user" as const, content: opts.recap }] : []), first];
   const row = await one<SessionRow>(
     `insert into agent_sessions (id, user_id, channel, kind, title, status, reply_tag, model, messages, requester, email_subject, last_message_id, correspondent, review_day, digest_key, followup_id)
@@ -213,11 +214,12 @@ function loadPrompt(): string {
 }
 
 /** Append a user message (a chat line, an email reply) and mark runnable. */
-export async function appendUserMessage(row: SessionRow, text: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string): Promise<void> {
+export async function appendUserMessage(row: SessionRow, text: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string, quote?: MessageQuote): Promise<void> {
   const msg: ChatMessage = images?.length
     ? { role: "user", content: [{ type: "text", text }, ...images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))], at: now() }
     : { role: "user", content: text, at: now() };
   if (reaction) msg.reaction = reaction;
+  if (quote) msg.quote = quote;
   await q("update agent_sessions set messages = messages || $2::jsonb, status = 'running', updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
@@ -256,8 +258,8 @@ export async function appendAssistantMessage(row: SessionRow, text: string, ephe
 }
 
 /** Show the user's own text as a chat bubble (with its reaction) when it answered a question. UI-only: the model gets the answer via the tool result, so this echo is ephemeral. */
-export async function appendUserEcho(row: SessionRow, text: string, reaction?: string): Promise<void> {
-  const msg: ChatMessage = { role: "user", content: text, ephemeral: true, at: now(), ...(reaction ? { reaction } : {}) };
+export async function appendUserEcho(row: SessionRow, text: string, reaction?: string, quote?: MessageQuote): Promise<void> {
+  const msg: ChatMessage = { role: "user", content: text, ephemeral: true, at: now(), ...(reaction ? { reaction } : {}), ...(quote ? { quote } : {}) };
   await q("update agent_sessions set messages = messages || $2::jsonb where id = $1", [row.id, JSON.stringify([msg])]);
 }
 

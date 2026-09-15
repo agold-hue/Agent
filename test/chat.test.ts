@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { toChatItems } from "../lib/chat.js";
+import { replyPrefix, toChatItems, withQuote } from "../lib/chat.js";
 import { codeIn } from "../lib/policy.js";
 import type { SessionRow } from "../lib/sessions.js";
 
@@ -18,6 +18,7 @@ test("toChatItems hides host notes, shows user messages with their own times, an
   const row = {
     id: "s_1",
     status: "idle",
+    created_at: new Date("2026-09-15T07:00:00Z"),
     updated_at: new Date("2026-09-15T08:00:00Z"),
     messages: [
       { role: "system", content: "s" },
@@ -37,4 +38,45 @@ test("toChatItems hides host notes, shows user messages with their own times, an
     items.map((i) => (i.kind === "status" ? "status" : `${i.kind}:${"text" in i ? i.text : ""}@${i.at}`)),
     ["user:Check my balance@2026-09-15T07:10:00.000Z", "agent:On it, Boss.@2026-09-15T07:10:01.000Z", "agent:Signed in@2026-09-15T07:13:00.000Z", "agent:Balance is $142, due 9/20.@2026-09-15T07:14:00.000Z", "status"],
   );
+});
+
+test("bubbles from before timestamps never sort below newer ones (the vanishing-message bug)", () => {
+  const row = {
+    id: "s_2",
+    status: "idle",
+    created_at: new Date("2026-09-14T20:00:00Z"),
+    updated_at: new Date("2026-09-15T09:30:00Z"), // refreshed on every write, later than every real message time
+    messages: [
+      { role: "system", content: "s" },
+      { role: "user", content: "[2026-09-14 Sun 16:00 America/New_York via chat]\nold question" },
+      { role: "assistant", content: "old answer" },
+      { role: "user", content: "[2026-09-15 Mon 05:00 America/New_York via chat]\nnew question", at: "2026-09-15T09:00:00.000Z" },
+      { role: "assistant", content: "new answer", at: "2026-09-15T09:01:00.000Z" },
+    ],
+  } as unknown as SessionRow;
+  const items = toChatItems(row).filter((i) => i.kind !== "status");
+  const times = items.map((i) => i.at);
+  assert.deepEqual([...times].sort(), times); // sorting by time keeps the conversation order
+  assert.equal(items[0].at, "2026-09-14T20:00:00.000Z");
+  assert.equal(items[2].at, "2026-09-15T09:00:00.000Z");
+});
+
+test("a reply to an earlier bubble shows the quote and not the Re: line", () => {
+  const quote = { id: "s_3-2", who: "agent" as const, text: "Balance is $142, due 9/20." };
+  const row = {
+    id: "s_3",
+    status: "idle",
+    created_at: new Date("2026-09-15T07:00:00Z"),
+    updated_at: new Date("2026-09-15T08:00:00Z"),
+    messages: [
+      { role: "system", content: "s" },
+      { role: "user", content: "[stamp]\nbalance?", at: "2026-09-15T07:10:00.000Z" },
+      { role: "assistant", content: "Balance is $142, due 9/20.", at: "2026-09-15T07:11:00.000Z" },
+      { role: "user", content: `[stamp]\n${replyPrefix(quote)}pay it`, at: "2026-09-15T07:12:00.000Z", quote },
+    ],
+  } as unknown as SessionRow;
+  const last = toChatItems(row).filter((i) => i.kind === "user").pop()!;
+  assert.equal(last.text, "pay it");
+  assert.deepEqual((last as { quote?: unknown }).quote, quote);
+  assert.equal(withQuote("pay it", quote), 'Re: your message "Balance is $142, due 9/20."\npay it');
 });

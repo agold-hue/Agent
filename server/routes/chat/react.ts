@@ -20,8 +20,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!row || !row.messages[idx] || row.messages[idx].role !== "assistant") return res.status(404).json({ error: "message not found" });
   const current = row.messages[idx].reaction;
   const next = current === emoji ? undefined : emoji;
-  if (next) row.messages[idx].reaction = next;
-  else delete row.messages[idx].reaction;
-  await q("update agent_sessions set messages = $2::jsonb where id = $1", [sessionId, JSON.stringify(row.messages)]);
+  // Touch only this one field in place. Writing the whole array back would clobber a message the
+  // user (or the running task) appended meanwhile, and that message would vanish from the chat.
+  if (next) await q("update agent_sessions set messages = jsonb_set(messages, $2::text[], to_jsonb($3::text)) where id = $1", [sessionId, [String(idx), "reaction"], next]);
+  else await q("update agent_sessions set messages = messages #- $2::text[] where id = $1", [sessionId, [String(idx), "reaction"]]);
   return res.status(200).json({ id, reaction: next ?? null });
 }

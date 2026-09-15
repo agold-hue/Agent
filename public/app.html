@@ -190,6 +190,12 @@
   .gcSmartChip { padding:6px 16px; border:1px solid #C2D7FA; border-radius:999px; background:#fff; color:var(--blue-ink); font:inherit; font-size:13.5px; font-weight:600; cursor:pointer; }
   .gcSmartChip:hover { background:var(--blue-soft); }
   form.chatComposer { display:block; padding:4px 0 calc(4px + env(safe-area-inset-bottom)); border:0; background:transparent; }
+  .chatQuote { display:grid; grid-template-columns:auto 1fr; column-gap:8px; align-items:start; margin:-2px 0 6px; padding:6px 10px 6px 8px; border-left:3px solid #34A853; border-radius:8px; background:rgba(20,20,20,.05); font-size:12.5px; line-height:1.35; color:#3C4043; cursor:pointer; }
+  .chatBubbleMine .chatQuote { background:rgba(26,86,196,.08); border-left-color:var(--blue, #1A56C4); }
+  .chatQuote .chatQuoteWho { display:block; font-size:12px; }
+  .chatQuote .chatQuoteText { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .chatMsgFlash .chatBubble { animation:chatFlash 1.6s ease-out; }
+  @keyframes chatFlash { 0%,40% { box-shadow:0 0 0 3px rgba(52,168,83,.55); } 100% { box-shadow:none; } }
   .chatReplyCard { display:grid; grid-template-columns:auto 1fr auto; column-gap:8px; align-items:start; margin:0 0 6px; padding:8px 8px 8px 10px; border:1px solid #DDE3EA; border-radius:14px; background:#fff; color:#3C4043; font-size:13px; }
   .chatQuoteMark { font-size:16px; line-height:1; color:#34A853; }
   .chatQuoteWho { font-weight:600; color:var(--ink); }
@@ -635,9 +641,9 @@
       main.appendChild(head);
     }
     const stack = document.createElement("div"); stack.className = "chatStack"; main.appendChild(stack);
-    if (!mine) {
+    if (item.kind !== "tool") {
       const bar = document.createElement("div"); bar.className = "gcBar";
-      bar.innerHTML = `<span class="gcQuick">${QUICK.map((q) => `<button type="button" class="gcEm" data-em="${q}" title="React ${q}">${q}</button>`).join("")}</span><span class="gcActs"><button type="button" class="gcIcon" data-act="reply" title="Reply" aria-label="Reply"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8L5 12l5 4"/><path d="M5 12h9a5 5 0 0 1 5 5v1"/></svg></button><button type="button" class="gcIcon" data-act="copy" title="Copy text" aria-label="Copy text"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button></span>`;
+      bar.innerHTML = `${mine ? "" : `<span class="gcQuick">${QUICK.map((q) => `<button type="button" class="gcEm" data-em="${q}" title="React ${q}">${q}</button>`).join("")}</span>`}<span class="gcActs"><button type="button" class="gcIcon" data-act="reply" title="Reply" aria-label="Reply"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8L5 12l5 4"/><path d="M5 12h9a5 5 0 0 1 5 5v1"/></svg></button><button type="button" class="gcIcon" data-act="copy" title="Copy text" aria-label="Copy text"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button></span>`;
       bar.querySelectorAll(".gcEm").forEach((b) => b.onclick = (e) => { e.stopPropagation(); react(item, b.dataset.em); });
       bar.querySelector('[data-act="reply"]').onclick = (e) => { e.stopPropagation(); reply(item); };
       bar.querySelector('[data-act="copy"]').onclick = (e) => { e.stopPropagation(); copyText(item); };
@@ -658,6 +664,12 @@
       else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = item.name === "request_code" ? "Send the code in the box below." : "Answer in the box below."; actions.append(hint); }
       bubble.appendChild(actions);
     } else {
+      if (item.quote) {
+        const qd = document.createElement("div"); qd.className = "chatQuote"; qd.title = "Go to that message";
+        qd.innerHTML = `<span class="chatQuoteMark" aria-hidden="true">❝</span><span style="min-width:0"><span class="chatQuoteWho">${esc2(item.quote.who === "user" ? "You" : AGENT)}</span><span class="chatQuoteText">${esc2(item.quote.text)}</span></span>`;
+        qd.onclick = (e) => { e.stopPropagation(); jumpTo(item.quote.id); };
+        bubble.appendChild(qd);
+      }
       const body = document.createElement("span"); body.className = "chatBody"; body.textContent = item.text; bubble.appendChild(body);
     }
     stack.appendChild(bubble);
@@ -667,8 +679,15 @@
       if (!mine) chip.onclick = (e) => { e.stopPropagation(); react(item, item.reaction); };
       reacts.appendChild(chip); main.appendChild(reacts);
     }
-    if (!mine && item.kind === "agent") gestures(el, bubble, item);
+    if (item.kind !== "tool") gestures(el, bubble, item);
     return el;
+  }
+  // Scroll to an earlier bubble (the one a reply quotes) and flash it.
+  function jumpTo(id) {
+    const el = document.querySelector(`.chatMsg[data-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove("chatMsgFlash"); void el.offsetWidth; el.classList.add("chatMsgFlash");
   }
 
   // ---- gestures: double-tap 👍, long press for the sheet, swipe right to reply
@@ -679,13 +698,13 @@
     el.addEventListener("pointermove", (e) => { const d = drag; if (!d) return; const rx = e.clientX - d.x, ry = e.clientY - d.y; if (!d.live) { if (Math.abs(rx) > 5 || Math.abs(ry) > 5) clearTimeout(holdTimer); if (Math.abs(ry) > 6 && Math.abs(ry) > Math.abs(rx)) { drag = null; return; } if (rx > 5) { d.live = true; try { el.setPointerCapture(e.pointerId); } catch {} } else return; } e.preventDefault(); d.dx = rx <= 36 ? Math.max(0, rx) : 36 + 60 * (1 - Math.exp(-(rx - 36) / 60)); paint(d.dx); });
     const up = () => { clearTimeout(holdTimer); const d = drag; drag = null; el.style.transition = "transform 320ms cubic-bezier(0.2,0.9,0.25,1.15)"; paint(0); setTimeout(() => { el.style.transition = ""; }, 340); if (d?.live && d.dx >= 56) reply(item); };
     el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
-    bubble.addEventListener("click", (e) => { if (held) { held = false; return; } if (e.target.closest("button, a")) return; taps++; if (taps === 2) { clearTimeout(tapTimer); taps = 0; react(item, "👍"); try { navigator.vibrate?.(10); } catch {} return; } clearTimeout(tapTimer); tapTimer = setTimeout(() => { const hover = window.matchMedia?.("(hover: hover)").matches; if (taps === 1 && !hover) openSheet(item, bubble); taps = 0; }, 280); });
+    bubble.addEventListener("click", (e) => { if (held) { held = false; return; } if (e.target.closest("button, a")) return; taps++; if (taps === 2) { clearTimeout(tapTimer); taps = 0; if (item.kind === "agent") { react(item, "👍"); try { navigator.vibrate?.(10); } catch {} } else reply(item); return; } clearTimeout(tapTimer); tapTimer = setTimeout(() => { const hover = window.matchMedia?.("(hover: hover)").matches; if (taps === 1 && !hover) openSheet(item, bubble); taps = 0; }, 280); });
   }
   function openSheet(item, bubble) {
     closeSheet();
     const r = bubble.getBoundingClientRect();
     const sheet = document.createElement("div"); sheet.className = "chatSheet"; sheet.id = "sheet";
-    sheet.innerHTML = `<div class="chatSheetReacts">${SHEET_QUICK.map((em) => `<button type="button" class="chatSheetEm" data-em="${em}">${em}</button>`).join("")}</div><div class="chatSheetMenu"><button type="button" class="chatSheetItem" data-act="reply"><span>Quote in reply</span>↩</button><button type="button" class="chatSheetItem" data-act="copy"><span>Copy text</span>⧉</button></div>`;
+    sheet.innerHTML = `${item.kind === "agent" ? `<div class="chatSheetReacts">${SHEET_QUICK.map((em) => `<button type="button" class="chatSheetEm" data-em="${em}">${em}</button>`).join("")}</div>` : ""}<div class="chatSheetMenu"><button type="button" class="chatSheetItem" data-act="reply"><span>Quote in reply</span>↩</button><button type="button" class="chatSheetItem" data-act="copy"><span>Copy text</span>⧉</button></div>`;
     document.body.appendChild(sheet);
     const h = sheet.offsetHeight, w = sheet.offsetWidth;
     const top = r.top - 8 - h >= 8 ? r.top - 8 - h : Math.min(window.innerHeight - h - 8, r.bottom + 8);
@@ -701,7 +720,7 @@
     const before = item.reaction; item.reaction = item.reaction === emoji ? undefined : emoji; renderList(false);
     try { const r = await api("/api/chat/react", { method: "POST", body: JSON.stringify({ id: item.id, emoji }) }); if (!r.ok) throw new Error(); } catch { item.reaction = before; renderList(false); }
   }
-  function reply(item) { replyTo = item; $("replyWho").textContent = AGENT; $("replyText").textContent = textOf(item).slice(0, 140); $("replyCard").hidden = false; $("text").focus(); }
+  function reply(item) { replyTo = item; $("replyWho").textContent = item.kind === "user" ? "You" : AGENT; $("replyText").textContent = textOf(item).slice(0, 140); $("replyCard").hidden = false; $("text").focus(); }
   $("replyClose").onclick = () => { replyTo = null; $("replyCard").hidden = true; };
   function copyText(item) { try { navigator.clipboard?.writeText(textOf(item)); } catch {} }
 
@@ -787,19 +806,20 @@
       if (status !== "running") { clearInterval(pollTimer); pollTimer = null; }
     }, 2500);
   }
-  function optimistic(text, reaction) {
-    const it = { kind: "user", id: "tmp-" + Date.now(), text, at: new Date().toISOString(), reaction };
+  function optimistic(text, reaction, quote) {
+    const it = { kind: "user", id: "tmp-" + Date.now(), text, at: new Date().toISOString(), reaction, ...(quote ? { quote } : {}) };
     items.push(it); renderRooms(); renderList(true); return it;
   }
   async function send(text) {
     text = (text || $("text").value).trim(); if (!text) return;
-    if (replyTo) { text = `Re: "${textOf(replyTo).slice(0, 120)}"\n${text}`; replyTo = null; $("replyCard").hidden = true; }
+    let quote = null;
+    if (replyTo) { quote = { id: replyTo.id, who: replyTo.kind === "user" ? "user" : "agent", text: textOf(replyTo).slice(0, 160) }; replyTo = null; $("replyCard").hidden = true; }
     $("send").disabled = true;
     try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch {}
-    const it = optimistic(text);
+    const it = optimistic(text, undefined, quote);
     $("text").value = ""; autosize(); $("emojiDrawer").hidden = true;
     try {
-      const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text }) });
+      const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text, ...(quote ? { reply_to: quote } : {}) }) });
       const data = await r.json();
       if (!r.ok) { it.text += `\n(${data.error || "failed"})`; renderList(false); if (r.status === 402) showTab("billing"); return; }
       if (data.reaction) { it.reaction = data.reaction; renderList(false); }
