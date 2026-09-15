@@ -43,8 +43,8 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
 }
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; at: string; reaction?: string; quote?: MessageQuote }
-  | { kind: "agent"; id: string; text: string; at: string; notice?: string }
+  | { kind: "user"; id: string; text: string; at: string; approx?: boolean; reaction?: string; quote?: MessageQuote }
+  | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
 
@@ -62,16 +62,18 @@ export function toChatItems(row: SessionRow): ChatItem[] {
   row.messages.forEach((m: ChatMessage, i) => {
     const at = m.at && m.at > last ? m.at : last;
     last = at;
+    // A bubble with no recorded time is placed, not timed: the page shows no clock on it.
+    const approx = m.at ? {} : { approx: true };
     if (m.role === "user") {
       const raw = messageText(m);
       // Host notes (nudges, recaps, screenshots, model switches) are never stamped; everything the user sent is.
       if (raw.startsWith("(")) return;
       let text = raw.replace(/^\[[^\]]+\]\n/, "");
       if (m.quote && text.startsWith(replyPrefix(m.quote))) text = text.slice(replyPrefix(m.quote).length);
-      items.push({ kind: "user", id: `${row.id}-${i}`, text, at, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}) });
+      items.push({ kind: "user", id: `${row.id}-${i}`, text, at, ...approx, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}) });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
-      if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at });
+      if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx });
       for (const tc of m.tool_calls ?? []) {
         if (!["checkpoint", "ask_user", "send_email", "request_code"].includes(tc.function.name)) continue;
         let input: Record<string, unknown> = {};

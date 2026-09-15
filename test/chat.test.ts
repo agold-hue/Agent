@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { replyPrefix, toChatItems, withQuote } from "../lib/chat.js";
 import { codeIn } from "../lib/policy.js";
+import type { ChatMessage } from "../lib/llm.js";
 import type { SessionRow } from "../lib/sessions.js";
 
 test("codeIn finds a verification code in a short message and nothing else", () => {
@@ -79,4 +80,34 @@ test("a reply to an earlier bubble shows the quote and not the Re: line", () => 
   assert.equal(last.text, "pay it");
   assert.deepEqual((last as { quote?: unknown }).quote, quote);
   assert.equal(withQuote("pay it", quote), 'Re: your message "Balance is $142, due 9/20."\npay it');
+});
+
+import { matchTimes, parseTranscript, stampToDate } from "../lib/backfill.js";
+
+test("stampToDate reads the transcript stamp in the user's zone", () => {
+  assert.equal(stampToDate("2026-09-15 Tue 03:10 America/New_York")?.toISOString(), "2026-09-15T07:10:00.000Z"); // EDT, UTC-4
+  assert.equal(stampToDate("2026-01-15 Thu 03:10 America/New_York")?.toISOString(), "2026-01-15T08:10:00.000Z"); // EST, UTC-5
+  assert.equal(stampToDate("garbage"), undefined);
+});
+
+test("unstamped bubbles get their time from the conversation log, in order", () => {
+  const log = parseTranscript(
+    "# Conversation 2026-09-15\n\n### 2026-09-15 Tue 03:05 America/New_York · Owner (chat)\nhi\n\n### 2026-09-15 Tue 03:06 America/New_York · Agent (chat)\nHey.\n\n### 2026-09-15 Tue 03:10 America/New_York · Owner (chat)\nhi\n\n### 2026-09-15 Tue 03:11 America/New_York · Agent (chat)\nStill here.\n",
+  );
+  assert.equal(log.length, 4);
+  const messages = [
+    { role: "system", content: "s" },
+    { role: "user", content: "[2026-09-15 Tue 03:05 America/New_York via chat]\nhi" },
+    { role: "assistant", content: "On it.", ephemeral: true },
+    { role: "assistant", content: "Hey." },
+    { role: "user", content: "[2026-09-15 Tue 03:10 America/New_York via chat]\nhi" },
+    { role: "assistant", content: "Still here." },
+    { role: "assistant", content: "Already stamped.", at: "2026-09-15T07:20:00.000Z" },
+  ] as ChatMessage[];
+  assert.deepEqual(matchTimes(messages, log), [
+    [1, "2026-09-15T07:05:00.000Z"],
+    [3, "2026-09-15T07:06:00.000Z"],
+    [4, "2026-09-15T07:10:00.000Z"],
+    [5, "2026-09-15T07:11:00.000Z"],
+  ]);
 });

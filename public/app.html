@@ -637,7 +637,7 @@
     const main = document.createElement("div"); main.className = "chatMain"; el.appendChild(main);
     if (!grouped) {
       const head = document.createElement("div"); head.className = "chatHead";
-      head.innerHTML = `<span class="chatName">${mine ? "You" : esc2(AGENT)}</span>${item.notice ? `<span class="chatNotice">${esc2(item.notice)}</span>` : ""}<span class="chatTime" title="${esc2(fmtTime(item.at))}">${esc2(agoText(item.at))}</span>`;
+      head.innerHTML = `<span class="chatName">${mine ? "You" : esc2(AGENT)}</span>${item.notice ? `<span class="chatNotice">${esc2(item.notice)}</span>` : ""}<span class="chatTime" title="${item.approx ? "Time not recorded" : esc2(fmtTime(item.at))}">${item.approx ? "" : esc2(agoText(item.at))}</span>`;
       main.appendChild(head);
     }
     const stack = document.createElement("div"); stack.className = "chatStack"; main.appendChild(stack);

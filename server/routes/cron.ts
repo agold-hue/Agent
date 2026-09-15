@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { backfillMessageTimes } from "../../lib/backfill.js";
 import { ensureSchema } from "../../lib/db.js";
 import { env } from "../../lib/env.js";
 import { takeDueFollowUps } from "../../lib/followups.js";
@@ -19,6 +20,8 @@ import { localClock, stampMessage } from "../../lib/transcript.js";
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if ((req.headers.authorization ?? "") !== `Bearer ${env.cronSecret()}` && req.query.token !== env.cronSecret()) return res.status(401).end();
   await ensureSchema();
+  // One-time: give bubbles from before per-message times their real time from the conversation log.
+  await backfillMessageTimes().catch((err) => console.error("[cron] backfill:", err));
   const out: Record<string, number> = { resumed: 0, followups: 0, expired: 0, digests: 0, reviews: 0, weekly: 0, triage: 0, capped: 0 };
   const start = async (t: Tenant, key: string, make: () => ReturnType<typeof createSession>) => {
     try {

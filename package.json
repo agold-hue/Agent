@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
     "dev": "vercel dev",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "db:backfill-times": "tsx scripts/backfill-times.ts"
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.20.0",
