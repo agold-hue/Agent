@@ -32,6 +32,10 @@
   .msg.tool.resolved { opacity:.6; }
   .msg.tool.resolved .actions { display:none; }
   .time { font-size:11px; color:var(--muted); margin-top:4px; }
+  .msg.user { position:relative; margin-bottom:14px; }
+  .reaction { position:absolute; left:-6px; bottom:-14px; background:var(--panel); border:1px solid var(--edge); border-radius:999px; font-size:15px; line-height:1; padding:3px 6px; box-shadow:0 1px 3px rgba(0,0,0,.12); animation:pop .25s ease-out; }
+  @keyframes pop { from { transform:scale(.4); opacity:0; } to { transform:scale(1); opacity:1; } }
+  @media (prefers-reduced-motion: reduce) { .reaction { animation:none; } }
   .msg.user .time { color:rgba(255,255,255,.75); }
   .notice { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:4px; }
   button { font:inherit; border:1px solid var(--edge); background:var(--panel); color:var(--ink); border-radius:10px; padding:8px 12px; cursor:pointer; }
@@ -352,6 +356,7 @@
       el.classList.remove("streaming"); el.textContent = item.text;
       if (item.notice) { const tag = document.createElement("div"); tag.className = "notice"; tag.textContent = item.notice; el.prepend(tag); }
       const t = document.createElement("div"); t.className = "time"; t.textContent = fmtTime(item.at); el.appendChild(t);
+      if (item.reaction) { const r = document.createElement("span"); r.className = "reaction"; r.textContent = item.reaction; el.appendChild(r); }
     } else if (item.kind === "delta") {
       const el = bubble("agent streaming", item.id); el.classList.add("streaming"); el.textContent += item.text;
     } else if (item.kind === "tool") {
@@ -428,6 +433,7 @@
       const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text }) });
       const data = await r.json();
       if (!r.ok) { optimistic.textContent += `\n(${data.error || "failed"})`; if (r.status === 402) showTab("billing"); return; }
+      if (data.reaction) { const rx = document.createElement("span"); rx.className = "reaction"; rx.textContent = data.reaction; optimistic.appendChild(rx); }
       sessionId = data.session_id; setStatus("running", "working…"); openStream();
     } catch (e) { optimistic.textContent += "\n(failed to send)"; }
     finally { $("send").disabled = false; $("text").focus(); }

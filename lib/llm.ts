@@ -21,6 +21,13 @@ export interface ChatMessage {
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** Instant emoji acknowledgement shown on a user message in the chat page; never sent to the model. */
+  reaction?: string;
+}
+
+/** Only the fields providers know; anything else (reactions, future UI metadata) stays out of the request. */
+export function forProvider(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map(({ role, content, name, tool_calls, tool_call_id }) => ({ role, content, ...(name ? { name } : {}), ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}) }));
 }
 
 export interface ToolDef {
@@ -164,7 +171,7 @@ export async function complete(opts: {
   let cacheLevel: "full" | "system" | "none" = wantsCacheMarkers(model) ? "full" : "none";
   const body: Record<string, unknown> = {
     model,
-    messages: withCacheMarkers(opts.messages, cacheLevel),
+    messages: withCacheMarkers(forProvider(opts.messages), cacheLevel),
     temperature: opts.temperature ?? 0.2,
     max_tokens: opts.maxTokens ?? 4000,
   };
@@ -216,7 +223,7 @@ export async function complete(opts: {
       // A provider that rejects cache markers gets the same request with fewer of them, then none.
       if (res.status === 400 && cacheLevel !== "none" && /cache_control|content|invalid/i.test(text)) {
         cacheLevel = cacheLevel === "full" ? "system" : "none";
-        body.messages = withCacheMarkers(opts.messages, cacheLevel);
+        body.messages = withCacheMarkers(forProvider(opts.messages), cacheLevel);
         attempt--;
         continue;
       }

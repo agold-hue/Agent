@@ -1,5 +1,5 @@
 import type { ChatMessage } from "./llm.js";
-import { createSession, latestChatSession, recentProactiveSessions, type SessionRow } from "./sessions.js";
+import { chatSessionsSince, createSession, latestChatSession, recentProactiveSessions, type SessionRow } from "./sessions.js";
 import { stampMessage } from "./transcript.js";
 import type { Tenant } from "./tenant.js";
 
@@ -7,12 +7,12 @@ export async function currentChatSession(t: Tenant): Promise<SessionRow | undefi
   return latestChatSession(t.id, Number(t.settings.chat_session_max_age_hours ?? 12));
 }
 
-export async function startChatSession(t: Tenant, firstMessage: string, images?: Array<{ mimeType: string; base64: string }>): Promise<SessionRow> {
-  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images });
+export async function startChatSession(t: Tenant, firstMessage: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string): Promise<SessionRow> {
+  return createSession(t, { channel: "chat", kind: "chat", title: `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`, text: stampMessage(t, firstMessage, "chat"), images, reaction });
 }
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; at: string }
+  | { kind: "user"; id: string; text: string; at: string; reaction?: string }
   | { kind: "agent"; id: string; text: string; at: string; notice?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
@@ -26,7 +26,7 @@ export function toChatItems(row: SessionRow): ChatItem[] {
     if (m.role === "user") {
       const text = (typeof m.content === "string" ? m.content : (m.content ?? []).map((p) => (p.type === "text" ? p.text : "")).join("\n")).replace(/^\[[^\]]+\]\n/, "");
       if (text.startsWith("(You are now running") || text === "(screenshot)") return;
-      items.push({ kind: "user", id: `${row.id}-${i}`, text, at });
+      items.push({ kind: "user", id: `${row.id}-${i}`, text, at, reaction: m.reaction });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
       if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at });
@@ -55,5 +55,17 @@ export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> 
     const label = s.kind === "review" ? "Morning brief" : s.kind === "weekly" ? "Week ahead" : s.kind === "digest" ? "Heads-ups" : s.kind === "followup" ? "Follow-up" : s.kind === "triage" ? "From your mail" : s.correspondent ? `Reply from ${s.correspondent}` : "Heads-up";
     out.push({ kind: "agent", id: `notice-${s.id}`, text: report, at: new Date(s.updated_at).toISOString(), notice: label });
   }
+  return out;
+}
+
+/** The whole conversation for the page: every chat session in the window, oldest first; only the current one carries a status. */
+export async function chatHistory(t: Tenant, current: SessionRow | undefined, days = 7): Promise<ChatItem[]> {
+  const rows = await chatSessionsSince(t.id, new Date(Date.now() - days * 86_400_000));
+  const out: ChatItem[] = [];
+  for (const row of rows) {
+    const items = toChatItems(row);
+    out.push(...(current && row.id === current.id ? items : items.filter((i) => i.kind !== "status" && i.kind !== "tool")));
+  }
+  if (current && !rows.some((r) => r.id === current.id)) out.push(...toChatItems(current));
   return out;
 }

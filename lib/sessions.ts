@@ -66,7 +66,7 @@ export async function monthUsageCents(t: Tenant): Promise<number> {
  */
 export async function createSession(
   t: Tenant,
-  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: "chat" | "task" | "hard" },
+  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: "chat" | "task" | "hard"; reaction?: string },
 ): Promise<SessionRow> {
   const cap = env.plans.monthlyCapUsd(t.plan) * 100;
   if (cap > 0 && (await monthUsageCents(t)) >= cap) {
@@ -80,6 +80,7 @@ export async function createSession(
   const first: ChatMessage = opts.images?.length
     ? { role: "user", content: [{ type: "text", text: opts.text }, ...opts.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))] }
     : { role: "user", content: opts.text };
+  if (opts.reaction) first.reaction = opts.reaction;
   const messages: ChatMessage[] = [{ role: "system", content: systemFor(t) }, first];
   const row = await one<SessionRow>(
     `insert into agent_sessions (id, user_id, channel, kind, title, status, reply_tag, model, messages, requester, email_subject, last_message_id, correspondent, review_day, digest_key, followup_id)
@@ -125,10 +126,11 @@ function loadPrompt(): string {
 }
 
 /** Append a user message (a chat line, an email reply) and mark runnable. */
-export async function appendUserMessage(row: SessionRow, text: string, images?: Array<{ mimeType: string; base64: string }>): Promise<void> {
+export async function appendUserMessage(row: SessionRow, text: string, images?: Array<{ mimeType: string; base64: string }>, reaction?: string): Promise<void> {
   const msg: ChatMessage = images?.length
     ? { role: "user", content: [{ type: "text", text }, ...images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))] }
     : { role: "user", content: text };
+  if (reaction) msg.reaction = reaction;
   await q("update agent_sessions set messages = messages || $2::jsonb, status = 'running', updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
@@ -147,9 +149,15 @@ export async function sessionByReplyTag(userId: string, tag: string): Promise<Se
 
 export async function latestChatSession(userId: string, maxAgeHours: number): Promise<SessionRow | undefined> {
   return one<SessionRow>(
-    "select * from agent_sessions where user_id = $1 and channel = 'chat' and status <> 'terminated' and created_at > now() - ($2 || ' hours')::interval order by created_at desc limit 1",
+    "select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = 'chat' and status <> 'terminated' and created_at > now() - ($2 || ' hours')::interval order by created_at desc limit 1",
     [userId, String(maxAgeHours)],
   );
+}
+
+/** Every chat session in the window, oldest first, so the page can show the full conversation history. */
+export async function chatSessionsSince(userId: string, since: Date, limit = 40): Promise<SessionRow[]> {
+  const rows = await q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = 'chat' and created_at > $2 order by created_at desc limit $3", [userId, since, limit]);
+  return rows.reverse();
 }
 
 export async function recentProactiveSessions(userId: string, limit = 10): Promise<SessionRow[]> {
