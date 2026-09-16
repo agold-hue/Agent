@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { env } from "../../lib/env.js";
 import { logInbound } from "../../lib/inbound.js";
-import { extractText } from "../../lib/documents.js";
+import { ingestFile } from "../../lib/docstore.js";
+import type { Tenant } from "../../lib/tenant.js";
 import { parseInbound, stripQuoted, type InboundMail } from "../../lib/mail.js";
 import { appendTranscript } from "../../lib/memory.js";
 import { isApprovalReply } from "../../lib/policy.js";
@@ -13,7 +14,7 @@ import { stampMessage } from "../../lib/transcript.js";
 
 
 /** Attachments become part of the message: images for the model to see, text inlined, others described. */
-async function describeAttachments(mail: InboundMail): Promise<{ text: string; images: Array<{ mimeType: string; base64: string }> }> {
+async function describeAttachments(t: Tenant, mail: InboundMail): Promise<{ text: string; images: Array<{ mimeType: string; base64: string }> }> {
   const lines: string[] = [];
   const images: Array<{ mimeType: string; base64: string }> = [];
   for (const a of mail.attachments) {
@@ -22,10 +23,14 @@ async function describeAttachments(mail: InboundMail): Promise<{ text: string; i
       lines.push(`- ${a.filename} (image, attached below)`);
       continue;
     }
-    // PDFs (bills, statements, receipts) and text files are read here; the model gets their contents.
-    const ex = a.content.length < 8 * 1024 * 1024 ? await extractText(a.content, a.mimeType, a.filename) : { text: "", how: "none" as const };
-    if (ex.text.trim()) lines.push(`- ${a.filename}${ex.how === "pdf" ? ` (PDF, ${ex.pages} page${ex.pages === 1 ? "" : "s"})` : ""}:\n${ex.text.slice(0, 20_000)}`);
-    else lines.push(`- ${a.filename} (${a.mimeType}, ${a.content.length} bytes; ${ex.how === "pdf" ? "a PDF with no text layer, probably a scan" : "not readable here"})`);
+    // PDFs (bills, statements, receipts) and text files are read here: short ones inlined, long ones
+    // stored page by page with an outline for the document tool.
+    if (a.content.length >= 8 * 1024 * 1024) {
+      lines.push(`- ${a.filename} (${a.mimeType}, ${a.content.length} bytes; too large to read here)`);
+      continue;
+    }
+    const ingested = await ingestFile(t, a.content, a.mimeType, a.filename, "mail");
+    lines.push(`- ${ingested.text.replace(/^\(Attached file: /, "(")}`);
   }
   return { text: lines.length ? `Attachments:\n${lines.join("\n")}` : "Attachments: none", images };
 }
@@ -48,7 +53,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const fromRequester = requesterAddresses(t).includes(mail.fromAddress);
   const isFamily = fromRequester && mail.fromAddress !== t.email;
   const text = stripQuoted(mail.text) || mail.text;
-  const att = await describeAttachments(mail);
+  const att = await describeAttachments(t, mail);
   const msgId = mail.messageId ? `<${mail.messageId}@${env.mail.domain()}>` : null;
 
   try {

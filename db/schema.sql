@@ -380,3 +380,23 @@ create table if not exists batch_jobs (
 create index if not exists batch_jobs_status on batch_jobs(status, created_at);
 
 -- Per-customer relay token (hashed in relay_devices) and Plaid environment live in settings; nothing else needed here.
+
+-- Long documents (a lease, a statement, a policy) stored page by page; the message carries an outline, the document tool reads pages.
+create table if not exists documents (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  name text not null,
+  mime text not null,
+  pages int not null,
+  chars int not null,
+  source text not null,                       -- chat | mail
+  outline text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists documents_user on documents(user_id, created_at desc);
+create table if not exists document_pages (
+  doc_id uuid not null references documents(id) on delete cascade,
+  page int not null,
+  text text not null,
+  primary key (doc_id, page)
+);

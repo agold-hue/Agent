@@ -19,7 +19,7 @@ const fn = (name: string, description: string, parameters: Record<string, unknow
  * browser, mail or account tools (about 4,000 tokens fewer per call and a faster answer); everything
  * else gets the full set. Names not listed here fall back to "all".
  */
-const QUICK_TOOLS = new Set(["memory_read", "memory_append", "memory_write", "memory_grep", "memory_list", "list_items", "track_item", "calendar", "schedule_follow_up", "tell_user", "escalate_model", "start_task", "web_search", "fetch_page", "bank", "track_package", "watch_page"]);
+const QUICK_TOOLS = new Set(["memory_read", "memory_append", "memory_write", "memory_grep", "memory_list", "list_items", "track_item", "calendar", "schedule_follow_up", "tell_user", "escalate_model", "start_task", "web_search", "fetch_page", "bank", "track_package", "watch_page", "document"]);
 export function toolsFor(kind: "quick" | "all"): ToolDef[] {
   return kind === "quick" ? tools.filter((t) => QUICK_TOOLS.has(t.function.name)) : tools;
 }
@@ -76,6 +76,9 @@ export const tools: ToolDef[] = [
 
   // ---- the user's own browser, through the relay extension (only when their context says the relay is online)
   fn("local_browser", "Drive a tab in the USER'S OWN browser (their computer, through the relay extension) when the hosted browser is blocked by a site: banks, card issuers, airlines. Same verbs, one round trip each: goto (url), snapshot, click (ref or text), type (ref or text, text, enter), text, find (text), back. Only available while the relay is online (see '# This user'); otherwise use the hosted browser. Never type a password here either; use login flows and codes as usual.", obj({ action: { type: "string", enum: ["goto", "snapshot", "click", "type", "text", "find", "back"] }, url: { type: "string" }, ref: { type: "string" }, text: { type: "string" }, enter: { type: "boolean" } }, ["action"])),
+
+  // ---- long documents the user sent (stored page by page)
+  fn("document", "A long PDF or text file the user attached or emailed, stored page by page (its id and outline are in the message it arrived with). 'review' reads the whole thing for `question` (default: what matters, money, dates, obligations, red flags, what to ask) with page numbers, fast and cheap, so you can write the review; 'search' finds words or an amount across pages with no model; 'read' returns exact pages ('3-5'); 'outline' repeats the outline; 'list' shows stored documents. Use review before answering any question about a long document; never say you cannot open it.", obj({ action: { type: "string", enum: ["list", "outline", "read", "search", "review"] }, id: { type: "string", description: "The document id from the message, or part of its file name." }, pages: { type: "string", description: "For read: '3-5' or '7' (up to 6 pages a call)." }, query: { type: "string", description: "For search: words, a name or an amount." }, question: { type: "string", description: "For review: what to look for; omit for a full review of what matters." } }, ["action"])),
 
   // ---- data sources that need no browser
   fn("bank", "The user's connected bank accounts (Plaid): 'balances' for every account, or 'transactions' in the last `days` (default 30) filtered by words in the merchant, name or category (query: 'gas', 'shell', 'uber'), with the money-out total. Use it before any bank or budgeting site for spending questions, balances and 'did X charge me'.", obj({ action: { type: "string", enum: ["balances", "transactions"] }, days: { type: "number" }, query: { type: "string" }, account: { type: "string", description: "Words from the account name or its last digits." }, limit: { type: "number" } }, ["action"])),

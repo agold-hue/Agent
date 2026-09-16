@@ -10,6 +10,7 @@ import { sendAgentMail } from "./mail.js";
 import { appendMemory, deleteMemory, grepMemory, listMemory, readMemory, writeMemory } from "./memory.js";
 import { notifyOwner } from "./notify.js";
 import { autoApprove, codeHint, codeIn, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
+import { runDocumentTool } from "./docstore.js";
 import { runBankTool } from "./plaid.js";
 import { runLocalBrowserTool } from "./relay.js";
 import { runResearchTool } from "./research.js";
@@ -56,6 +57,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
     if (name.startsWith("browser_")) return await runBrowserTool(t, row, name, args);
     if (name === "watch_page") return { text: await runWatchTool(t, row, args) };
     if (name === "local_browser") return { text: await runLocalBrowserTool(t, row, args) };
+    if (name === "document") return { text: await runDocumentTool(t, row, args) };
     if (name === "bank") return { text: await runBankTool(t, args) };
     if (name === "track_package") return { text: await runTrackTool(args) };
 

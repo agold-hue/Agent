@@ -53,7 +53,7 @@ export interface SessionRow {
 export class UsageCapError extends Error {}
 
 /** Book a completion's cost and tokens on the session and the customer's month. Used by the loop and by side calls (condensing pages, the lookup fast path). */
-export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "other";
+export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "review" | "other";
 export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion, purpose: Purpose = "turn"): Promise<number> {
   const cost = costCents(completion.model, completion.usage);
   row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;

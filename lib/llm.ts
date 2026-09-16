@@ -13,7 +13,7 @@ export interface ToolCall {
 }
 
 export type CacheControl = { type: "ephemeral" };
-export type ContentPart = { type: "text"; text: string; cache_control?: CacheControl } | { type: "image_url"; image_url: { url: string } };
+export type ContentPart = { type: "text"; text: string; cache_control?: CacheControl } | { type: "image_url"; image_url: { url: string } } | { type: "file"; file: { filename: string; file_data: string } };
 
 export interface ChatMessage {
   role: Role;
@@ -102,6 +102,15 @@ export const GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1be
  * LLM_API_KEY, or an LLM_BASE_URL pointing at Google. With both keys set, OpenRouter is the default
  * because it fronts every model and normalizes tool schemas.
  */
+/** Whether this model id is served through OpenRouter (whose PDF parser plugin the OCR path uses). */
+export function providerIsOpenRouter(model: string): boolean {
+  try {
+    return resolveModel(modelList(model)[0] ?? model).provider.baseUrl.includes("openrouter.ai");
+  } catch {
+    return false;
+  }
+}
+
 export function geminiDirect(): boolean {
   if (process.env.LLM_PROVIDER === "gemini") return !!process.env.GEMINI_API_KEY;
   if (process.env.LLM_PROVIDER === "openrouter") return false;
@@ -227,6 +236,8 @@ export async function complete(opts: {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  /** Provider plugins (OpenRouter's file-parser for PDFs); passed through as-is. */
+  plugins?: unknown[];
 }): Promise<Completion> {
   let ids = modelList(opts.model);
   let { provider, model } = resolveModel(ids[0] ?? opts.model);
@@ -259,6 +270,7 @@ export async function complete(opts: {
     temperature: opts.temperature ?? 0.2,
     max_tokens: opts.maxTokens ?? 4000,
   };
+  if (opts.plugins?.length) body.plugins = opts.plugins;
   if (opts.tools?.length) {
     body.tools = provider.baseUrl.includes("generativelanguage.googleapis.com") ? (geminiSafeSchema(opts.tools) as ToolDef[]) : opts.tools;
     body.tool_choice = opts.toolChoice ?? "auto";

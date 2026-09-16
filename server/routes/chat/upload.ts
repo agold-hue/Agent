@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../../lib/chat.js";
-import { describeFile } from "../../../lib/documents.js";
+import { ingestFile } from "../../../lib/docstore.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { modelFor, tierOfModel } from "../../../lib/router.js";
 import { appendToolResult, appendUserMessage, updateSession, type SessionRow } from "../../../lib/sessions.js";
@@ -59,7 +59,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const isImage = mime.startsWith("image/");
   // PDFs (a bill from the utility's app, a statement, a receipt) and text files are read here, so the
   // model gets the contents rather than a note that it cannot open them.
-  const text = isImage ? `(Attached photo: ${body.filename})` : (await describeFile(content, mime, body.filename)).text;
+  const text = isImage ? `(Attached photo: ${body.filename})` : (await ingestFile(t, content, mime, body.filename, "chat")).text;
   const images = isImage ? [{ mimeType: mime, base64: body.data }] : undefined;
   // What to do with it: a document is handled like forwarded mail, a photo is read for what it shows.
   const handle = isImage
