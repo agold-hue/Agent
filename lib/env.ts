@@ -43,8 +43,9 @@ export const env = {
     trialDays: () => Number(opt("STRIPE_TRIAL_DAYS", "7")),
   },
   google: {
-    clientId: () => opt("GOOGLE_CLIENT_ID"),
-    clientSecret: () => opt("GOOGLE_CLIENT_SECRET"),
+    // Pasted values often carry a stray scheme, quotes or whitespace ("http://1234-abc.apps.googleusercontent.com").
+    clientId: () => opt("GOOGLE_CLIENT_ID").trim().replace(/^["']|["']$/g, "").replace(/^https?:\/\//i, ""),
+    clientSecret: () => opt("GOOGLE_CLIENT_SECRET").trim().replace(/^["']|["']$/g, ""),
   },
   plans: {
     /** Monthly model-spend cap per plan, USD (priced from the model price table). */
