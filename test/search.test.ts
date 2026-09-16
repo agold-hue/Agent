@@ -191,10 +191,10 @@ test("fetchBudget: counts from the latest result header in this task and grows w
 
 test("isLookupQuestion: plain factual questions yes; the user's own things, actions, small talk and questions about the agent no", () => {
   const stamp = (s: string) => `[2026-09-15 Tue 03:10 America/New_York via chat]\n${s}`;
-  for (const yes of ["what time does Costco in Brooklyn close today", "how much is a Metro-North ticket from Grand Central to White Plains", "is the DMV open on Saturday", "who won the Mets game last night", "what's the phone number for Con Edison", "can you tell me what the sales tax is in Pennsylvania", "when does daylight saving time end this year"]) {
+  for (const yes of ["what time does Costco in Brooklyn close today", "how much is a Metro-North ticket from Grand Central to White Plains", "is the DMV open on Saturday", "who won the Mets game last night", "what's the phone number for Con Edison", "can you tell me what the sales tax is in Pennsylvania", "when does daylight saving time end this year", "who's mayor in nyc", "who is the mayor of New York", "what's the capital of Australia"]) {
     assert.ok(isLookupQuestion(stamp(yes)), yes);
   }
-  for (const no of ["check my Con Ed bill", "order more paper towels", "how much did I spend on Amazon last month", "what's on my calendar tomorrow", "what's up", "how are you", "is it done yet", "what did you find", "yes", "what time does Costco close\nand order milk", "hmm really", "book a table for two at 7"]) {
+  for (const no of ["check my Con Ed bill", "order more paper towels", "how much did I spend on Amazon last month", "what's on my calendar tomorrow", "what's up", "how are you", "is it done yet", "what did you find", "yes", "what time does Costco close\nand order milk", "hmm really", "book a table for two at 7", "what time is it", "what day is it today", "what's today's date"]) {
     assert.ok(!isLookupQuestion(stamp(no)), no);
   }
 });

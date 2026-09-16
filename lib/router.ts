@@ -91,6 +91,8 @@ export function isLookupQuestion(text: string): boolean {
   t = t.replace(/^(can you |could you |would you |please )?(tell me|find out|look up|check|search|google)\s*[,:]?\s*/i, "").trim();
   if (t.split(/\s+/).length > 30 || !LOOKUP_LEAD.test(t)) return false;
   if (NOT_LOOKUP.test(t) || /^(what'?s (up|new|good|happening)|how are|how'?s it)\b/i.test(t)) return false;
+  // The time, the day and the date are in the message stamp; no search answers them better.
+  if (/^(what|what'?s|whats) (the )?(time|day|date)( is it| today| is today| is it today| now)?[?.!\s]*$/i.test(t) || /^what'?s today'?s date/i.test(t)) return false;
   return true;
 }
 

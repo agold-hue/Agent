@@ -434,7 +434,7 @@ export async function complete(opts: {
     const choice = data.choices?.[0];
     if (!choice) throw new LLMError("empty completion", 200, true);
     const msg = choice.message;
-    console.log(`[llm] ${data.model ?? model}: ${((Date.now() - started) / 1000).toFixed(1)}s in=${data.usage?.prompt_tokens ?? "?"} cached=${data.usage?.prompt_tokens_details?.cached_tokens ?? 0} out=${data.usage?.completion_tokens ?? "?"}${typeof data.usage?.cost === "number" ? ` $${data.usage.cost.toFixed(4)}` : ""}`);
+    console.log(`[llm] ${data.model ?? model}: ${((Date.now() - started) / 1000).toFixed(1)}s${data.ttft_ms != null ? ` ttft=${(data.ttft_ms / 1000).toFixed(1)}s` : ""}${data.provider ? ` via ${data.provider}` : ""}${data.model && data.model !== model ? ` (fallback from ${model})` : ""} in=${data.usage?.prompt_tokens ?? "?"} cached=${data.usage?.prompt_tokens_details?.cached_tokens ?? 0} out=${data.usage?.completion_tokens ?? "?"}${typeof data.usage?.cost === "number" ? ` $${data.usage.cost.toFixed(4)}` : ""}`);
     // Some providers return tool_calls with arguments as objects; normalize to strings.
     for (const tc of msg.tool_calls ?? []) {
       if (typeof (tc.function as { arguments: unknown }).arguments !== "string") tc.function.arguments = JSON.stringify(tc.function.arguments);
@@ -514,6 +514,8 @@ export async function readStream(res: Response, onText: (text: string) => void, 
   let error: string | undefined;
   const calls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
   let lastEmit = 0;
+  /** Something real has arrived (a token, a finish, an error): the upstream is answering. */
+  let begun = false;
   const handle = (line: string) => {
     if (!line.startsWith("data:")) return;
     const payload = line.slice(5).trim();
@@ -527,7 +529,12 @@ export async function readStream(res: Response, onText: (text: string) => void, 
     if (j.error?.message) error = j.error.message;
     if (j.model) model = j.model;
     if ((j as { provider?: string }).provider) provider = (j as { provider?: string }).provider;
-    if (ttft === undefined && (j.choices?.[0]?.delta?.content || j.choices?.[0]?.delta?.tool_calls?.length)) ttft = Date.now() - started;
+    // The first token: content, reasoning (a thinking model starts there) or a tool call. A role-only
+    // opening delta is not one, and neither is OpenRouter's ": OPENROUTER PROCESSING" keepalive,
+    // which arrives at once while the upstream may still be wedged.
+    const d = j.choices?.[0]?.delta as { content?: string | null; reasoning?: string | null; reasoning_details?: unknown[]; tool_calls?: unknown[] } | undefined;
+    if (ttft === undefined && (d?.content || d?.reasoning || d?.reasoning_details?.length || d?.tool_calls?.length)) ttft = Date.now() - started;
+    if (ttft !== undefined || j.choices?.[0]?.finish_reason || j.error || j.usage) begun = true;
     if (j.usage) usage = j.usage;
     const c = j.choices?.[0];
     if (!c) return;
@@ -551,14 +558,17 @@ export async function readStream(res: Response, onText: (text: string) => void, 
       if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
     }
   };
-  let first = true;
+  // No token within the window, counted from the start of the stream: the upstream is wedged (it
+  // accepted the request, OpenRouter is sending keepalives, nothing is being generated) and the
+  // caller fails over to the next model. Before, only the first chunk was timed, and the keepalive
+  // that arrives at once satisfied it, so a hung provider ran to the provider's own timeout.
+  const deadline = opts.firstTokenMs && opts.firstTokenMs > 0 ? started + opts.firstTokenMs : undefined;
   for (;;) {
     let chunk: ReadableStreamReadResult<Uint8Array>;
-    if (first && opts.firstTokenMs && opts.firstTokenMs > 0) {
-      // Nothing at all within the window: the upstream is wedged; the caller fails over.
+    if (deadline && !begun) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new FirstTokenTimeout(opts.firstTokenMs!)), opts.firstTokenMs);
+        timer = setTimeout(() => reject(new FirstTokenTimeout(opts.firstTokenMs!)), Math.max(0, deadline - Date.now()));
       });
       try {
         chunk = await Promise.race([reader.read(), timeout]);
@@ -569,7 +579,6 @@ export async function readStream(res: Response, onText: (text: string) => void, 
         clearTimeout(timer);
       }
     } else chunk = await reader.read();
-    first = false;
     const { value, done } = chunk;
     if (done) break;
     buf += decoder.decode(value, { stream: true });

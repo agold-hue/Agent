@@ -193,9 +193,12 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       }
 
       // A plain factual question ("what time does Costco close", "how much is a Metro-North ticket to
-      // White Plains") is answered by one search and one fast-model call, no tools, no loop. When the
-      // sources do not answer it, the search results are left as a note and the full loop takes over.
-      if (steps === 0 && (row.kind === "chat" || row.kind === "task") && !quick && !arrivedMidTask(row.messages) && isLookupQuestion(taskUserText(row.messages))) {
+      // White Plains", "who's the mayor of NYC") is answered by one search and one fast-model call,
+      // no tools, no loop. When the sources do not answer it, the search results are left as a note
+      // and the full loop takes over. A short fact question is also "quick" by word count; the lookup
+      // shape wins, since the alternative is the full loop with every tool: one turn to decide to
+      // search and one to reply, each on the whole prompt.
+      if (steps === 0 && (row.kind === "chat" || row.kind === "task") && !arrivedMidTask(row.messages) && isLookupQuestion(taskUserText(row.messages))) {
         const answer = await quickLookup(t, row, taskUserText(row.messages)).catch((err) => {
           console.error(`[lookup] ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
           return undefined;
