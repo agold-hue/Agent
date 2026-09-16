@@ -146,3 +146,12 @@ test("a draft the host sent back to the model is not a chat bubble; the final re
   assert.equal(agent.length, 1);
   assert.match((agent[0] as { text: string }).text, /^Market's hot: \$284K/);
 });
+
+import { researchAck } from "../lib/acks.js";
+test("acknowledgements are terse and carry no cheer", () => {
+  for (let i = 0; i < 40; i++) {
+    const a = researchAck([]);
+    assert.ok(a.length <= 24, a);
+    assert.ok(!/!|boss|hang tight|sure thing|you got it/i.test(a), a);
+  }
+});
