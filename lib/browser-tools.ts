@@ -354,7 +354,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
     case "browser_fill_form":
       return { text: await fillForm(t, row, (Array.isArray(a.fields) ? a.fields : []) as FormField[], a.submit as string | boolean | undefined) };
     case "browser_extract":
-      return { text: await extractRows(t, row, { scroll: !!a.scroll, maxRows: a.max_rows != null ? Number(a.max_rows) : undefined }) };
+      return { text: await extractRows(t, row, { scroll: !!a.scroll, maxRows: a.max_rows != null ? Number(a.max_rows) : undefined, ledgerDays: a.ledger_days != null ? Number(a.ledger_days) : undefined }) };
     case "browser_run_path":
       return { text: await replayPath(t, row, str("domain"), a.path ? str("path") : undefined) };
     case "browser_type":

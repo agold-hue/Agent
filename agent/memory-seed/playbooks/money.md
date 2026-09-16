@@ -14,7 +14,8 @@ Sources: forwarded bank/card alerts and statements (observation lane), receipts 
 
 ## Reporting spend
 - "How much did I spend on X in the last N days": the headline is what actually left the account in that window. Then, each in its own sentence and only if present: what was covered by points, gift cards or credits (no cash); orders cancelled before they charged; refunds that came back. Name the items and dates in words; order numbers stay in the receipt. Do not show the arithmetic, and do not restate the window as dates.
-- Where to read it: a connected bank (`bank` tool) first; otherwise the store's order history (Amazon: Orders, then each order's payment breakdown shows points vs card); the inbox's receipts as a cross-check. An order that shows "refund issued" is money coming back, not spend.
+- How to read it: on Monarch, the bank or the card's transactions page, filter to the merchant or category, then `browser_extract` with `ledger_days` set to the window: the host returns money out, pending, refunds and $0 lines already totalled; report those, never your own sum. A connected bank (`bank` tool) gives the same split without a page.
+- Otherwise the store's order history (Amazon: Orders, then each order's payment breakdown shows points vs card); the inbox's receipts as a cross-check. An order that shows "refund issued" is money coming back, not spend.
 
 ## Refunds and returns
 - "Return this" or the Return button: find the order (forwarded receipt, `memory_grep`, the store account), check the return window, start the return in the store account, get the label, tell the user where to drop it in one line, and track the refund with a watch. Refund landed: `record_win` (kind refund) with the amount and mark the item done.

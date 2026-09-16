@@ -149,3 +149,37 @@ test("readStream hands each tool call over as soon as it is complete, and the as
 test("readStream fails fast with FirstTokenTimeout when nothing arrives", async () => {
   await assert.rejects(readStream(sse([], { hang: true }), () => {}, { firstTokenMs: 40 }), (e: unknown) => e instanceof FirstTokenTimeout);
 });
+
+import { formatLedger, parseDateCell, parseMoney, summarizeLedger } from "../lib/browser-extras.js";
+test("ledger summary: charges, refunds, pending and $0 lines split by the host within the window", () => {
+  const now = new Date("2026-09-16T06:00:00Z");
+  assert.equal(parseMoney("$59.84"), 59.84);
+  assert.equal(parseMoney("-$73.41"), -73.41);
+  assert.equal(parseMoney("($20.66)"), -20.66);
+  assert.equal(parseMoney("Sep 4"), undefined);
+  assert.equal(parseDateCell("Sep 4", now)?.toISOString().slice(0, 10), "2026-09-04");
+  assert.equal(parseDateCell("9/11/26", now)?.toISOString().slice(0, 10), "2026-09-11");
+  const table = {
+    source: "table", heading: "Transactions", total: 7,
+    headers: ["Date", "Merchant", "Category", "Amount"],
+    rows: [
+      ["Sep 11", "Amazon refund", "Shopping", "-$73.41"],
+      ["Sep 6", "Amazon.com", "Shopping", "$0.00"],
+      ["Sep 4", "Amazon.com bamboo dispensers", "Shopping", "$59.84"],
+      ["Sep 4", "Amazon.com glow pop tubes", "Shopping", "$8.68"],
+      ["Sep 14", "Amazon.com (pending)", "Shopping", "$12.00"],
+      ["Aug 30", "Amazon.com", "Shopping", "$146.82"],
+      ["Sep 7", "Amazon order cancelled", "Shopping", "$19.99"],
+    ],
+  };
+  const s = summarizeLedger(table, 15, now)!;
+  assert.equal(s.charged, 68.52);
+  assert.equal(s.refunded, 73.41);
+  assert.equal(s.pending, 12);
+  assert.deepEqual(s.lines.filter((l) => l.kind === "no_cash").map((l) => l.amount), [19.99, 0]);
+  assert.ok(!s.lines.some((l) => l.description.includes("Aug")), "outside the window");
+  const text = formatLedger(s);
+  assert.match(text, /money out \(posted charges\): \$68\.52/);
+  assert.match(text, /money back \(refunds, credits\): \$73\.41/);
+  assert.match(text, /no cash moved/);
+});

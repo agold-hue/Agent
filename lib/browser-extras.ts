@@ -173,7 +173,105 @@ const EXTRACT_FN = `(maxRows) => {
 type Extracted = { source: string; heading: string; headers: string[]; rows: string[][]; total: number };
 const EXTRACT_MAX_CHARS = Number(process.env.EXTRACT_MAX_CHARS ?? 14_000);
 
-export async function extractRows(t: Tenant, row: SessionRow, opts: { scroll?: boolean; maxRows?: number }): Promise<string> {
+// ---------------- ledger summary: the accounting done by the host, not the model
+
+export interface LedgerLine {
+  date: string;
+  description: string;
+  amount: number;
+  kind: "charge" | "refund" | "pending" | "no_cash";
+}
+export interface LedgerSummary {
+  window_days: number;
+  from: string;
+  to: string;
+  charged: number;
+  refunded: number;
+  pending: number;
+  lines: LedgerLine[];
+  skipped: number;
+}
+
+const MONEY_CELL = /^[-+(]?\s?\$?\s?-?\d[\d,]*(?:\.\d{2})?\)?$|^-?\$\s?\d/;
+const REFUND_WORDS = /\b(refund|return|credit|reversal|reimburse|cashback|cash back|payment received|rewards? applied)\b/i;
+const PENDING_WORDS = /\bpending\b/i;
+const CANCEL_WORDS = /\b(cancel+ed|voided|declined|not charged|never charged)\b/i;
+
+export function parseMoney(s: string): number | undefined {
+  const t = s.replace(/\s/g, "");
+  if (!MONEY_CELL.test(t) && !/^-?\$?\d[\d,]*\.\d{2}$/.test(t)) return undefined;
+  const negative = /^\(|^-|^\$-|−/.test(t) || /\)$/.test(t);
+  const n = Number(t.replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(n)) return undefined;
+  return negative ? -n : n;
+}
+
+export function parseDateCell(s: string, now: Date): Date | undefined {
+  const t = s.trim();
+  if (!t) return undefined;
+  const y = now.getFullYear();
+  let d: Date | undefined;
+  if (/^(today|yesterday)$/i.test(t)) d = new Date(now.getTime() - (/yesterday/i.test(t) ? 86_400_000 : 0));
+  else if (/^\d{4}-\d{2}-\d{2}/.test(t)) d = new Date(t);
+  else if (/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(t)) {
+    const [m, dd, yy] = t.split("/");
+    d = new Date(yy ? (yy.length === 2 ? 2000 + Number(yy) : Number(yy)) : y, Number(m) - 1, Number(dd));
+  } else if (/^[A-Za-z]{3,9}\.? \d{1,2}(,? \d{4})?$/.test(t)) d = new Date(/\d{4}/.test(t) ? t : `${t}, ${y}`);
+  else return undefined;
+  if (!d || Number.isNaN(d.getTime())) return undefined;
+  // A month/day with no year that lands in the future is last year's.
+  if (!/\d{4}/.test(t) && d.getTime() > now.getTime() + 2 * 86_400_000) d.setFullYear(y - 1);
+  return d;
+}
+
+/**
+ * From an extracted table (or repeated list) to the accounting a spending question needs: which
+ * column is the date, which the amount, then each row within the window classified as a charge
+ * (money left), a refund (money back), pending (not yet posted) or no cash (a $0 line, a
+ * cancelled or points-covered order). The model gets the totals and the lines; it writes the words.
+ */
+export function summarizeLedger(table: Extracted, days: number, now = new Date()): LedgerSummary | undefined {
+  const rows = table.rows.filter((r) => r.length >= 2);
+  if (rows.length < 2) return undefined;
+  const cols = Math.max(...rows.map((r) => r.length));
+  const score = (fn: (cell: string) => boolean) => Array.from({ length: cols }, (_, c) => rows.filter((r) => r[c] && fn(r[c])).length);
+  const dateScores = score((c) => !!parseDateCell(c, now));
+  const moneyScores = score((c) => parseMoney(c) !== undefined && !parseDateCell(c, now));
+  const dateCol = dateScores.indexOf(Math.max(...dateScores));
+  let amountCol = moneyScores.indexOf(Math.max(...moneyScores));
+  if (amountCol === dateCol) amountCol = moneyScores.findIndex((v, i) => i !== dateCol && v === Math.max(...moneyScores.filter((_, j) => j !== dateCol)));
+  if (dateScores[dateCol] < 2 || moneyScores[amountCol] < 2) return undefined;
+  const from = new Date(now.getTime() - days * 86_400_000);
+  const lines: LedgerLine[] = [];
+  let skipped = 0;
+  for (const r of rows) {
+    const date = parseDateCell(r[dateCol] ?? "", now);
+    const amount = parseMoney(r[amountCol] ?? "");
+    if (!date || amount === undefined) {
+      skipped++;
+      continue;
+    }
+    if (date < from || date > new Date(now.getTime() + 86_400_000)) continue;
+    const text = r.filter((_, i) => i !== dateCol && i !== amountCol).join(" ").replace(/\s+/g, " ").trim();
+    const kind: LedgerLine["kind"] = PENDING_WORDS.test(text) ? "pending" : amount === 0 || CANCEL_WORDS.test(text) ? "no_cash" : amount < 0 || REFUND_WORDS.test(text) ? "refund" : "charge";
+    lines.push({ date: date.toISOString().slice(0, 10), description: text.slice(0, 80), amount: Math.abs(amount), kind });
+  }
+  lines.sort((a, b) => b.date.localeCompare(a.date));
+  const sum = (k: LedgerLine["kind"]) => Math.round(lines.filter((l) => l.kind === k).reduce((s, l) => s + l.amount, 0) * 100) / 100;
+  return { window_days: days, from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10), charged: sum("charge"), refunded: sum("refund"), pending: sum("pending"), lines, skipped };
+}
+
+export function formatLedger(s: LedgerSummary): string {
+  const by = (k: LedgerLine["kind"]) => s.lines.filter((l) => l.kind === k).map((l) => `  ${l.date} ${l.description || "(no description)"} $${l.amount.toFixed(2)}`).join("\n");
+  const parts = [`ledger, last ${s.window_days} days (${s.from} to ${s.to}), computed by the host from the rows below:`, `money out (posted charges): $${s.charged.toFixed(2)}${by("charge") ? `\n${by("charge")}` : ""}`];
+  if (s.pending) parts.push(`pending, not yet posted: $${s.pending.toFixed(2)}\n${by("pending")}`);
+  if (s.refunded) parts.push(`money back (refunds, credits): $${s.refunded.toFixed(2)}\n${by("refund")}`);
+  if (by("no_cash")) parts.push(`no cash moved ($0, cancelled, or covered by points/credit):\n${by("no_cash")}`);
+  if (s.skipped) parts.push(`(${s.skipped} row${s.skipped === 1 ? "" : "s"} without a readable date or amount ignored)`);
+  return parts.join("\n");
+}
+
+export async function extractRows(t: Tenant, row: SessionRow, opts: { scroll?: boolean; maxRows?: number; ledgerDays?: number }): Promise<string> {
   return withPage(t, row, async (page) => {
     const maxRows = Math.max(1, Math.min(500, Number(opts.maxRows ?? 200)));
     const run = async () => ((await page.evaluate(`(${EXTRACT_FN})(${maxRows})`).catch(() => [])) as Extracted[]);
@@ -192,7 +290,13 @@ export async function extractRows(t: Tenant, row: SessionRow, opts: { scroll?: b
     }
     if (!tables.length) return `no table, grid or repeated list on ${page.url()}; browser_text for the page as prose`;
     const text = JSON.stringify(tables.map((x) => ({ heading: x.heading || undefined, source: x.source, headers: x.headers.length ? x.headers : undefined, total_rows: x.total, rows: x.rows })));
-    return text.length > EXTRACT_MAX_CHARS ? `${text.slice(0, EXTRACT_MAX_CHARS)}\n... (cut at ${EXTRACT_MAX_CHARS.toLocaleString()} characters; use max_rows or filter the page first)` : text;
+    const body = text.length > EXTRACT_MAX_CHARS ? `${text.slice(0, EXTRACT_MAX_CHARS)}\n... (cut at ${EXTRACT_MAX_CHARS.toLocaleString()} characters; use max_rows or filter the page first)` : text;
+    if (opts.ledgerDays && opts.ledgerDays > 0) {
+      // A spending question: the host does the accounting on the largest table that has dates and amounts.
+      const summary = [...tables].sort((a, b) => b.total - a.total).map((x) => summarizeLedger(x, opts.ledgerDays!)).find(Boolean);
+      return `${summary ? formatLedger(summary) : "ledger: no table with a date column and an amount column was found; the raw rows follow"}\n\n${body}`;
+    }
+    return body;
   });
 }
 
