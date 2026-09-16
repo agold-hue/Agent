@@ -25,7 +25,8 @@ export async function createBrowser(t: Tenant): Promise<BrowserHandle> {
     keepAlive: true,
     // Long enough to wait for a code from the user's phone mid-checkout; released when a proactive task ends.
     api_timeout: Number(process.env.BROWSER_SESSION_MINUTES ?? 30) * 60,
-    proxies: true,
+    // A residential proxy slows every page load; off unless BROWSER_PROXY=1 (for sites that block data-center IPs).
+    proxies: process.env.BROWSER_PROXY === "1",
     browserSettings: {
       context: { id: t.browserbaseContextId, persist: true },
       solveCaptchas: true,

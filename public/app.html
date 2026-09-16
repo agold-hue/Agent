@@ -392,7 +392,7 @@
     <div class="row"><button class="primary" id="vAdd">Save login</button><span class="hint" id="vMsg"></span></div>
   </div>
   <div class="card"><h3>Saved</h3><table><thead><tr><th>Site</th><th>Account</th><th>2FA</th><th></th></tr></thead><tbody id="vList"></tbody></table></div>
-  <div class="card"><h3>Sign in to a site</h3><p>For sites that block automated sign-ins or keep texting codes (utilities, banks, Uber): sign in once yourself in the secretary's own browser. It stays signed in from then on, so no code is ever asked again.</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="siDomain" placeholder="e.g. coned.com or uber" style="flex:1;min-width:180px"><button type="button" class="btnPri" id="siOpen">Open sign-in page</button></div><span class="hint" id="siMsg"></span></div>
+  <div class="card"><h3>Sign in to a site</h3><p>For sites that block automated sign-ins or keep texting codes (utilities, banks, Uber): sign in once yourself in the secretary's own browser. It stays signed in from then on, so no code is ever asked again.</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="siDomain" placeholder="e.g. coned.com or uber" style="flex:1;min-width:180px"><button type="button" class="btnPri" id="siOpen">Open sign-in page</button></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"><input id="siUser" placeholder="email or phone (optional)" autocomplete="off" style="flex:1;min-width:150px"><input id="siPass" type="password" placeholder="password (optional)" autocomplete="new-password" style="flex:1;min-width:150px"></div><p class="hint">Sites log you out after a while. With the login saved here too, the secretary signs back in on its own; a site that only texts codes (Uber) will need one code from you each time its session expires. Passwords are encrypted and never shown to the AI.</p><span class="hint" id="siMsg"></span></div>
   <div class="card"><h3>Browser sessions</h3><p>Every hosted browser the secretary used: watch one live, replay a recording of what it did, or stop one that is still running.</p><table><thead><tr><th>Task</th><th>When</th><th>State</th><th></th></tr></thead><tbody id="bsList"></tbody></table><span class="hint" id="bsMsg"></span></div>
 </div></main>
 
@@ -559,7 +559,14 @@
       const r = await api("/api/browser/signin", { method: "POST", body: JSON.stringify({ domain }) });
       const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
       if (win) win.location.href = out.live_view_url; else window.open(out.live_view_url, "_blank");
-      $("siMsg").textContent = `Sign in to ${out.domain} in the window that opened (use your phone for any code). When you're in, tell ${AGENT} "done" in the chat.`;
+      let saved = "";
+      const user = $("siUser").value.trim(), pass = $("siPass").value;
+      if (user) {
+        const v = await api("/api/vault", { method: "POST", body: JSON.stringify({ domain: out.domain, username: user, password: pass, totp_secret: "", notes: pass ? "" : "signs in with a texted code" }) });
+        saved = v.ok ? " Login saved to the vault." : " (Could not save the login.)";
+        if (v.ok) { $("siUser").value = ""; $("siPass").value = ""; loadVault(); }
+      }
+      $("siMsg").textContent = `Sign in to ${out.domain} in the window that opened (use your phone for any code). When you're in, tell ${AGENT} "done" in the chat.${saved}`;
       loadBrowserSessions();
     } catch (e) { if (win) win.close(); $("siMsg").textContent = `Could not open the browser: ${e.message}`; }
   };

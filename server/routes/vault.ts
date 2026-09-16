@@ -12,8 +12,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!t) return;
   if (req.method === "POST") {
     const b = (req.body ?? {}) as { domain?: string; username?: string; password?: string; totp_secret?: string; notes?: string };
-    if (!b.domain || !b.username || !b.password) return res.status(400).json({ error: "domain, username and password are required" });
-    const id = await saveCredential(t, { domain: b.domain, username: b.username, password: b.password, totpSecret: b.totp_secret || undefined, notes: b.notes });
+    // A password is optional: accounts that sign in with a texted code (Uber, Lyft) have none.
+    if (!b.domain || !b.username) return res.status(400).json({ error: "domain and username are required" });
+    const id = await saveCredential(t, { domain: b.domain, username: b.username, password: b.password ?? "", totpSecret: b.totp_secret || undefined, notes: b.notes });
     return res.status(200).json({ id });
   }
   if (req.method === "DELETE") {

@@ -9,6 +9,9 @@ import { reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
 import { isQuickQuestion, modelFor, tierFor, tierOfModel, upgradedModel } from "../../../lib/router.js";
 import { activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
+
+/** The host's note behind a message that lands while the session is mid-task. */
+const MID_TASK_NOTE = "(That message arrived while you are mid-task. If it changes the task, apply it. If it needs an answer, answer it with tell_user in one line. Then continue the task; a text reply now would end it.)";
 import { resolvePending } from "../../../lib/tools.js";
 import { stampMessage } from "../../../lib/transcript.js";
 import type { Tenant } from "../../../lib/tenant.js";
@@ -52,6 +55,9 @@ async function route(t: Tenant, main: SessionRow | undefined, text: string, quot
   if (codeIn(text)) return { target: main, spawn: false, text };
   const explicit = PARALLEL_PREFIX.test(text);
   const busy = !!main && (main.status === "running" || !!main.pending_kind);
+  // While the thread works, a greeting or status question is answered alongside at once (its own
+  // small session on the fast model) instead of waiting for the task to reach it.
+  if (main && busy && !quote && isQuickQuestion(text) && tasks.length < PARALLEL_TASKS) return { target: main, spawn: true, text };
   if (main && (explicit || (busy && isSeparateTask(text, quote))) && tasks.length < PARALLEL_TASKS) {
     return { target: main, spawn: true, text: text.replace(PARALLEL_PREFIX, "") };
   }
@@ -113,11 +119,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log(`[route] ${session.id}: ${session.model} -> ${model} for "${text.slice(0, 60)}"`);
         await updateSession(session.id, { model });
       }
+      const midTask = session.status === "running";
       await appendUserMessage(session, stampMessage(t, forModel, "chat"), undefined, reaction, quote);
       // A code sent before the agent asked for it (the user saw the text arrive mid-login): make
       // sure it gets typed into the site rather than read as chat.
       const code = codeIn(text);
       if (code) await appendHostNote(session, codeHint(code));
+      else if (midTask) await appendHostNote(session, MID_TASK_NOTE);
       action = "sent";
     }
     if (willResearch && (action === "started" || action === "sent" || action === "task_started")) {

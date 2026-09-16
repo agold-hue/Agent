@@ -167,10 +167,10 @@ const COUNT_CONTROLS = `(() => { const v = (el) => { const r = el.getBoundingCli
  * scripts arrive, slower still through the hosted browser's proxy. Waits for the network to go quiet
  * and for the count of visible controls to appear and stop growing, within `maxMs`.
  */
-export async function waitInteractive(page: Page, maxMs = 12_000): Promise<void> {
+export async function waitInteractive(page: Page, maxMs = Number(process.env.PAGE_SETTLE_MS ?? 8000)): Promise<void> {
   const start = Date.now();
-  await page.waitForLoadState("load", { timeout: Math.min(5000, maxMs) }).catch(() => {});
-  await page.waitForLoadState("networkidle", { timeout: Math.max(0, Math.min(6000, maxMs - (Date.now() - start))) }).catch(() => {});
+  await page.waitForLoadState("load", { timeout: Math.min(4000, maxMs) }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: Math.max(0, Math.min(2500, maxMs - (Date.now() - start))) }).catch(() => {});
   let last = -1;
   while (Date.now() - start < maxMs) {
     const n = Number(await page.evaluate(COUNT_CONTROLS).catch(() => 0));
