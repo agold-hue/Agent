@@ -241,3 +241,30 @@ create table if not exists standing_orders (
 );
 create index if not exists standing_orders_user on standing_orders(user_id);
 create index if not exists agent_sessions_parent on agent_sessions(parent_session_id) where parent_session_id is not null;
+
+-- Web search and page reads over HTTPS, cached and shared across customers (a result page is the
+-- same for everyone). Rows expire; the cron sweep prunes them.
+create table if not exists search_cache (
+  key text primary key,                       -- search:<query>|<country>|<lang>|<near>|<since>  or  page:<canonical url>
+  kind text not null,                         -- search | page
+  value jsonb not null,
+  fetched_at timestamptz not null default now(),
+  expires_at timestamptz not null
+);
+create index if not exists search_cache_expires on search_cache(expires_at);
+
+-- The search golden set's runs: one row per question per run (npm run eval:search, or nightly with SEARCH_EVAL_NIGHTLY=on).
+create table if not exists search_evals (
+  id uuid primary key default gen_random_uuid(),
+  run_id text not null,
+  question text not null,
+  expected text not null,
+  answer text,
+  ok boolean not null,
+  ms int not null default 0,
+  cost_cents numeric(14,3) not null default 0,
+  pages int not null default 0,
+  engine text,
+  created_at timestamptz not null default now()
+);
+create index if not exists search_evals_run on search_evals(run_id, created_at desc);

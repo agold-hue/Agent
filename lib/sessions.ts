@@ -2,7 +2,7 @@ import { one, q } from "./db.js";
 import { loadSystemPrompt } from "./agent-config.js";
 import { randomToken } from "./crypto.js";
 import { env } from "./env.js";
-import type { ChatMessage, MessageQuote } from "./llm.js";
+import { costCents, type ChatMessage, type Completion, type MessageQuote } from "./llm.js";
 import { ensureSeeded, readMemory } from "./memory.js";
 import { modelFor, tierFor } from "./router.js";
 import { ensureProvisioned, type Tenant } from "./tenant.js";
@@ -49,6 +49,20 @@ export interface SessionRow {
 }
 
 export class UsageCapError extends Error {}
+
+/** Book a completion's cost and tokens on the session and the customer's month. Used by the loop and by side calls (condensing pages, the lookup fast path). */
+export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion): Promise<void> {
+  const cost = costCents(completion.model, completion.usage);
+  row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
+  row.prompt_tokens = Number(row.prompt_tokens) + completion.usage.prompt_tokens;
+  row.completion_tokens = Number(row.completion_tokens) + completion.usage.completion_tokens;
+  row.cached_tokens = Number(row.cached_tokens ?? 0) + (completion.usage.cached_tokens ?? 0);
+  row.turns += 1;
+  await q(
+    "insert into usage (user_id, month, cost_cents, prompt_tokens, cached_tokens) values ($1, date_trunc('month', now())::date, $2, $3, $4) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2, prompt_tokens = usage.prompt_tokens + $3, cached_tokens = usage.cached_tokens + $4",
+    [t.id, cost.toFixed(3), completion.usage.prompt_tokens, completion.usage.cached_tokens ?? 0],
+  );
+}
 
 const now = () => new Date().toISOString();
 

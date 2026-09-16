@@ -17,6 +17,10 @@ export interface TenantSettings {
   chat_session_max_age_hours?: number;
   ask_user_deadline_hours?: number;
   task_passphrase?: string;
+  /** ISO country (US, GB, CA) for web search results; defaults from the time zone. */
+  country?: string;
+  /** "Brooklyn, NY" or a zip: appended to local searches (hours, stores, services). */
+  city?: string;
 }
 
 export interface Tenant {

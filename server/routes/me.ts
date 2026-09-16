@@ -20,6 +20,8 @@ const SETTABLE: Array<keyof TenantSettings> = [
   "chat_session_max_age_hours",
   "ask_user_deadline_hours",
   "task_passphrase",
+  "country",
+  "city",
 ];
 
 /** GET -> the account, its settings and usage. POST { ...settings, name?, timezone? } -> update. */

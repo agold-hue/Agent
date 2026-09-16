@@ -3,13 +3,15 @@ import { closeTab, disconnectBrowser } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
 import { tools, toolsFor } from "./agent-config.js";
-import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
+import { complete, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
 import { appendMemory, appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
-import { isQuickQuestion, modelFor, tierOfModel } from "./router.js";
-import { acquireLease, browserShared, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { quickLookup } from "./research.js";
+import { isLookupQuestion, isQuickQuestion, modelFor, tierOfModel } from "./router.js";
+import { stubPageResult, stubSearchResult } from "./search.js";
+import { acquireLease, browserShared, chargeCompletion, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
-import { executeTool } from "./tools.js";
+import { executeTool, type ToolOutcome } from "./tools.js";
 
 /**
  * The agent loop, resumable. Each invocation runs turns until the task is done, the model needs
@@ -39,6 +41,8 @@ const CHAT_ROLLOVER_TURNS = Number(process.env.CHAT_ROLLOVER_TURNS ?? 120);
 const CHAT_ROLLOVER_SHARE = 0.6;
 // How many identical tool calls in a row count as a stuck loop (a real failure hit ~40).
 const LOOP_LIMIT = Number(process.env.LOOP_LIMIT ?? 6);
+/** Tools with no side effects on the world: safe to run concurrently when the model asks for several at once. */
+export const READ_ONLY_TOOLS = new Set(["web_search", "fetch_page", "memory_read", "memory_grep", "memory_list", "list_items"]);
 
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
 
@@ -148,6 +152,18 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         await save();
       }
 
+      // A plain factual question ("what time does Costco close", "how much is a Metro-North ticket to
+      // White Plains") is answered by one search and one fast-model call, no tools, no loop. When the
+      // sources do not answer it, the search results are left as a note and the full loop takes over.
+      if (steps === 0 && (row.kind === "chat" || row.kind === "task") && !quick && !arrivedMidTask(row.messages) && isLookupQuestion(taskUserText(row.messages))) {
+        const answer = await quickLookup(t, row, taskUserText(row.messages)).catch((err) => {
+          console.error(`[lookup] ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+          return undefined;
+        });
+        if (answer) return await finish(t, row, persisted, answer, "idle");
+        if (row.messages.length > persisted) await save();
+      }
+
       // The stored conversation is the user's record and is never trimmed; the model gets a working copy
       // kept under the context budget.
       const context = compacted(row.messages);
@@ -172,7 +188,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         return await finish(t, row, persisted, providerProblem(err), "error");
       }
       timings.push(`llm=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
-      await charge(t, row, completion);
+      await chargeCompletion(t, row, completion);
       row.messages.push({ ...completion.message, at: stamp() });
 
       const calls = completion.message.tool_calls ?? [];
@@ -205,17 +221,26 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         return await finish(t, row, persisted, text, "idle");
       }
 
-      for (const call of calls) {
-        let args: Record<string, unknown> = {};
+      // Read-only calls issued together (several searches, page reads, memory lookups) run at once;
+      // everything that acts (browser steps, mail, checkpoints) runs in order, one at a time.
+      const parsedArgs = calls.map((c) => {
         try {
-          args = JSON.parse(call.function.arguments || "{}");
+          return JSON.parse(c.function.arguments || "{}") as Record<string, unknown>;
         } catch {
+          return undefined;
+        }
+      });
+      const ahead = new Map<number, Promise<ToolOutcome>>();
+      if (calls.length > 1) calls.forEach((c, i) => parsedArgs[i] && READ_ONLY_TOOLS.has(c.function.name) && ahead.set(i, executeTool(t, row, c.function.name, parsedArgs[i]!, c.id)));
+      for (const [i, call] of calls.entries()) {
+        const args = parsedArgs[i];
+        if (!args) {
           row.messages.push({ role: "tool", tool_call_id: call.id, content: "Invalid JSON arguments; call again with valid JSON." });
           continue;
         }
         const toolStart = Date.now();
-        const out = await executeTool(t, row, call.function.name, args, call.id);
-        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s`);
+        const out = ahead.has(i) ? await ahead.get(i)! : await executeTool(t, row, call.function.name, args, call.id);
+        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s${ahead.has(i) ? "‖" : ""}`);
         if (out.pending) {
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} pending:${out.pending}`);
           row.status = "waiting";
@@ -303,20 +328,6 @@ function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number } {
   return { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS };
 }
 
-/** Book a completion's cost and tokens on the session and the month. */
-async function charge(t: Tenant, row: SessionRow, completion: Completion): Promise<void> {
-  const cost = costCents(completion.model, completion.usage);
-  row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
-  row.prompt_tokens = Number(row.prompt_tokens) + completion.usage.prompt_tokens;
-  row.completion_tokens = Number(row.completion_tokens) + completion.usage.completion_tokens;
-  row.cached_tokens = Number(row.cached_tokens ?? 0) + (completion.usage.cached_tokens ?? 0);
-  row.turns += 1;
-  await q(
-    "insert into usage (user_id, month, cost_cents, prompt_tokens, cached_tokens) values ($1, date_trunc('month', now())::date, $2, $3, $4) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2, prompt_tokens = usage.prompt_tokens + $3, cached_tokens = usage.cached_tokens + $4",
-    [t.id, cost.toFixed(3), completion.usage.prompt_tokens, completion.usage.cached_tokens ?? 0],
-  );
-}
-
 /**
  * The task is being stopped by the host (step or time limit, a loop, an empty reply): ask the model
  * for a short, honest report of where it got to instead of quoting its last line, which in a real
@@ -330,7 +341,7 @@ async function wrapUp(t: Tenant, row: SessionRow, reason: string, fallback: stri
       content: `(${reason} Stop working now and report to the user in at most three short lines: what you got done, what you found (figures, confirmation numbers), and exactly what is blocking or what you need from them. Plain words, no tool calls, no promises, no browser links, no site names.)`,
     });
     const c = await complete({ model: row.model!, messages: context, tools, toolChoice: "none", maxTokens: 400 });
-    await charge(t, row, c);
+    await chargeCompletion(t, row, c);
     const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
     if (text && !c.message.tool_calls?.length) return text;
   } catch (err) {
@@ -457,6 +468,19 @@ export function unfilled(text: string): string {
   return out.trim() ? out : text;
 }
 
+/**
+ * Whether the user's latest message landed while the thread was still working (the model was mid
+ * tool call, or the host stamped it as mid-task): then it is handled inside the running task, never
+ * as a fresh lookup that would end that task.
+ */
+export function arrivedMidTask(messages: ChatMessage[]): boolean {
+  const start = taskStart(messages);
+  const prev = messages[start - 1];
+  if (prev && (prev.role === "tool" || (prev.role === "assistant" && prev.tool_calls?.length))) return true;
+  for (let i = start + 1; i < messages.length; i++) if (messages[i].role === "user" && messageText(messages[i]).startsWith("(That message arrived while you are mid-task")) return true;
+  return false;
+}
+
 /** The host's note when a greeting or status question is turning into a task. */
 export const QUICK_NOTE = "(That was a quick question, not a task. Reply now, in one or two lines, from what you already know and what you just looked up. Do not open the browser or start on open items; if something needs doing, say so in half a line and wait for the go-ahead.)";
 
@@ -546,17 +570,36 @@ export function dropStaleScreenshots(messages: ChatMessage[]): ChatMessage[] {
 /** Tool results (page snapshots, memory files) older than this many are stubbed on every call: once acted on, a snapshot is dead weight. */
 const RECENT_TOOL_RESULTS = Number(process.env.RECENT_TOOL_RESULTS ?? 6);
 
+/** Which tool produced each result, by call id. */
+function toolNames(messages: ChatMessage[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const m of messages) for (const c of m.tool_calls ?? []) names.set(c.id, c.function.name);
+  return names;
+}
+
+/**
+ * An old tool result once the model has acted on it. A search keeps its `[n]` result lines (title
+ * and URL, so any of them can still be fetched) and loses the snippets and page text; a page read
+ * keeps its header line; anything else keeps its first 240 characters.
+ */
+export function stubToolResult(tool: string | undefined, content: string): string {
+  if (tool === "web_search") return stubSearchResult(content);
+  if (tool === "fetch_page") return stubPageResult(content);
+  return content.slice(0, 240) + "\n... [older output trimmed; call the tool again if you need it]";
+}
+
 export function compacted(stored: ChatMessage[]): ChatMessage[] {
   const messages = dropStaleScreenshots(stored.map((m) => ({ ...m })));
   // Always: keep only the newest tool results in full. The user's messages and the assistant's own
   // words stay, so the model remembers what it found; the raw page it found it on does not need to
   // ride along on every later call. The stable prefix keeps the prompt cache warm.
+  const names = toolNames(messages);
   let recent = 0;
   for (let i = messages.length - 1; i >= 1; i--) {
     const m = messages[i];
     if (m.role !== "tool" || typeof m.content !== "string") continue;
     if (recent < RECENT_TOOL_RESULTS) recent++;
-    else if (m.content.length > 400) m.content = m.content.slice(0, 240) + "\n... [older output trimmed; call the tool again if you need it]";
+    else if (m.content.length > 400) m.content = stubToolResult(names.get(m.tool_call_id ?? ""), m.content);
   }
   if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
   const keepTail = 12;

@@ -7,7 +7,8 @@ customer ──chat──▶ app.html ──▶ api/chat/*  ─┐
 customer ──email─▶ <slug>@MAIL_DOMAIN ─▶ api/mail-inbound ─┴─▶ agent_sessions row (messages, model, lease)
                                                                     │  api/run: the loop (lib/runtime.ts), resumable across invocations
                                                                     │   model: lib/llm.ts → OpenRouter / DeepSeek / Gemini (tiers in lib/router.ts)
-                                                                    │   tools: browser over CDP (Browserbase), memory (Postgres), vault login,
+                                                                    │   tools: web search + page reads over HTTPS (lib/search.ts, cached in Postgres),
+                                                                    │          browser over CDP (Browserbase), memory (Postgres), vault login,
                                                                     │          send_email, checkpoint, ask_user, schedule_follow_up, calendar/inbox/drive
 customer ◀── chat (polling) / email ◀───────────────────────────────┘
 api/cron (every minute): resume stalled sessions, timers and watches, digests, daily and weekly reviews, mail triage
@@ -24,6 +25,16 @@ Cost is taken from the provider's own usage report when it sends one (OpenRouter
 
 Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwise the agent works from text snapshots, which is the cheap default anyway.
 
+## Web search and reading
+
+Searching and reading the web never touches the hosted browser. `web_search` calls a search API (Brave, Serper or Tavily, whichever keys are set, in `SEARCH_ENGINES` order; the keyless DuckDuckGo HTML endpoint is the last HTTP resort, and the browser's own DuckDuckGo page is used only when every engine failed and the task already has a browser open). Two to four query phrasings run together and are merged: one entry per canonical URL (tracking parameters, AMP and mobile variants stripped), ranked by source tier (official records, then the company's own site, then reference and review sites, general pages, forums, with scraped aggregators last), at most two results per domain. `since` limits to the last day, week, month or year; `near` (or the customer's `settings.city`) localises hours, stores and services; the country comes from `settings.country` or the time zone. `read_top` reads the top pages in the same call, in parallel with a per-page timeout, and `fetch_page` reads any URL: main text only (navigation, ads and footers stripped), PDFs through their text layer, with the published date. A page that blocks plain fetches or renders only in JavaScript is reported as such, never as an empty answer, and the model is told to use the browser for that one.
+
+Cost and speed come from the same design: results and page text are cached in `search_cache` and shared across customers (fresh queries expire in minutes, evergreen ones in a day, pages in twelve hours), so the morning digests searching the same topic pay for one search a day. Pages over `PAGE_CONDENSE_CHARS` are condensed around the question by the chat-tier model, in parallel, before they reach the task model. Each task may read `FETCH_BUDGET_PER_TASK` pages (12) before it must answer from what it has or ask through a checkpoint; results and snippets stay free. Old search results shrink to their `[n]` title-and-URL lines once the model has acted on them, so a long research task does not carry every snippet forward. Read-only tool calls the model issues together (several searches, page reads, memory lookups) run concurrently; browser actions still run one at a time.
+
+A plain factual question ("what time does Costco close", "how much is a Metro-North ticket to White Plains") takes the lookup fast path: one search with the top three pages read, one chat-tier call with no tools, and the answer with its source. When the sources do not answer it, the results are left as a note and the full agent loop takes over. The golden set in `eval/search-golden.json` (50 questions with known answers) runs through the same pipeline with `npm run eval:search`, or nightly with `SEARCH_EVAL_NIGHTLY=on`; each run is recorded in `search_evals` and the latest answer rate, median time and cost per success show on `/api/stats`.
+
+Hosted browsers are released when nobody is using them: a finished parallel task lets go of its tab at once, and any browser with no running or waiting session on it for `BROWSER_IDLE_RELEASE_MINUTES` (5) is released by the cron sweep. The customer's profile keeps the cookies, so the next task finds every site signed in.
+
 ## What's in the box
 
 | Area | Where | Notes |
@@ -32,6 +43,7 @@ Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwi
 | Provider client | `lib/llm.ts` | Plain fetch to `/chat/completions` with tools; retries; usage → cost |
 | Router | `lib/router.ts` | Tier heuristics, per-plan model overrides, escalation |
 | Tools | `lib/agent-config.ts`, `lib/tools.ts`, `lib/browser-tools.ts` | All server-side; the model never sees a password |
+| Search and reading | `lib/search.ts`, `lib/research.ts`, `lib/search-eval.ts` | Search APIs with fallbacks, canonical URLs, source tiers, page reads with main-text extraction and PDFs, shared cache, condensing, per-task fetch budget, the lookup fast path, the golden set |
 | Memory | `lib/memory.ts` (Postgres `memories`) | Seeded from `agent/memory-seed/` (standing instructions, profile, playbooks); grep for recall |
 | Accounts | `lib/auth.ts`, `api/auth/*`, `api/me.ts` | Email-code login, signed HttpOnly cookie, per-customer settings |
 | Billing | `lib/billing.ts`, `api/billing/*`, `api/stripe-webhook.ts` | Stripe Checkout, trial, portal; access gated; usage caps |
@@ -91,7 +103,7 @@ Sign up with an email code, start the trial, chat at `/app.html` or email their 
 
 ## Developing
 
-`npm run typecheck` and `npm test` (unit tests for the loop's pure parts: budgets, loop detection, nudges, code detection, chat rendering). Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`.
+`npm run typecheck` and `npm test` (unit tests for the loop's pure parts: budgets, loop detection, nudges, code detection, chat rendering, search ranking and extraction). `npm run eval:search` runs the search golden set against the live pipeline (needs `DATABASE_URL` and a model key; `--limit 10 --no-record` for a quick look). Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`.
 
 ### Shipping changes to existing customers
 

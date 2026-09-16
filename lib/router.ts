@@ -58,6 +58,23 @@ export function isQuickQuestion(text: string): boolean {
   return tierFor(t, "chat") === "chat" && t.split(/\s+/).length <= 40;
 }
 
+/**
+ * A plain factual question the web answers in one search: a store's hours, a fare, a phone number,
+ * who won, when something opens. It runs the lookup fast path (one search, one fast-model reply, no
+ * tools) and falls back to the full loop when the sources do not answer. Anything about the user's
+ * own accounts, orders or calendar, and anything that asks for an action, is not a lookup.
+ */
+const LOOKUP_LEAD = /^(what|what's|whats|when|when's|how much|how many|how long|how late|how early|how far|how old|how big|how tall|is|are|does|do|did|who|who's|where|where's|which|why)\b/i;
+const NOT_LOOKUP = /\b(my|our|mine|me|i|i'm|i've|we|we're|us|you|your|yours|yet|done|status|so far|going on|order|reorder|buy|purchase|book|pay|cancel|send|email|text|call|schedule|reschedule|remind|track|return|sign|log ?in|account|password|code|refund|dispute|draft|reply|calendar|inbox|package|delivery|appointment|reservation|subscription|balance|statement|invoice|bill|receipt|renew|apply|submit|fill|upload|download|save|add|update|set|make|create|get me|for me|please)\b/i;
+export function isLookupQuestion(text: string): boolean {
+  let t = text.replace(/^\[[^\]]*\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
+  if (!t || t.startsWith("(") || t.includes("\n")) return false;
+  t = t.replace(/^(can you |could you |would you |please )?(tell me|find out|look up|check|search|google)\s*[,:]?\s*/i, "").trim();
+  if (t.split(/\s+/).length > 30 || !LOOKUP_LEAD.test(t)) return false;
+  if (NOT_LOOKUP.test(t) || /^(what'?s (up|new|good|happening)|how are|how'?s it)\b/i.test(t)) return false;
+  return true;
+}
+
 export function nextTier(current: Tier): Tier | null {
   return current === "chat" ? "task" : current === "task" ? "hard" : null;
 }

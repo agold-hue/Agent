@@ -1,5 +1,6 @@
 import Browserbase from "@browserbasehq/sdk";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { q } from "./db.js";
 import { env } from "./env.js";
 import { ensureProvisioned, type Tenant } from "./tenant.js";
 
@@ -57,6 +58,27 @@ export async function releaseBrowser(sessionId: string): Promise<void> {
   } catch {
     /* already gone */
   }
+}
+
+/**
+ * Hosted browsers nobody is using: a chat that finished its task keeps its browser for quick
+ * follow-ups, but an idle browser is billed by the minute until its keep-alive runs out. After
+ * `minutes` with no running or waiting session on it, the browser is released and forgotten; the
+ * customer's profile keeps the cookies, so the next task signs in as before.
+ */
+export async function releaseIdleBrowsers(minutes = Number(process.env.BROWSER_IDLE_RELEASE_MINUTES ?? 5)): Promise<number> {
+  if (!env.browserbase.configured() || minutes <= 0) return 0;
+  const rows = await q<{ id: string }>(
+    `select distinct s.browserbase_session_id as id from agent_sessions s
+     where s.browserbase_session_id is not null and s.status not in ('running', 'waiting') and s.updated_at < now() - ($1 || ' minutes')::interval
+       and not exists (select 1 from agent_sessions o where o.browserbase_session_id = s.browserbase_session_id and o.status in ('running', 'waiting'))`,
+    [String(minutes)],
+  );
+  for (const r of rows) {
+    await releaseBrowser(r.id);
+    await q("update agent_sessions set browserbase_session_id = null, browser_target_id = null where browserbase_session_id = $1", [r.id]);
+  }
+  return rows.length;
 }
 
 export async function liveViewUrl(sessionId: string): Promise<string> {

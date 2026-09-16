@@ -10,6 +10,7 @@ import { sendAgentMail } from "./mail.js";
 import { appendMemory, deleteMemory, grepMemory, listMemory, readMemory, writeMemory } from "./memory.js";
 import { notifyOwner } from "./notify.js";
 import { autoApprove, codeHint, codeIn, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
+import { runResearchTool } from "./research.js";
 import { modelFor, nextTier, tierOfModel } from "./router.js";
 import { appendAssistantMessage, appendToolResult, taskStart, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
@@ -45,7 +46,10 @@ async function deliverEmail(t: Tenant, row: SessionRow, input: SendEmailInput): 
 export async function executeTool(t: Tenant, row: SessionRow, name: string, args: Record<string, unknown>, callId: string): Promise<ToolOutcome> {
   const s = (k: string) => String(args[k] ?? "");
   try {
-    if (name.startsWith("browser_") || name === "web_search") return await runBrowserTool(t, row, name, args);
+    // Search and reading run over HTTPS from this process, never through the browser; the browser's
+    // own DuckDuckGo page is the last fallback and only when this session already has one open.
+    if (name === "web_search" || name === "fetch_page") return await runResearchTool(t, row, name, args, (query) => runBrowserTool(t, row, "web_search_browser", { query }));
+    if (name.startsWith("browser_")) return await runBrowserTool(t, row, name, args);
 
     switch (name) {
       case "memory_read": {

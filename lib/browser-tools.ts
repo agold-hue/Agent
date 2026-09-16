@@ -20,7 +20,7 @@ const ACTION_ELEMENTS = Number(process.env.ACTION_SNAPSHOT_ELEMENTS ?? 140);
  * site never sees a "new device"), and only opens a fresh one when none is running.
  */
 async function handleFor(t: Tenant, row: SessionRow): Promise<BrowserHandle> {
-  if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, memory, calendar and email, and tell the user browsing is not enabled.");
+  if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, fetch_page, memory, calendar and email, and tell the user browsing is not enabled.");
   const own = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
   if (own) return own;
   for (const id of await otherActiveBrowsers(row.user_id, row.id).catch(() => [] as string[])) {
@@ -408,7 +408,8 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         await settle(page);
         return { text: `${page.url()}\n\n${await snapshot(page)}` };
       });
-    case "web_search":
+    case "web_search_browser":
+      // Last resort behind lib/search.ts, and only when this session already has a browser.
       return withPage(t, row, async (page) => {
         await page.goto(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(str("query"))}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
         await settle(page, 1000);
@@ -421,7 +422,8 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
               return `- ${(a as HTMLElement).innerText.trim()} | ${(a as HTMLAnchorElement).href}\n  ${snippet.slice(0, 200)}`;
             }),
         );
-        return { text: results.length ? results.join("\n") : (await page.evaluate(() => document.body.innerText)).slice(0, 3000) };
+        if (!results.length) throw new Error("the browser search page showed no result links (blocked or empty)");
+        return { text: results.join("\n") };
       });
     default:
       return { text: `unknown browser tool ${name}` };
