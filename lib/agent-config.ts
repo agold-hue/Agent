@@ -14,6 +14,16 @@ const fn = (name: string, description: string, parameters: Record<string, unknow
  * Every tool the agent can call. All of them run on our servers (browser over CDP, memory in
  * Postgres, mail, vault). The model never sees a password or the raw approval decision.
  */
+/**
+ * The tools sent with a call, by what the task can need: a quick question or a plain note needs no
+ * browser, mail or account tools (about 4,000 tokens fewer per call and a faster answer); everything
+ * else gets the full set. Names not listed here fall back to "all".
+ */
+const QUICK_TOOLS = new Set(["memory_read", "memory_append", "memory_write", "memory_grep", "memory_list", "list_items", "track_item", "calendar", "schedule_follow_up", "tell_user", "escalate_model", "start_task"]);
+export function toolsFor(kind: "quick" | "all"): ToolDef[] {
+  return kind === "quick" ? tools.filter((t) => QUICK_TOOLS.has(t.function.name)) : tools;
+}
+
 export const tools: ToolDef[] = [
   // ---- memory
   fn("memory_read", "Read one of your memory files (standing_instructions.md, profile.md, calendar.md, contacts.md, renewals.md, actions.md, watchlist.md, playbooks/<domain>.md, projects/<slug>.md, conversations/YYYY-MM-DD.md ...).", obj({ path: { type: "string" } }, ["path"])),

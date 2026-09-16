@@ -199,11 +199,66 @@ export async function knownFacts(t: Tenant): Promise<string> {
   return parts.join("\n\n");
 }
 
-export async function systemFor(t: Tenant, opts: { parallel?: boolean } = {}): Promise<string> {
+/**
+ * The system prompt for one run. Ordered so the cached prefix stays byte-identical call to call:
+ * the shared prompt, then the user's facts (change rarely), then what varies per task (the playbook
+ * and site notes for this task, the tasks running alongside) at the very end.
+ */
+export async function systemFor(t: Tenant, opts: { parallel?: boolean; task?: string } = {}): Promise<string> {
   const known = await knownFacts(t);
-  const head = systemHead(t) + (opts.parallel === false ? "" : await parallelTasksNote(t));
-  if (!known) return head;
-  return `${head}\n\n# What you already know about this user (from their memory files; never ask for any of it)\n${known}`;
+  const parts = [systemHead(t)];
+  if (known) parts.push(`# What you already know about this user (from their memory files; never ask for any of it)\n${known}`);
+  if (opts.task) {
+    const inline = await inlinedNotes(t, opts.task).catch(() => "");
+    if (inline) parts.push(inline);
+  }
+  if (opts.parallel !== false) {
+    const note = await parallelTasksNote(t);
+    if (note) parts.push(note.trim());
+  }
+  return parts.join("\n\n");
+}
+
+/** Which playbooks a request touches, from its words. */
+const PLAYBOOK_HINTS: Array<[RegExp, string]> = [
+  [/\b(bill|balance|pay|payment|refund|dispute|charge|subscription|bank|card|invoice|receipt|expense|tax|budget|mortgage|rate)s?\b/i, "money"],
+  [/\b(order|buy|purchase|cart|amazon|grocer|shopping|return|price|cheapest|deliver|package|tracking)/i, "shopping"],
+  [/\b(flight|hotel|trip|travel|airbnb|uber|lyft|train|airport|jfk|lga|ewr|check.?in|itinerary)\b/i, "travel"],
+  [/\b(appointment|calendar|meeting|schedule|reschedule|book|reservation|table|dinner)\b/i, "calendar"],
+  [/\b(doctor|dentist|prescription|pharmacy|insurance claim|health|medic)/i, "health"],
+  [/\b(school|teacher|kid|daughter|son|camp|tuition)s?\b/i, "kids"],
+  [/\b(plumber|electrician|contractor|repair|landlord|lease|utility|con ?ed|internet|cable|clean)/i, "home"],
+  [/\b(form|dmv|passport|renew|license|permit|notary|document|paperwork|application)s?\b/i, "paperwork"],
+  [/\b(email|inbox|reply|draft|unsubscribe|newsletter)s?\b/i, "inbox"],
+  [/\b(research|compare|find (me )?the best|options|recommend)/i, "research"],
+  [/\b(birthday|gift|anniversary|thank.?you|invite|rsvp)/i, "people"],
+];
+
+/** Domains named in the request ("coned.com", "uber", "amazon"). */
+function sitesIn(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/\b([a-z0-9-]+\.(?:com|net|org|gov|edu|co|io|us))\b/gi)) out.add(m[1].toLowerCase().replace(/^www\./, ""));
+  for (const [, name] of text.matchAll(/\b(amazon|uber|lyft|coned|con ed(?:ison)?|zillow|verizon|chase|amex|netflix|costco|walmart|target|delta|jetblue|united|expedia|opentable|resy|doordash|instacart|quickbooks)\b/gi)) out.add(name.toLowerCase().replace(/\s+/g, "") === "conedison" ? "coned.com" : `${name.toLowerCase().replace(/\s+/g, "")}.com`);
+  return [...out].slice(0, 3);
+}
+
+/**
+ * The playbook and site notes a task needs, inlined so the task starts working instead of spending
+ * its first steps on memory_read calls. Only files that exist and only for this request.
+ */
+export async function inlinedNotes(t: Tenant, task: string): Promise<string> {
+  const text = task.replace(/^\[[^\]]+\]\n/, "").slice(0, 2000);
+  const books = [...new Set(PLAYBOOK_HINTS.filter(([re]) => re.test(text)).map(([, b]) => b))].slice(0, 2);
+  const parts: string[] = [];
+  for (const b of books) {
+    const c = await readMemory(t, `playbooks/${b}.md`).catch(() => null);
+    if (c) parts.push(`## playbooks/${b}.md\n${c.trim().slice(0, 6000)}`);
+  }
+  for (const d of sitesIn(text)) {
+    const c = await readMemory(t, `sites/${d}.md`).catch(() => null);
+    if (c) parts.push(`## sites/${d}.md\n${c.trim().slice(0, 3000)}`);
+  }
+  return parts.length ? `# Notes for this task (already read for you; no need to memory_read them)\n${parts.join("\n\n")}` : "";
 }
 
 async function parallelTasksNote(t: Tenant): Promise<string> {

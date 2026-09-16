@@ -2,7 +2,7 @@ import { releaseBrowser } from "./browser.js";
 import { closeTab, disconnectBrowser } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
-import { tools } from "./agent-config.js";
+import { tools, toolsFor } from "./agent-config.js";
 import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
 import { appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
@@ -64,7 +64,14 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   await warmCatalog().catch(() => {});
   // The system message is rebuilt every run, so a session started hours ago sees today's prompt,
   // today's settings, and which services (browser, mail, Google) are available right now.
-  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t) };
+  // Messages typed in quick succession ("add milk", "remind me at 3", "note Sam's number") are one
+  // call, not three: a request under two seconds old waits a moment for its siblings.
+  const lastAt = row.messages[row.messages.length - 1]?.at;
+  if (lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
+    await new Promise((r) => setTimeout(r, 1500));
+    row = (await getSession(sessionId)) ?? row;
+  }
+  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t, { task: taskUserText(row.messages) }) };
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   // Everything up to here is already in the DB; the loop only ever appends beyond this index, so a
   // message the user sends mid-task (its own atomic append) is never overwritten.
@@ -108,14 +115,17 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         const summary = await wrapUp(t, row, "This thread has reached its step ceiling.", "This thread has run long, so I'm closing it here.");
         return await finish(t, row, persisted, `${summary}\n\nYour next message starts a fresh thread; I'll carry over a recap.`, "idle");
       }
+      // Budgets by class: a greeting gets a few steps, a lookup a couple of dozen, real work the full
+      // budget. A stuck lookup never burns a refund-sized budget.
+      const cls = taskClass(row, t);
       const steps = taskTurns(row.messages);
-      if (steps >= MAX_TASK_TURNS) {
+      if (steps >= cls.steps) {
         const summary = await wrapUp(t, row, `You have taken ${steps} steps on this task without finishing.`, `I've taken ${steps} steps on this without finishing, so I stopped.`);
         return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
       }
       const clock = taskClockStart(row.messages);
       const elapsed = clock ? Date.now() - clock : 0;
-      if (TASK_TIME_LIMIT_MS > 0 && elapsed > TASK_TIME_LIMIT_MS) {
+      if (cls.ms > 0 && elapsed > cls.ms) {
         const mins = Math.round(elapsed / 60_000);
         const summary = await wrapUp(t, row, `You have been on this task for ${mins} minutes without finishing.`, `I've been on this for ${mins} minutes without finishing, so I stopped.`);
         return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
@@ -145,7 +155,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       const timings: string[] = [];
       let completion: Completion;
       try {
-        completion = await complete({ model: row.model!, messages: context, tools });
+        completion = await complete({ model: row.model!, messages: context, tools: toolsFor(quick ? "quick" : "all") });
       } catch (err) {
         if (err instanceof LLMError && err.retryable) throw err; // worker will retry via cron sweep
         return await finish(t, row, persisted, providerProblem(err), "error");
@@ -254,6 +264,19 @@ function providerProblem(err: unknown): string {
   if (status === 402) return "I can't run right now: the AI account is out of credits. Add credits at openrouter.ai/credits, then say \"try again\" and I'll pick up where I was.";
   if (status === 401 || status === 403) return "I can't reach the AI provider: the API key was rejected. Check LLM_API_KEY in the server settings, then say \"try again\".";
   return `The AI provider rejected the request (${msg.replace(/\s+/g, " ").slice(0, 160)}). Say "try again", or tell me to use a different approach.`;
+}
+
+/**
+ * What a task may spend, by class. Quick questions are capped elsewhere (QUICK_STEPS); a task-tier
+ * request (a lookup, a form, a bill) gets a middle budget; hard-tier work (refunds, negotiations,
+ * projects) and self-started reviews get the full one.
+ */
+function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number } {
+  const tier = tierOfModel(row.model ?? "", t);
+  if (row.kind === "chat" || row.kind === "task") {
+    if (tier === "task") return { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000) };
+  }
+  return { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS };
 }
 
 /** Book a completion's cost and tokens on the session and the month. */

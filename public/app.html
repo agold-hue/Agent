@@ -830,7 +830,10 @@
   try { if (window.Notification && Notification.permission === "granted") $("notifyChip").classList.add("toolChipOn"); } catch {}
 
   // ---- data
+  let historyVersion = "";
   function applyHistory(data) {
+    if (data.unchanged) return;
+    historyVersion = data.version || "";
     const prevAgent = items.filter((i) => i.kind !== "user").length;
     items = data.items.filter((i) => i.kind !== "status" && i.kind !== "tool_resolved");
     // Belt and braces: the same agent line twice in a row within a minute is one line.
@@ -849,6 +852,7 @@
   async function loadHistory() {
     const r = await api("/api/chat/history");
     if (r.status === 401) { location.href = "/"; return; }
+    historyVersion = "";
     if (r.status === 402) { showTab("billing"); return; }
     applyHistory(await r.json());
     if ((sessionId && status === "running") || tasks.some((t) => t.status === "running")) openStream();
@@ -858,7 +862,7 @@
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
       if (document.hidden || $("chats").hidden) return;
-      const r = await api("/api/chat/history"); if (!r.ok) return;
+      const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion)); if (!r.ok) return;
       applyHistory(await r.json());
       if (status !== "running" && !tasks.some((t) => t.status === "running")) { clearInterval(pollTimer); pollTimer = null; }
     }, 2500);

@@ -244,8 +244,28 @@ export async function snapshot(page: Page, max = MAX_ELEMENTS): Promise<string> 
   if (total > max) out.push(`... ${total - max} more elements not shown; browser_snapshot lists up to ${MAX_ELEMENTS}, or scroll, or browser_text`);
   return out.join("\n");
 }
-/** The snapshot that comes back with an action: enough to take the next step, not the whole page. */
-const after = (page: Page) => snapshot(page, ACTION_ELEMENTS);
+/** The last full snapshot each session saw, so an action can return only what changed. */
+const lastSnapshots = new Map<string, { url: string; lines: string[] }>();
+
+/**
+ * The snapshot that comes back with an action. Same page, mostly the same elements: only the lines
+ * that changed or appeared are listed (refs are part of each line, so an unchanged line is still
+ * clickable by the same number); a new page comes back whole. Halves tokens on long forms.
+ */
+async function after(page: Page, sessionId: string): Promise<string> {
+  const full = await snapshot(page, ACTION_ELEMENTS);
+  const lines = full.split("\n");
+  const url = page.url();
+  const prev = lastSnapshots.get(sessionId);
+  lastSnapshots.set(sessionId, { url, lines });
+  if (!prev || prev.url !== url) return full;
+  const before = new Set(prev.lines);
+  const changed = lines.filter((l) => !before.has(l));
+  const gone = prev.lines.filter((l) => /^\[\d+\]/.test(l) && !lines.includes(l)).length;
+  const kept = lines.length - changed.length;
+  if (changed.length > lines.length * 0.6 || kept < 4) return full;
+  return `${lines[0]}\n${url}\n(same page: ${kept} elements unchanged, same numbers as before; ${gone} gone)\n${changed.join("\n") || "(nothing new on the page)"}`;
+}
 
 export interface BrowserResult {
   text: string;
@@ -267,7 +287,9 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       return withPage(t, row, async (page) => {
         await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 });
         await waitInteractive(page);
-        return { text: `${await page.title()}\n${page.url()}\n\n${await snapshot(page)}` };
+        const snap = await snapshot(page);
+        lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
+        return { text: `${await page.title()}\n${page.url()}\n\n${snap}` };
       });
     case "browser_snapshot":
       return withPage(t, row, async (page) => {
@@ -277,6 +299,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
           await waitInteractive(page, 8000);
           snap = await snapshot(page);
         }
+        lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
         return { text: snap };
       });
     case "browser_wait_for":
@@ -298,7 +321,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       return withPage(t, row, async (page) => {
         await (await ref(page, str("ref"))).click({ timeout: 10_000 });
         await settle(page);
-        return { text: `clicked [${str("ref")}] -> ${page.url()}\n\n${await after(page)}` };
+        return { text: `clicked [${str("ref")}] -> ${page.url()}\n\n${await after(page, row.id)}` };
       });
     case "browser_type":
       return withPage(t, row, async (page) => {
@@ -309,11 +332,11 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         if (a.enter) {
           await loc.press("Enter");
           await settle(page);
-          return { text: `typed + Enter\n\n${await after(page)}` };
+          return { text: `typed + Enter\n\n${await after(page, row.id)}` };
         }
         // Address and search boxes answer typing with a suggestion list that must be clicked; show it.
         await page.waitForTimeout(800);
-        return { text: `typed into [${str("ref")}]\n\n${await after(page)}` };
+        return { text: `typed into [${str("ref")}]\n\n${await after(page, row.id)}` };
       });
     case "browser_select":
       return withPage(t, row, async (page) => {
@@ -327,13 +350,13 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       return withPage(t, row, async (page) => {
         await page.keyboard.press(str("key"));
         await settle(page, 800);
-        return { text: `pressed ${str("key")}\n\n${await after(page)}` };
+        return { text: `pressed ${str("key")}\n\n${await after(page, row.id)}` };
       });
     case "browser_scroll":
       return withPage(t, row, async (page) => {
         await page.mouse.wheel(0, str("direction") === "up" ? -700 : 700);
         await page.waitForTimeout(500);
-        return { text: await after(page) };
+        return { text: await after(page, row.id) };
       });
     case "browser_text":
       return withPage(t, row, async (page) => {
