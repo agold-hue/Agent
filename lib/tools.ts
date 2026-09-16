@@ -164,7 +164,8 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
       case "list_items": {
         const days = args.due_within_days != null ? Number(args.due_within_days) : undefined;
         const items = await listItems(t, { kind: args.kind ? s("kind") : undefined, status: args.status ? s("status") : "open", dueBefore: days != null ? new Date(Date.now() + days * 86_400_000) : undefined });
-        return { text: items.length ? JSON.stringify(items.map((i) => ({ id: i.id, kind: i.kind, title: i.title, due_at: i.due_at, status: i.status, amount_usd: i.amount_cents != null ? Number(i.amount_cents) / 100 : undefined, details: i.details }))) : "(nothing tracked)" };
+        // last_updated tells the model how stale a claim is: an item untouched for days is checked at the source before it is repeated.
+        return { text: items.length ? JSON.stringify(items.map((i) => ({ id: i.id, kind: i.kind, title: i.title, due_at: i.due_at, status: i.status, amount_usd: i.amount_cents != null ? Number(i.amount_cents) / 100 : undefined, details: i.details, last_updated: i.updated_at, source: i.source }))) + "\n(Each item is what was last known when it was last updated. A cancellation or change since then wins: for anything that matters, check the newest email or the order page before repeating it, and update the item.)" : "(nothing tracked)" };
       }
       case "record_win": {
         await recordWin(t, { kind: s("kind"), amountCents: args.amount_usd != null ? Math.round(Number(args.amount_usd) * 100) : 0, minutes: args.minutes != null ? Number(args.minutes) : 0, label: s("label"), sessionId: row.id });
