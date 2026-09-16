@@ -24,7 +24,9 @@ import googleDisconnect from "../server/routes/google/disconnect.js";
 import mailInbound from "../server/routes/mail-inbound.js";
 import me from "../server/routes/me.js";
 import models from "../server/routes/models.js";
+import plaid from "../server/routes/plaid.js";
 import receipts from "../server/routes/receipts.js";
+import relay from "../server/routes/relay.js";
 import run from "../server/routes/run.js";
 import stats from "../server/routes/stats.js";
 import stripeWebhook from "../server/routes/stripe-webhook.js";
@@ -58,6 +60,8 @@ const routes: Record<string, Handler> = {
   "chat/react": react,
   cron,
   drafts,
+  plaid,
+  relay,
   "google/callback": googleCallback,
   "google/connect": googleConnect,
   "google/disconnect": googleDisconnect,

@@ -15,6 +15,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader("Cache-Control", "private, max-age=3600");
     return res.status(200).send(img);
   }
-  const items = await listReceipts(t, Math.min(Number(req.query.limit ?? 30) || 30, 100));
+  const items = (await listReceipts(t, Math.min(Number(req.query.limit ?? 30) || 30, 100))).filter((r) => !/^Preview: /.test(r.title));
   return res.status(200).json({ items });
 }

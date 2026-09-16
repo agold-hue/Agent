@@ -424,6 +424,18 @@
     <p>Everything the secretary knows about you is yours: export it as one file, or delete the account and all of it.</p>
     <div class="row"><a class="btn" href="/api/account?export=1" download>Export everything</a><button type="button" class="btn" id="delAccount" style="color:#B3261E">Delete account…</button><span class="hint" id="delMsg"></span></div>
   </div>
+  <div class="card" id="bankCard" hidden>
+    <h3>Bank accounts</h3>
+    <p>Connect a bank through Plaid so balances and spending questions are answered from the account data in a second, with no portal session. Read-only; the secretary cannot move money through it.</p>
+    <div class="row"><button type="button" class="btnPri" id="bankConnect">Connect a bank</button><span class="hint" id="bankMsg"></span></div>
+    <table><tbody id="bankList"></tbody></table>
+  </div>
+  <div class="card">
+    <h3>Local browser</h3>
+    <p>Some sites block hosted browsers (banks, airlines). Install the relay extension in your own browser and paste a token here, and the secretary can use a tab on your computer for those sites. It only acts when it sends a command, and you see everything in that tab.</p>
+    <div class="row"><button type="button" class="btn" id="relayToken">Create a token</button><span class="hint" id="relayState"></span></div>
+    <p class="hint" id="relayShown" hidden></p>
+  </div>
   <div class="card">
     <h3>Google</h3>
     <p>Connect your own Google account for your real calendar, inbox triage with drafts in your voice, and Drive filing. It can read, label and draft; it can never send as you.</p>
@@ -845,6 +857,7 @@
       else if (item.name === "request_code") { h.textContent = "Code needed"; body.textContent = i.message || "A verification code was sent to your phone. Send it here."; }
       else { h.textContent = "Quick question"; const qs = i.questions || []; body.textContent = qs.length === 1 ? `${qs[0].question}\n(no answer = ${qs[0].default})` : qs.map((q, n) => `${n + 1}. ${q.question} (default: ${q.default})`).join("\n"); }
       bubble.append(h, body);
+      if (item.preview) { const img = document.createElement("img"); img.src = item.preview; img.alt = "What is about to be confirmed"; img.loading = "lazy"; img.style.cssText = "display:block;max-width:100%;max-height:260px;border-radius:8px;margin:8px 0;cursor:zoom-in"; img.onclick = (e) => { e.stopPropagation(); window.open(item.preview, "_blank"); }; bubble.appendChild(img); }
       const actions = document.createElement("div"); actions.className = "actions";
       if (item.name === "checkpoint" || item.name === "send_email") { const yes = document.createElement("button"); yes.type = "button"; yes.className = "btnPri"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve"; yes.onclick = () => send("yes"); const no = document.createElement("button"); no.type = "button"; no.className = "btn"; no.textContent = "Change…"; no.onclick = () => $("text").focus(); actions.append(yes, no); }
       else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = item.name === "request_code" ? "Send the code in the box below." : "Answer in the box below."; actions.append(hint); }
@@ -1110,6 +1123,58 @@
   renderRooms();
   loadMe();
 })();
+
+  // ---- Bank accounts (Plaid Link) and the local browser relay, on the settings tab
+  (function () {
+    const $b = (id) => document.getElementById(id);
+    async function loadBank() {
+      try {
+        const r = await fetch("/api/plaid"); if (!r.ok) return;
+        const d = await r.json();
+        $b("bankCard").hidden = !d.configured;
+        $b("bankList").innerHTML = (d.items || []).map((i) => `<tr><td>${esc2(i.institution || "Bank")}</td><td class="hint">since ${new Date(i.created_at).toLocaleDateString()}</td><td><button type="button" class="btn" data-remove="${esc2(i.id)}">Remove</button></td></tr>`).join("");
+        $b("bankList").querySelectorAll("[data-remove]").forEach((btn) => { btn.onclick = async () => { await fetch("/api/plaid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove", id: btn.dataset.remove }) }); loadBank(); }; });
+      } catch {}
+    }
+    function plaidScript() {
+      return new Promise((resolve, reject) => {
+        if (window.Plaid) return resolve();
+        const s = document.createElement("script"); s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js"; s.onload = resolve; s.onerror = () => reject(new Error("could not load Plaid Link")); document.head.appendChild(s);
+      });
+    }
+    $b("bankConnect")?.addEventListener("click", async () => {
+      $b("bankMsg").textContent = "Opening Plaid…";
+      try {
+        await plaidScript();
+        const r = await fetch("/api/plaid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "link_token" }) });
+        const d = await r.json(); if (!r.ok) throw new Error(d.error || r.status);
+        const handler = window.Plaid.create({
+          token: d.link_token,
+          onSuccess: async (public_token, meta) => {
+            const x = await fetch("/api/plaid", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "exchange", public_token, institution: meta && meta.institution ? meta.institution.name : undefined }) });
+            $b("bankMsg").textContent = x.ok ? "Connected." : "Could not save the connection."; loadBank();
+          },
+          onExit: () => { $b("bankMsg").textContent = ""; },
+        });
+        handler.open();
+      } catch (e) { $b("bankMsg").textContent = e.message || "Could not start Plaid"; }
+    });
+    async function loadRelay() {
+      try {
+        const r = await fetch("/api/relay"); if (!r.ok) return;
+        const d = await r.json();
+        $b("relayState").textContent = d.devices.length ? (d.online ? "Connected now." : `Extension set up (${d.devices.length} device${d.devices.length === 1 ? "" : "s"}), not connected right now.`) : "No extension connected yet.";
+      } catch {}
+    }
+    $b("relayToken")?.addEventListener("click", async () => {
+      const r = await fetch("/api/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "token", name: navigator.platform || "My computer" }) });
+      const d = await r.json();
+      if (d.token) { $b("relayShown").hidden = false; $b("relayShown").innerHTML = `Paste this into the extension's options page (shown once): <code>${esc2(d.token)}</code><br>App address: <code>${esc2(location.origin)}</code>`; }
+      loadRelay();
+    });
+    document.querySelectorAll('nav button[data-tab="settings"]').forEach((b) => b.addEventListener("click", () => { loadBank(); loadRelay(); }));
+    setTimeout(() => { loadBank(); loadRelay(); }, 1500);
+  })();
 </script>
 </body>
 </html>

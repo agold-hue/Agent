@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Secretary local browser relay",
+  "version": "0.1.0",
+  "description": "Lets your secretary drive a tab in this browser for sites that block hosted browsers. Nothing runs unless your secretary sends a command; every command shows in its own tab.",
+  "permissions": ["storage", "tabs", "scripting", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_page": "options.html",
+  "action": { "default_title": "Secretary relay: open settings" }
+}

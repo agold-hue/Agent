@@ -10,7 +10,11 @@ import { sendAgentMail } from "./mail.js";
 import { appendMemory, deleteMemory, grepMemory, listMemory, readMemory, writeMemory } from "./memory.js";
 import { notifyOwner } from "./notify.js";
 import { autoApprove, codeHint, codeIn, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
+import { runBankTool } from "./plaid.js";
+import { runLocalBrowserTool } from "./relay.js";
 import { runResearchTool } from "./research.js";
+import { runTrackTool } from "./tracking.js";
+import { runWatchTool } from "./watches.js";
 import { modelFor, nextTier, tierOfModel } from "./router.js";
 import { appendAssistantMessage, appendToolResult, taskStart, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
@@ -50,6 +54,10 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
     // own DuckDuckGo page is the last fallback and only when this session already has one open.
     if (name === "web_search" || name === "fetch_page") return await runResearchTool(t, row, name, args, (query) => runBrowserTool(t, row, "web_search_browser", { query }));
     if (name.startsWith("browser_")) return await runBrowserTool(t, row, name, args);
+    if (name === "watch_page") return { text: await runWatchTool(t, row, args) };
+    if (name === "local_browser") return { text: await runLocalBrowserTool(t, row, args) };
+    if (name === "bank") return { text: await runBankTool(t, args) };
+    if (name === "track_package") return { text: await runTrackTool(args) };
 
     switch (name) {
       case "memory_read": {
@@ -135,6 +143,15 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const verdict = autoApprove(t, cp);
         if (verdict.ok) return { text: `APPROVED (${verdict.reason}). Proceed exactly as described.` };
         const live = row.browserbase_session_id ? await liveViewUrl(row.browserbase_session_id).catch(() => undefined) : undefined;
+        // A dry-run preview: the page as it stands (cart, payment form, confirmation) rides with the approval card.
+        if (row.browserbase_session_id && /^(purchase|payment|agreement|cancellation|dispute|account_change|signup)$/.test(String(cp.action_type))) {
+          const shot = await runBrowserTool(t, row, "browser_screenshot", {}).catch(() => undefined);
+          if (shot?.imageBase64) {
+            const id = await addReceipt(t, { sessionId: row.id, title: `Preview: ${String(cp.summary ?? "").slice(0, 120)}`, details: String(cp.details ?? "").slice(0, 2000), image: Buffer.from(shot.imageBase64, "base64") }).catch(() => undefined);
+            const owner = row.messages.find((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === callId));
+            if (id && owner) owner.previews = { ...(owner.previews ?? {}), [callId]: id };
+          }
+        }
         await notifyOwner(t, row, formatCheckpointEmail(cp, live), `Approval needed: ${cp.summary}`);
         return { text: "", pending: "checkpoint" };
       }
@@ -214,7 +231,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
   } catch (err) {
     return { text: `Tool ${name} failed: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
-    void callId;
+    /* nothing to release */
   }
 }
 

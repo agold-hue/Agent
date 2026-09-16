@@ -1,4 +1,5 @@
 import { releaseBrowser } from "./browser.js";
+import { batchConfigured, enqueue } from "./batch.js";
 import { recordPaths } from "./browser-extras.js";
 import { closeTab, disconnectBrowser, runBrowserTool } from "./browser-tools.js";
 import { q } from "./db.js";
@@ -11,8 +12,10 @@ import { quickLookup } from "./research.js";
 import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, tierOfModel, type Tier } from "./router.js";
 import { stubPageResult, stubSearchResult } from "./search.js";
 import { registrableDomain } from "./credentials.js";
+import { learnFromCorrection } from "./learn.js";
+import { recordOutcome, taskClassKey } from "./outcomes.js";
 import { readMemory } from "./memory.js";
-import { acquireLease, browserShared, chargeCompletion, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, sharedSystem, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool, type ToolOutcome } from "./tools.js";
 
@@ -46,6 +49,8 @@ const CHAT_ROLLOVER_SHARE = 0.6;
 const LOOP_LIMIT = Number(process.env.LOOP_LIMIT ?? 6);
 /** Tools with no side effects on the world: safe to run concurrently when the model asks for several at once. */
 export const READ_ONLY_TOOLS = new Set(["web_search", "fetch_page", "memory_read", "memory_grep", "memory_list", "list_items", "browser_find"]);
+/** Browser steps that change the page. Several in one turn run in order and only the last returns a snapshot. */
+const BROWSER_ACTIONS = new Set(["browser_goto", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_fill_form"]);
 /** Tools that only tidy up after the result: a turn made of these runs on the fast model. */
 const HOUSEKEEPING_TOOLS = new Set(["memory_write", "memory_append", "record_win", "record_receipt", "track_item"]);
 /** Output cap for a turn that follows a tool result: another tool call or a short reply, never an essay. */
@@ -82,7 +87,10 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
     await new Promise((r) => setTimeout(r, 1500));
     row = (await getSession(sessionId)) ?? row;
   }
-  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t, { task: taskUserText(row.messages) }) };
+  // The system message is the prompt every customer shares (one cache entry for the whole service);
+  // this customer's facts and this task's notes travel as their own block right after it.
+  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: sharedSystem() };
+  row.contextBlock = await customerContext(t, { task: taskUserText(row.messages) });
   // Near the plan's monthly cap, step the tier down instead of hard-stopping at the cap later.
   const landed = await softLanding(t, row.model ?? "").catch(() => undefined);
   if (landed && landed !== row.model) {
@@ -197,7 +205,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 
       // The stored conversation is the user's record and is never trimmed; the model gets a working copy
       // kept under the context budget.
-      const context = compacted(row.messages);
+      const context = withContextBlock(compacted(row.messages), row.contextBlock);
       const turnStart = Date.now();
       const timings: string[] = [];
       const early = new Map<string, Promise<ToolOutcome>>();
@@ -256,7 +264,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         // Figures in the reply that appear nowhere in what the model read or was told this task: one
         // turn to re-read and correct them (or show the arithmetic), before the user sees them.
         if (text && taskUsedTools(row.messages) && !hasHostNotePrefix(row.messages, VERIFY_PREFIX)) {
-          const missing = unverifiedFigures(row.messages, text);
+          const missing = unverifiedFigures(row.messages, text, row.contextBlock);
           if (missing.length) {
             supersedeLastReply(row.messages);
             row.messages.push({ role: "user", content: `${VERIFY_PREFIX} these figures in your reply do not appear in anything you read or were told during this task: ${missing.join(", ")}. Re-read the source (browser_text, browser_extract, fetch_page, the tool result) and correct them, or if each is a calculation, show it in the reply (e.g. 3 × $12.50 = $37.50). Then send the reply again.)` });
@@ -302,6 +310,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           return undefined;
         }
       });
+      const lastBrowserAction = calls.reduce((last, c, i) => (BROWSER_ACTIONS.has(c.function.name) ? i : last), -1);
       const ahead = new Map<number, Promise<ToolOutcome>>();
       if (calls.length > 1) calls.forEach((c, i) => parsedArgs[i] && READ_ONLY_TOOLS.has(c.function.name) && !early.has(c.id) && ahead.set(i, executeTool(t, row, c.function.name, parsedArgs[i]!, c.id)));
       for (const [i, call] of calls.entries()) {
@@ -312,7 +321,9 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         }
         const toolStart = Date.now();
         const started_early = early.get(call.id);
-        const out = started_early ? await started_early : ahead.has(i) ? await ahead.get(i)! : await executeTool(t, row, call.function.name, args, call.id);
+        let out = started_early ? await started_early : ahead.has(i) ? await ahead.get(i)! : await executeTool(t, row, call.function.name, args, call.id);
+        // Several browser actions in one turn: the page comes back once, with the last of them.
+        if (BROWSER_ACTIONS.has(call.function.name) && lastBrowserAction > i && !/^Tool .* failed/.test(out.text)) out = { ...out, text: `${out.text.split("\n\n")[0]}\n(page snapshot omitted: the last browser action in this turn returns the page)` };
         timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s${started_early ? "»" : ahead.has(i) ? "‖" : ""}`);
         if (out.pending) {
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} pending:${out.pending}`);
@@ -327,6 +338,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           row.messages[row.messages.length - 1].content = "Screenshot taken, but this model cannot view images. Use browser_text or browser_snapshot instead, or escalate_model.";
         }
         if (out.escalateTo) {
+          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), false).catch(() => {});
           row.model = out.escalateTo;
           row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the notes above.)` });
         }
@@ -353,6 +365,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (!escalatedForLoop && tierOfModel(row.model ?? "", t) !== "hard") {
           // Give it one real chance to break out on a stronger model before giving up.
           escalatedForLoop = true;
+          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), false).catch(() => {});
           row.model = modelFor("hard", t);
           sigs.length = 0;
           row.messages.push({ role: "user", content: "(You have repeated the same steps several times with no progress — this is a dead end. Stop repeating them. Read the page fresh and take a completely different approach. If a login failed, a code or captcha is blocking you, or the site simply will not let you through, do NOT keep trying: stop and tell the user in one line exactly what is blocking you and what you need from them. You are now on a stronger model.)" });
@@ -382,11 +395,18 @@ async function postMortem(t: Tenant, row: SessionRow, report: string): Promise<v
   const context = compacted(row.messages).slice(-14);
   context.unshift({ role: "system", content: "You write a three-line post-mortem of a task that did not finish: (1) what was asked and where it stopped, (2) the real cause in one line (a site's bot check, a wrong route, a missing login, an expired code, a host limit), (3) the one concrete change that would have made it succeed (a URL to use, an order of steps, a setting for the user to add). Plain text, no headings." });
   context.push({ role: "user", content: `(The task ended with this report to the user: "${report.slice(0, 400)}". Write the post-mortem now.)` });
+  const sites = [...new Set([...row.messages.flatMap((m) => (typeof m.content === "string" ? m.content.match(/https?:\/\/([\w.-]+)/g) ?? [] : [])).map((u) => u.replace(/^https?:\/\//, "").replace(/^www\./, ""))])].slice(0, 3);
+  const header = `### ${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${(row.title ?? row.kind).slice(0, 80)}${sites.length ? ` · ${sites.join(", ")}` : ""}`;
+  // Nobody is waiting for a post-mortem: through the half-price batch endpoint when it is configured.
+  if (batchConfigured()) {
+    await enqueue(t.id, "postmortem", { messages: context, max_tokens: 300, meta: { path: "history/failures.md", header } });
+    return;
+  }
   const c = await complete({ model: modelFor("chat", t), messages: context, maxTokens: 300 });
+  await chargeCompletion(t, row, c, "postmortem").catch(() => {});
   const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
   if (!text) return;
-  const sites = [...new Set([...row.messages.flatMap((m) => (typeof m.content === "string" ? m.content.match(/https?:\/\/([\w.-]+)/g) ?? [] : [])).map((u) => u.replace(/^https?:\/\//, "").replace(/^www\./, ""))])].slice(0, 3);
-  await appendMemory(t, "history/failures.md", `\n### ${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${(row.title ?? row.kind).slice(0, 80)}${sites.length ? ` · ${sites.join(", ")}` : ""}\n${text}\n`);
+  await appendMemory(t, "history/failures.md", `\n${header}\n${text}\n`);
 }
 
 /** A provider failure in the user's words, not the provider's JSON. */
@@ -427,8 +447,8 @@ async function wrapUp(t: Tenant, row: SessionRow, reason: string, fallback: stri
       role: "user",
       content: `(${reason} Stop working now and report to the user in at most three short lines: what you got done, what you found (figures, confirmation numbers), and exactly what is blocking or what you need from them. Plain words, no tool calls, no promises, no browser links, no site names.)`,
     });
-    const c = await complete({ model: row.model!, messages: context, tools, toolChoice: "none", maxTokens: 400 });
-    await chargeCompletion(t, row, c);
+    const c = await complete({ model: row.model!, messages: withContextBlock(context, row.contextBlock), tools, toolChoice: "none", maxTokens: 400 });
+    await chargeCompletion(t, row, c, "wrapup");
     const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
     if (text && !c.message.tool_calls?.length) return text;
   } catch (err) {
@@ -448,11 +468,18 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
   // provider error) must be in it or the user sees nothing at all.
   if (report && !silent && lastAssistantText(row.messages) !== report.trim()) row.messages.push({ role: "assistant", content: report, at: stamp() });
+  const failedWords = /\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200));
+  if (row.kind === "chat" || row.kind === "task") {
+    // How this kind of task ended on this tier, for the adaptive router; and the rule in a correction, if this task was one.
+    if (taskUsedTools(row.messages)) await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), status === "idle" && !failedWords).catch(() => {});
+    const learned = await learnFromCorrection(t, row).catch(() => undefined);
+    if (learned) console.log(`[learn] ${row.id}: ${learned}`);
+  }
   // A browser task that ended well: what it did on each site becomes a replayable path in the site note.
-  if (status === "idle" && (row.kind === "chat" || row.kind === "task") && !/\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200))) {
+  if (status === "idle" && (row.kind === "chat" || row.kind === "task") && !failedWords) {
     const domains = [...siteActivity(row.messages).visited].filter(([, n]) => n >= 3).map(([d]) => d);
     if (domains.length) {
-      const written = await recordPaths(t, row, domains).catch(() => [] as string[]);
+      const written = await recordPaths(t, row, domains, report).catch(() => [] as string[]);
       if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}`);
     }
   }
@@ -533,7 +560,7 @@ export function stallNudge(row: SessionRow, reply: string): string | undefined {
   if (given.size >= MAX_NUDGES) return undefined;
   const pick = (kind: string) => (given.has(kind) ? undefined : NUDGES[kind]);
   if (!reply.trim()) return pick("empty");
-  const system = typeof row.messages[0]?.content === "string" ? row.messages[0].content : "";
+  const system = `${typeof row.messages[0]?.content === "string" ? row.messages[0].content : ""}\n${row.contextBlock ?? ""}`;
   const homeKnown = /home address[^\n]*:\s*\S/i.test(system);
   if (homeKnown && ASKS_FOR_ADDRESS.test(reply)) return pick("address");
   if (PROMISED_ACTION.test(reply)) return pick("promise");
@@ -604,8 +631,8 @@ const CONFIRMATION = /\b(?=[A-Z0-9-]{6,}\b)(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A
  * confirmation-style codes that appear in no tool result, no user message and not in the system
  * prompt. Amounts are compared without separators, phones by digits, codes by exact token.
  */
-export function unverifiedFigures(messages: ChatMessage[], reply: string): string[] {
-  const parts: string[] = [];
+export function unverifiedFigures(messages: ChatMessage[], reply: string, context = ""): string[] {
+  const parts: string[] = [context];
   if (typeof messages[0]?.content === "string") parts.push(messages[0].content);
   for (let i = taskStart(messages); i < messages.length; i++) {
     const m = messages[i];
@@ -794,6 +821,12 @@ export function dropStaleScreenshots(messages: ChatMessage[]): ChatMessage[] {
  */
 /** Tool results (page snapshots, memory files) older than this many are stubbed on every call: once acted on, a snapshot is dead weight. */
 const RECENT_TOOL_RESULTS = Number(process.env.RECENT_TOOL_RESULTS ?? 6);
+
+/** The working copy with this customer's context block right after the shared prompt, marked as its own cache boundary. */
+export function withContextBlock(messages: ChatMessage[], block: string | undefined): ChatMessage[] {
+  if (!block) return messages;
+  return [messages[0], { role: "user", content: block, cacheBoundary: true }, ...messages.slice(1)];
+}
 
 /** Which tool produced each result, by call id. */
 function toolNames(messages: ChatMessage[]): Map<string, string> {

@@ -53,7 +53,7 @@ export async function runResearchTool(t: Tenant, row: SessionRow, name: string, 
   const s = (k: string) => String(args[k] ?? "").trim();
   const locale = localeFor(t);
   if (args.near) locale.near = s("near");
-  const charge = (c: Completion) => chargeCompletion(t, row, c);
+  const charge = (c: Completion) => chargeCompletion(t, row, c, "condense");
   const condenseModel = modelFor("chat", t);
   const budget = fetchBudget(row);
 
@@ -143,7 +143,7 @@ export async function lookupAnswer(question: string, opts: { locale: Locale; mod
 
 /** The lookup fast path for a session: answer, or undefined with the search left as a host note so the loop does not repeat it. */
 export async function quickLookup(t: Tenant, row: SessionRow, question: string): Promise<string | undefined> {
-  const r = await lookupAnswer(question, { locale: localeFor(t), model: modelFor("chat", t), charge: (c) => chargeCompletion(t, row, c) });
+  const r = await lookupAnswer(question, { locale: localeFor(t), model: modelFor("chat", t), charge: (c) => chargeCompletion(t, row, c, "lookup") });
   console.log(`[lookup] ${row.id} ${r.answer ? "answered" : "fell through"} ${r.outcome.engine} ${r.outcome.hits.length} hits ${r.outcome.pages.length} pages ${r.ms}ms ${r.costCents.toFixed(3)}c`);
   if (r.answer) return r.answer;
   if (r.outcome.hits.length) row.messages.push({ role: "user", content: `(A web search for this question already ran; its results are below. Use them, fetch_page for details, and do not repeat the same search.)\n\n${r.formatted}` });

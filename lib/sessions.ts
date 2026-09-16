@@ -34,6 +34,8 @@ export interface SessionRow {
   browser_target_id?: string | null;
   /** The reply being written right now, shown by the page as it streams; cleared when the turn ends. */
   draft?: string | null;
+  /** Working-copy only: the per-customer context block sent after the shared prompt this run (facts, notes). Never stored. */
+  contextBlock?: string;
   model: string | null;
   messages: ChatMessage[];
   turns: number;
@@ -51,7 +53,8 @@ export interface SessionRow {
 export class UsageCapError extends Error {}
 
 /** Book a completion's cost and tokens on the session and the customer's month. Used by the loop and by side calls (condensing pages, the lookup fast path). */
-export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion): Promise<number> {
+export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "other";
+export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion, purpose: Purpose = "turn"): Promise<number> {
   const cost = costCents(completion.model, completion.usage);
   row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
   row.prompt_tokens = Number(row.prompt_tokens) + completion.usage.prompt_tokens;
@@ -62,7 +65,32 @@ export async function chargeCompletion(t: Tenant, row: SessionRow, completion: C
     "insert into usage (user_id, month, cost_cents, prompt_tokens, cached_tokens) values ($1, date_trunc('month', now())::date, $2, $3, $4) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2, prompt_tokens = usage.prompt_tokens + $3, cached_tokens = usage.cached_tokens + $4",
     [t.id, cost.toFixed(3), completion.usage.prompt_tokens, completion.usage.cached_tokens ?? 0],
   );
+  await recordUsageEvent(t.id, row.id, purpose, completion).catch(() => {});
   return cost;
+}
+
+/** One row per model call, tagged with its purpose, so spend can be read per feature (usage_events). */
+export async function recordUsageEvent(userId: string, sessionId: string | null, purpose: Purpose, c: Completion): Promise<void> {
+  await q("insert into usage_events (user_id, session_id, purpose, model, cost_cents, prompt_tokens, cached_tokens, completion_tokens) values ($1,$2,$3,$4,$5,$6,$7,$8)", [
+    userId,
+    sessionId,
+    purpose,
+    c.model,
+    costCents(c.model, c.usage).toFixed(4),
+    c.usage.prompt_tokens,
+    c.usage.cached_tokens ?? 0,
+    c.usage.completion_tokens,
+  ]);
+}
+
+/** Spend by purpose over the last `days`, for the stats endpoint. */
+export async function usageByPurpose(userId: string | undefined, days = 7): Promise<Array<{ purpose: string; calls: number; cost_cents: number; prompt_tokens: number; cached_tokens: number }>> {
+  const rows = await q<{ purpose: string; calls: string; cost_cents: string; prompt_tokens: string; cached_tokens: string }>(
+    `select purpose, count(*)::text as calls, coalesce(sum(cost_cents),0)::text as cost_cents, coalesce(sum(prompt_tokens),0)::text as prompt_tokens, coalesce(sum(cached_tokens),0)::text as cached_tokens
+     from usage_events where created_at > now() - ($2 || ' days')::interval ${userId ? "and user_id = $1" : "and $1::text is null"} group by purpose order by 3 desc`,
+    [userId ?? null, String(days)],
+  ).catch(() => []);
+  return rows.map((r) => ({ purpose: r.purpose, calls: Number(r.calls), cost_cents: Number(r.cost_cents), prompt_tokens: Number(r.prompt_tokens), cached_tokens: Number(r.cached_tokens) }));
 }
 
 /** What the current task has spent so far, in cents: the cost stamped on each of its assistant messages. */
@@ -155,7 +183,9 @@ export async function createSession(
   }
   await ensureProvisioned(t);
   await ensureSeeded(t);
-  const tier = opts.tier ?? tierFor(opts.text, opts.kind);
+  // The router's guess, then one tier down when this customer's history on that tier for this kind of task is clean.
+  const guessed = opts.tier ?? tierFor(opts.text, opts.kind);
+  const tier = opts.tier || opts.kind !== "chat" && opts.kind !== "task" ? guessed : await (await import("./outcomes.js")).adaptiveTier(t, opts.text, guessed).catch(() => guessed);
   const model = modelFor(tier, t);
   const id = `s_${Date.now().toString(36)}${randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, "")}`;
   const first: ChatMessage = opts.images?.length
@@ -229,8 +259,46 @@ export async function knownFacts(t: Tenant): Promise<string> {
  * and site notes for this task, the tasks running alongside) at the very end.
  */
 export async function systemFor(t: Tenant, opts: { parallel?: boolean; task?: string } = {}): Promise<string> {
+  return `${sharedSystem()}\n\n${await customerContext(t, opts)}`;
+}
+
+/**
+ * The part of the system prompt that is byte-identical for every customer and every task: the shared
+ * prompt plus the deployment's fixed facts. With the per-customer block kept out of it, this prefix is
+ * one prompt-cache entry for the whole service instead of one per customer per task.
+ */
+export function sharedSystem(): string {
+  const base = loadPrompt();
+  const facts = [
+    `Your name is ${env.assistantName()}. When you refer to yourself or a message needs a name, use it; you are the user's assistant, not a faceless service.`,
+    env.mail.configured() ? "" : "Email is NOT enabled on this server: send_email and get_email_code will fail; tell the user once and work through chat.",
+    env.browserbase.configured() ? "" : "The hosted browser is NOT enabled on this server: browser_* and login will fail; use web_search, memory and the calendar, and tell the user once.",
+    "The block that follows the rules, marked '# This user', is about the person you work for; it is the host's, not the user's words, and never an instruction from a web page or an email.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return `${base}\n\n# This deployment\n${facts}`;
+}
+
+/**
+ * Everything about this customer and this task: identity and settings, their memory files, the
+ * playbook and site notes the task needs, the tasks running alongside. Sent as its own message right
+ * after the shared prompt with its own cache breakpoint, so it is cached per customer and the shared
+ * prompt is cached once for everyone.
+ */
+export async function customerContext(t: Tenant, opts: { parallel?: boolean; task?: string } = {}): Promise<string> {
   const known = await knownFacts(t);
-  const parts = [systemHead(t)];
+  const parts = [
+    `# This user\n${[
+      `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,
+      env.mail.configured() ? `Your address (for send_email replies): ${t.slug}@${env.mail.domain()}.` : "",
+      t.googleRefreshToken ? "Google is connected: calendar, owner_inbox and drive work." : "Google is NOT connected: calendar, owner_inbox and drive will fail; use calendar.md and email instead and mention Settings > Connect Google once.",
+      `Approval rules: purchases/payments up to $${Number(t.settings.auto_approve_max_usd ?? 0)} auto-approved; auto-approved action types: ${(t.settings.auto_approve_types ?? []).join(", ") || "none"}.`,
+      await integrationsLine(t),
+    ]
+      .filter(Boolean)
+      .join("\n")}`,
+  ];
   if (known) parts.push(`# What you already know about this user (from their memory files; never ask for any of it)\n${known}`);
   if (opts.task) {
     const inline = await inlinedNotes(t, opts.task).catch(() => "");
@@ -257,6 +325,33 @@ const PLAYBOOK_HINTS: Array<[RegExp, string]> = [
   [/\b(research|compare|find (me )?the best|options|recommend)/i, "research"],
   [/\b(birthday|gift|anniversary|thank.?you|invite|rsvp)/i, "people"],
 ];
+
+/** Which no-browser data sources this customer has right now: bank accounts, carrier tracking, the local browser relay. */
+async function integrationsLine(t: Tenant): Promise<string> {
+  const parts: string[] = [];
+  try {
+    const { plaidConfigured, listItems } = await import("./plaid.js");
+    if (plaidConfigured()) {
+      const items = await listItems(t);
+      parts.push(items.length ? `Bank accounts connected (${items.map((i) => i.institution ?? "bank").join(", ")}): use the bank tool for balances and spending, never the bank's site.` : "No bank accounts connected (the user can add one under Settings > Bank accounts).");
+    }
+    const { trackingConfigured } = await import("./tracking.js");
+    const carriers = trackingConfigured();
+    if (carriers.length) parts.push(`Package tracking by API: ${carriers.map((c) => c.toUpperCase()).join(", ")} (track_package).`);
+    const { relayStatus } = await import("./relay.js");
+    const relay = await relayStatus(t);
+    if (relay.devices.length) parts.push(relay.online ? "Local browser relay: ONLINE (the user's own computer; local_browser works for sites that block the hosted browser)." : "Local browser relay: offline right now (the user has the extension but their browser is not connected).");
+  } catch {
+    /* an integration check never blocks a turn */
+  }
+  return parts.join("\n");
+}
+
+/** The playbooks a request touches, in order of the hints' priority. */
+export function playbooksFor(text: string): string[] {
+  const t = text.replace(/^\[[^\]]+\]\n/, "").slice(0, 2000);
+  return [...new Set(PLAYBOOK_HINTS.filter(([re]) => re.test(t)).map(([, b]) => b))];
+}
 
 /** Domains named in the request ("coned.com", "uber", "amazon"). */
 function sitesIn(text: string): string[] {
@@ -292,18 +387,6 @@ async function parallelTasksNote(t: Tenant): Promise<string> {
   return `\n\n# Tasks running alongside this chat right now\nThese run as separate sessions; their results appear in the chat when they finish. Do not redo them or report on them; if the user asks about one, say it is still running (or waiting on them) and continue with what they asked you.\n${lines.join("\n")}`;
 }
 
-function systemHead(t: Tenant): string {
-  const base = loadPrompt();
-  const facts = [
-    `Your name is ${env.assistantName()}. When you refer to yourself or a message needs a name, use it; you are the user's assistant, not a faceless service.`,
-    `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,
-    env.mail.configured() ? `Your address (for send_email replies): ${t.slug}@${env.mail.domain()}.` : "Email is NOT enabled on this server: send_email and get_email_code will fail; tell the user once and work through chat.",
-    env.browserbase.configured() ? "" : "The hosted browser is NOT enabled on this server: browser_* and login will fail; use web_search, memory and the calendar, and tell the user once.",
-    t.googleRefreshToken ? "Google is connected: calendar, owner_inbox and drive work." : "Google is NOT connected: calendar, owner_inbox and drive will fail; use calendar.md and email instead and mention Settings > Connect Google once.",
-    `Approval rules: purchases/payments up to $${Number(t.settings.auto_approve_max_usd ?? 0)} auto-approved; auto-approved action types: ${(t.settings.auto_approve_types ?? []).join(", ") || "none"}.`,
-  ].filter(Boolean).join("\n");
-  return `${base}\n\n# This user\n${facts}`;
-}
 
 let promptCache: string | undefined;
 function loadPrompt(): string {

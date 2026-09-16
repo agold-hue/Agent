@@ -33,6 +33,10 @@ export interface ChatMessage {
   cost?: number;
   /** A draft reply the host sent back to the model (an offer, an unverified figure, a missing site note): the model still sees it, the chat page never shows it. */
   superseded?: boolean;
+  /** A stable per-customer context block (facts, notes) that gets its own prompt-cache breakpoint. Working-copy only. */
+  cacheBoundary?: boolean;
+  /** Screenshot previews attached to this message's tool calls (checkpoint approvals), by call id -> receipt id. */
+  previews?: Record<string, string>;
 }
 
 export interface MessageQuote {
@@ -166,6 +170,9 @@ export function withCacheMarkers(messages: ChatMessage[], level: "full" | "syste
     }
   };
   if (out[0]?.role === "system") mark(out[0]);
+  // The per-customer context block sits right after the shared prompt: its own breakpoint means a
+  // customer's facts changing never invalidates the prompt every customer shares.
+  if (out[1]?.cacheBoundary && out[1].content) mark(out[1]);
   if (level === "full") {
     for (let i = out.length - 1; i > 0; i--) {
       if ((out[i].role === "user" || out[i].role === "tool") && out[i].content) {

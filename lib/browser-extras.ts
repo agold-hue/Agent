@@ -1,5 +1,5 @@
 import type { Locator, Page } from "playwright-core";
-import { after, ref, settle, snapshot, waitInteractive, withPage, rememberSnapshot } from "./browser-tools.js";
+import { after, pageText, ref, settle, snapshot, waitInteractive, withPage, rememberSnapshot } from "./browser-tools.js";
 import type { BrowserHandle } from "./browser.js";
 import { findCredential, recordLoginOutcome, registrableDomain } from "./credentials.js";
 import type { ChatMessage } from "./llm.js";
@@ -362,6 +362,107 @@ export interface RecordedPath {
   steps: PathStep[];
 }
 
+// ---------------- recorded readers: where a figure lives on a page, so next time the host reads it without the model
+
+export interface Reader {
+  /** The label the figure sat under or after ("Amount due", "Current balance"). */
+  label: string;
+  /** The page it was read from. */
+  url: string;
+}
+const READERS_HEADING = "## Recorded readers";
+const READERS_NOTE = "(host-written: the label a figure in a finished task sat next to; browser_run_path reads these off the final page without a model turn)";
+const FIGURE = /\$\s?\d[\d,]*(?:\.\d{1,2})?|\b\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\s?%|\b\d[\d,]*\.\d{2}\b/g;
+
+/** The label preceding a figure in page text: the words before it on its line, else the previous non-empty line. */
+export function labelBefore(text: string, at: number): string | undefined {
+  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+  const before = text.slice(lineStart, at).replace(/[:\-–—|]+\s*$/, "").trim();
+  if (before.length >= 3 && before.length <= 60 && /[a-z]/i.test(before)) return before;
+  let end = lineStart - 1;
+  while (end > 0) {
+    const start = text.lastIndexOf("\n", end - 1) + 1;
+    const line = text.slice(start, end).trim();
+    if (line) return line.length >= 3 && line.length <= 60 && /[a-z]/i.test(line) && !FIGURE.test(line) ? line.replace(/[:\-–—|]+$/, "").trim() : undefined;
+    end = start - 1;
+  }
+  return undefined;
+}
+
+/**
+ * Readers for the figures in a finished task's reply: each figure that appears in a browser_text or
+ * browser_extract result on this site, with the label it sat next to and the page it was on.
+ */
+export function recordedReaders(messages: ChatMessage[], domain: string, reply: string): Reader[] {
+  const figures = [...new Set((reply.match(FIGURE) ?? []).map((f) => f.replace(/\s/g, "")))].slice(0, 8);
+  if (!figures.length) return [];
+  const results = new Map<string, string>();
+  for (const m of messages) if (m.role === "tool" && m.tool_call_id && typeof m.content === "string") results.set(m.tool_call_id, m.content);
+  let url = "";
+  const readers: Reader[] = [];
+  const seen = new Set<string>();
+  for (let i = taskStart(messages); i < messages.length; i++) {
+    for (const c of messages[i].tool_calls ?? []) {
+      const result = results.get(c.id) ?? "";
+      const name = c.function.name;
+      // Track the page the browser is on from navigation results ("title\nurl" or "clicked ... -> url").
+      const m = result.match(/^(?:.*\n)?(https?:\/\/\S+)/) ?? result.match(/-> (https?:\/\/\S+)/);
+      if (name.startsWith("browser_") && m) url = m[1];
+      if (!url || registrableDomain(url) !== domain) continue;
+      if (name !== "browser_text" && name !== "browser_extract" && name !== "browser_snapshot" && name !== "browser_run_path") continue;
+      const plain = result.replace(/,(?=\d{3}\b)/g, ",");
+      for (const f of figures) {
+        const at = plain.indexOf(f);
+        if (at < 0) continue;
+        const label = labelBefore(plain, at);
+        if (!label || seen.has(label.toLowerCase())) continue;
+        seen.add(label.toLowerCase());
+        readers.push({ label, url });
+      }
+    }
+  }
+  return readers.slice(0, 6);
+}
+
+export function parseReaders(note: string): Reader[] {
+  const start = note.indexOf(READERS_HEADING);
+  if (start < 0) return [];
+  const rest = note.slice(start + READERS_HEADING.length);
+  const end = rest.search(/\n## /);
+  const section = end >= 0 ? rest.slice(0, end) : rest;
+  const out: Reader[] = [];
+  for (const line of section.split("\n")) {
+    const m = line.match(/^- ("(?:[^"\\]|\\.)*") @ (\S+)$/);
+    if (m) out.push({ label: JSON.parse(m[1]), url: m[2] });
+  }
+  return out;
+}
+
+export function withReaders(note: string, readers: Reader[]): string {
+  const merged = [...readers, ...parseReaders(note).filter((r) => !readers.some((n) => n.label.toLowerCase() === r.label.toLowerCase()))].slice(0, 12);
+  const section = `${READERS_HEADING}\n${READERS_NOTE}\n${merged.map((r) => `- ${JSON.stringify(r.label)} @ ${r.url}`).join("\n")}\n`;
+  const start = note.indexOf(READERS_HEADING);
+  if (start < 0) return `${note.trimEnd()}\n\n${section}`;
+  const rest = note.slice(start + READERS_HEADING.length);
+  const end = rest.search(/\n## /);
+  const tail = end >= 0 ? rest.slice(end + 1) : "";
+  return `${note.slice(0, start)}${section}${tail ? `\n${tail}` : ""}`;
+}
+
+/** Apply readers to page text: the first figure after each label, as "label: value" lines. */
+export function applyReaders(text: string, readers: Reader[]): string[] {
+  const out: string[] = [];
+  const low = text.toLowerCase();
+  for (const r of readers) {
+    const at = low.indexOf(r.label.toLowerCase());
+    if (at < 0) continue;
+    const after = text.slice(at + r.label.length, at + r.label.length + 160);
+    const value = after.match(FIGURE)?.[0]?.trim();
+    if (value) out.push(`${r.label}: ${value}`);
+  }
+  return out;
+}
+
 /** The recorded paths in a site note, newest first. */
 export function parsePaths(note: string): RecordedPath[] {
   const start = note.indexOf(PATHS_HEADING);
@@ -408,16 +509,19 @@ export function pathName(title: string): string {
  * After a browser task that succeeded: record what it did on each site as a replayable path in
  * sites/<domain>.md. Returns the domains written. Never records secrets or risky steps (see recordedSteps).
  */
-export async function recordPaths(t: Tenant, row: SessionRow, domains: string[]): Promise<string[]> {
+export async function recordPaths(t: Tenant, row: SessionRow, domains: string[], report = ""): Promise<string[]> {
   const name = pathName(row.title ?? "");
   if (!name) return [];
   const written: string[] = [];
   for (const domain of domains) {
     const steps = recordedSteps(row.messages, domain);
-    if (!steps.length) continue;
+    const readers = recordedReaders(row.messages, domain, report);
+    if (!steps.length && !readers.length) continue;
     const path = `sites/${domain}.md`;
-    const note = (await readMemory(t, path).catch(() => null)) ?? `# ${domain}\n`;
-    await writeMemory(t, path, withPath(note, { name, date: new Date().toISOString().slice(0, 10), steps }));
+    let note = (await readMemory(t, path).catch(() => null)) ?? `# ${domain}\n`;
+    if (steps.length) note = withPath(note, { name, date: new Date().toISOString().slice(0, 10), steps });
+    if (readers.length) note = withReaders(note, readers);
+    await writeMemory(t, path, note);
     written.push(domain);
   }
   return written;
@@ -478,6 +582,9 @@ export async function replayPath(t: Tenant, row: SessionRow, domainArg: string, 
     }
     const snap = await snapshot(page);
     rememberSnapshot(row.id, page.url(), snap);
-    return `path "${path.name}" replayed (${path.steps.length} steps, ${((Date.now() - started) / 1000).toFixed(1)}s) -> ${page.url()}\n\n${snap}`;
+    // The figures this site's tasks usually end with, read straight off the page.
+    const readers = note ? parseReaders(note).filter((r) => registrableDomain(r.url) === registrableDomain(page.url())) : [];
+    const values = readers.length ? applyReaders(await pageText(page).catch(() => ""), readers) : [];
+    return `path "${path.name}" replayed (${path.steps.length} steps, ${((Date.now() - started) / 1000).toFixed(1)}s) -> ${page.url()}${values.length ? `\nread off the page: ${values.join("; ")}` : ""}\n\n${snap}`;
   });
 }

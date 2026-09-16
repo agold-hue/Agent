@@ -1,5 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { backfillMessageTimes } from "../../lib/backfill.js";
+import { pollSubmitted, pruneBatches, submitPending } from "../../lib/batch.js";
+import { pruneRelay } from "../../lib/relay.js";
 import { releaseIdleBrowsers } from "../../lib/browser.js";
 import { ensureSchema, q } from "../../lib/db.js";
 import { env } from "../../lib/env.js";
@@ -10,6 +12,7 @@ import { modelFor } from "../../lib/router.js";
 import { kick } from "../../lib/runtime.js";
 import { evalRanToday, runSearchEval } from "../../lib/search-eval.js";
 import { hasReviewWork, markedToday, markToday } from "../../lib/review-work.js";
+import { runDueWatches } from "../../lib/watches.js";
 import { localeFor, pruneSearchCache } from "../../lib/search.js";
 import { createSession, expiredAskUserSessions, hasDigestKey, hasSessionOfKindToday, staleRunnableSessions, UsageCapError } from "../../lib/sessions.js";
 import { activeTenants, tenantById, type Tenant } from "../../lib/tenant.js";
@@ -61,7 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   await ensureSchema();
   // One-time: give bubbles from before per-message times their real time from the conversation log.
   await backfillMessageTimes().catch((err) => console.error("[cron] backfill:", err));
-  const out: Record<string, number> = { resumed: 0, followups: 0, expired: 0, digests: 0, reviews: 0, weekly: 0, triage: 0, capped: 0, browsers: 0, cache_pruned: 0, search_eval: 0, reviews_skipped: 0 };
+  const out: Record<string, number> = { resumed: 0, followups: 0, expired: 0, digests: 0, reviews: 0, weekly: 0, triage: 0, capped: 0, browsers: 0, cache_pruned: 0, search_eval: 0, reviews_skipped: 0, watches_checked: 0, watches_fired: 0, batch_submitted: 0, batch_done: 0 };
   const start = async (t: Tenant, key: string, make: () => ReturnType<typeof createSession>) => {
     try {
       const row = await make();
@@ -111,6 +114,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log(`[search-eval] ${runId}: ${summary.ok}/${summary.total} (${Math.round(summary.rate * 100)}%), median ${summary.median_ms}ms, ${summary.cost_per_success_cents.toFixed(3)}c per success`);
       }
     }
+  }
+
+  // 0f. Change watches due now: re-read over HTTPS, start a task only on a real change.
+  const w = await runDueWatches().catch((err) => {
+    console.error("[cron] watches:", err);
+    return { checked: 0, fired: 0 };
+  });
+  out.watches_checked = w.checked;
+  out.watches_fired = w.fired;
+
+  // 0g. Deferred model calls: submit what is pending every 5 minutes, collect what has finished every tick.
+  const minute = new Date().getUTCMinutes();
+  if (minute % 5 === 2) out.batch_submitted = await submitPending().catch((err) => (console.error("[cron] batch submit:", err), 0));
+  out.batch_done = await pollSubmitted().catch((err) => (console.error("[cron] batch poll:", err), 0));
+  if (minute === 11) {
+    await pruneBatches();
+    await pruneRelay();
   }
 
   // 1. Timers and watches.

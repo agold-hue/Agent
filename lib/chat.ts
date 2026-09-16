@@ -92,7 +92,7 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
 export type ChatItem =
   | { kind: "user"; id: string; text: string; at: string; approx?: boolean; reaction?: string; quote?: MessageQuote; task?: string }
   | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string; task?: string }
-  | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean }
+  | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean; preview?: string }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
 
 /** Turn the session's message array into what the chat page renders. */
@@ -136,7 +136,8 @@ export function toChatItems(row: SessionRow): ChatItem[] {
           /* ignore */
         }
         // The id carries the session, so a reply to this card is routed back to it.
-        items.push({ kind: "tool", id: `${row.id}-${i}t${tc.id.replace(/[^\w-]/g, "")}`, name: tc.function.name, input, at, resolved: answered.has(tc.id) });
+        const preview = m.previews?.[tc.id] ? `/api/receipts?image=${encodeURIComponent(m.previews[tc.id])}` : undefined;
+        items.push({ kind: "tool", id: `${row.id}-${i}t${tc.id.replace(/[^\w-]/g, "")}`, name: tc.function.name, input, at, resolved: answered.has(tc.id), ...(preview ? { preview } : {}) });
       }
     }
   });
