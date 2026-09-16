@@ -29,6 +29,24 @@ export function modelFor(tier: Tier, t?: Tenant): string {
 const HARD = /\b(refund|dispute|chargeback|negotiat|escalat|complain|appeal|cancel(l)?ation|contract|offer|mortgage|realtor|broker|lawyer|insurance claim|denied|refus|buy (me )?a (house|car)|find (me )?the best|compare|research|plan (a|my) trip|book (a|my) flight|hire|quote)s?\b/i;
 const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|con ?ed(ison)?|utility|bill|balance|statement|due date|account|autopay|bank|card|sign ?in|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
 
+/**
+ * Sites that defeat the task model often enough that starting there is cheaper than failing first:
+ * banks, card issuers, airlines, government portals. Names and domains; HARD_DOMAINS adds more.
+ */
+const HARD_SITES = new RegExp(
+  `\\b(${[
+    "chase", "bank ?of ?america", "bofa", "wells ?fargo", "citi(bank)?", "capital ?one", "amex", "american ?express", "discover", "us ?bank", "pnc", "td ?bank", "schwab", "fidelity", "vanguard",
+    "delta", "united", "american ?airlines", "aa\\.com", "jetblue", "southwest", "spirit", "frontier", "alaska ?air",
+    "irs", "ssa", "social ?security", "medicare", "healthcare\\.gov", "uscis", "dmv", "passport",
+    ...(process.env.HARD_DOMAINS ?? "").split(",").map((s) => s.trim().toLowerCase().replace(/^www\./, "").replace(/\.[a-z]+$/, "")).filter(Boolean).map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  ].join("|")})\\b`,
+  "i",
+);
+/** Whether a request or a URL names a site on the hard list. */
+export function isHardSite(textOrUrl: string): boolean {
+  return HARD_SITES.test(textOrUrl.replace(/^\[[^\]]*\]\n/, ""));
+}
+
 /** Pick a tier from the request text and where it came from. Cheap heuristics; wrong guesses can escalate. */
 export function tierFor(text: string, kind: string): Tier {
   if (kind === "correspondence" || kind === "followup") return "task";
@@ -36,6 +54,7 @@ export function tierFor(text: string, kind: string): Tier {
   // Classify the request itself, not the host's stamp ("[... via email]") or the subject label.
   const t = text.replace(/^\[[^\]]*\]\n/, "").replace(/^Subject: /m, "").replace(/^\(Request from a family member[^)]*\)\n/, "").slice(0, 2000);
   if (HARD.test(t)) return "hard";
+  if (TASK.test(t) && HARD_SITES.test(t)) return "hard";
   if (TASK.test(t)) return "task";
   return "chat";
 }

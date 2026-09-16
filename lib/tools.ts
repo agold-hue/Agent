@@ -1,6 +1,6 @@
 import { runBrowserTool } from "./browser-tools.js";
 import { liveViewUrl, reuseBrowser } from "./browser.js";
-import { registrableDomain, saveCredential } from "./credentials.js";
+import { recordLoginOutcome, registrableDomain, saveCredential } from "./credentials.js";
 import { addFollowUp, cancelFollowUp, durationMs, parseWhen } from "./followups.js";
 import { driveList, driveRead, driveSaveText, runCalendar, runOwnerInbox, type CalendarInput, type DriveInput, type OwnerInboxInput } from "./google.js";
 import { addReceipt, listItems, recordWin, upsertItem, type ItemKind } from "./daily.js";
@@ -75,6 +75,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         if (!browser) return { text: "No active browser. Call browser_open first." };
         const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined, username: args.username ? s("username") : undefined, code: args.code ? s("code") : undefined, targetId: row.browser_target_id });
         console.log(`[login] ${row.id} ${s("domain")}: ${result.status}${"reason" in result ? ` (${result.reason})` : ""}`);
+        if (result.status !== "no_credentials" && result.status !== "needs_code") await recordLoginOutcome(t, s("domain"), result.status === "logged_in" || result.status === "already_logged_in", "reason" in result ? result.reason : undefined).catch(() => {});
         const payload: Record<string, unknown> = { ...result };
         if (result.status === "needs_user") payload.live_view_url = browser.liveViewUrl;
         if (result.status === "needs_user" && /code/i.test(result.reason)) payload.hint = "If the site offers to text or email a code, click that, then request_code.";

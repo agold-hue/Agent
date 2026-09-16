@@ -268,3 +268,16 @@ create table if not exists search_evals (
   created_at timestamptz not null default now()
 );
 create index if not exists search_evals_run on search_evals(run_id, created_at desc);
+
+-- Login health: when a saved login last worked or failed (the auto sign-in and the login tool record it).
+alter table credentials add column if not exists last_ok_at timestamptz;
+alter table credentials add column if not exists last_fail_at timestamptz;
+alter table credentials add column if not exists last_fail_reason text;
+
+-- Once-a-day marks (a morning review skipped for lack of work), so the cron does not re-check every minute.
+create table if not exists daily_marks (
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,
+  day date not null,
+  primary key (user_id, kind, day)
+);

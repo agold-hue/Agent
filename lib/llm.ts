@@ -213,6 +213,8 @@ export async function complete(opts: {
   toolChoice?: "auto" | "none";
   /** Called with the reply text so far as it streams, so the page can show it before the completion ends. */
   onText?: (text: string) => void;
+  /** Called with each tool call as soon as its JSON is complete in the stream (the next call has started, or the stream ended), so read-only work can begin before the completion returns. */
+  onToolCall?: (call: ToolCall) => void;
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
@@ -349,11 +351,31 @@ export async function complete(opts: {
       console.error(`[llm] ${model}: ${res.status} ${text.slice(0, 300)}`);
       throw new LLMError(`${res.status} ${text}`.slice(0, 1000), res.status, false);
     }
-    const data = opts.onText
-      ? await readStream(res, opts.onText).catch((e: unknown) => {
-          throw new LLMError(`stream failed: ${e instanceof Error ? e.message : String(e)}`, 200, true);
-        })
-      : ((await res.json()) as StreamedResult);
+    let data: StreamedResult;
+    if (opts.onText) {
+      try {
+        data = await readStream(res, opts.onText, { onToolCall: opts.onToolCall, firstTokenMs: Number(process.env.LLM_FIRST_TOKEN_MS ?? 10_000) });
+      } catch (e) {
+        if (e instanceof FirstTokenTimeout) {
+          // The provider accepted the request but has not started answering: a slow or wedged upstream.
+          // Move to the next model in the chain (or retry this one) instead of waiting out the full timeout.
+          console.error(`[llm] ${model}: no first token within ${e.ms}ms${ids.length > 1 ? `; moving to ${resolveModel(ids[1]).model}` : ""}`);
+          if (ids.length > 1) {
+            ids = ids.slice(1);
+            model = resolveModel(ids[0]).model;
+            body.model = model;
+            if (isOpenRouter()) {
+              if (ids.length > 1) body.models = capModels(ids.map((id) => resolveModel(id).model));
+              else delete body.models;
+            }
+            attempt--;
+          }
+          lastErr = new LLMError(`no first token within ${e.ms}ms`, undefined, true);
+          continue;
+        }
+        throw new LLMError(`stream failed: ${e instanceof Error ? e.message : String(e)}`, 200, true);
+      }
+    } else data = (await res.json()) as StreamedResult;
     if (data.error) throw new LLMError(data.error.message ?? "provider error", 200, false);
     const choice = data.choices?.[0];
     if (!choice) throw new LLMError("empty completion", 200, true);
@@ -387,13 +409,41 @@ type StreamedResult = {
   error?: { message?: string };
 };
 
+/** The provider accepted the request but sent nothing within the first-token window. */
+export class FirstTokenTimeout extends Error {
+  constructor(public ms: number) {
+    super(`no first token within ${ms}ms`);
+  }
+}
+
 /**
  * Assemble a streamed chat completion (SSE "data:" chunks) into the same shape as a plain one,
- * calling `onText` with the reply so far as text arrives. Tool-call fragments are merged by index.
+ * calling `onText` with the reply so far as text arrives. Tool-call fragments are merged by index;
+ * a call is handed to `onToolCall` the moment it is complete (the next call starts, the choice
+ * finishes, or the stream ends), so the loop can start read-only work while the model is still talking.
  */
-export async function readStream(res: Response, onText: (text: string) => void): Promise<StreamedResult> {
+export async function readStream(res: Response, onText: (text: string) => void, opts: { onToolCall?: (call: ToolCall) => void; firstTokenMs?: number } = {}): Promise<StreamedResult> {
   const reader = res.body?.getReader();
   if (!reader) throw new Error("no body");
+  const emitted = new Set<number>();
+  const emitReady = (upTo: number) => {
+    if (!opts.onToolCall) return;
+    for (let i = 0; i < upTo && i < calls.length; i++) {
+      const c = calls[i];
+      if (!c || emitted.has(i) || !c.function.name) continue;
+      try {
+        JSON.parse(c.function.arguments || "{}");
+      } catch {
+        continue;
+      }
+      emitted.add(i);
+      try {
+        opts.onToolCall({ id: c.id, type: "function", function: { name: c.function.name, arguments: c.function.arguments } });
+      } catch {
+        /* the caller's problem */
+      }
+    }
+  };
   const decoder = new TextDecoder();
   let buf = "";
   let text = "";
@@ -418,7 +468,10 @@ export async function readStream(res: Response, onText: (text: string) => void):
     if (j.usage) usage = j.usage;
     const c = j.choices?.[0];
     if (!c) return;
-    if (c.finish_reason) finish = c.finish_reason;
+    if (c.finish_reason) {
+      finish = c.finish_reason;
+      emitReady(calls.length);
+    }
     if (typeof c.delta?.content === "string" && c.delta.content) {
       text += c.delta.content;
       if (Date.now() - lastEmit > 400) {
@@ -428,14 +481,33 @@ export async function readStream(res: Response, onText: (text: string) => void):
     }
     for (const tc of c.delta?.tool_calls ?? []) {
       const i = tc.index ?? calls.length;
+      if (!calls[i]) emitReady(i); // a new call begins: every earlier one is complete
       calls[i] ??= { id: tc.id ?? `call_${Math.random().toString(36).slice(2, 10)}`, type: "function", function: { name: "", arguments: "" } };
       if (tc.id) calls[i].id = tc.id;
       if (tc.function?.name) calls[i].function.name += tc.function.name;
       if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
     }
   };
+  let first = true;
   for (;;) {
-    const { value, done } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    if (first && opts.firstTokenMs && opts.firstTokenMs > 0) {
+      // Nothing at all within the window: the upstream is wedged; the caller fails over.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new FirstTokenTimeout(opts.firstTokenMs!)), opts.firstTokenMs);
+      });
+      try {
+        chunk = await Promise.race([reader.read(), timeout]);
+      } catch (e) {
+        await reader.cancel().catch(() => {});
+        throw e;
+      } finally {
+        clearTimeout(timer);
+      }
+    } else chunk = await reader.read();
+    first = false;
+    const { value, done } = chunk;
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     let nl: number;
@@ -447,6 +519,7 @@ export async function readStream(res: Response, onText: (text: string) => void):
   if (buf.trim()) handle(buf.trim());
   if (error) return { error: { message: error } };
   if (text) onText(text);
+  emitReady(calls.length);
   const tool_calls = calls.filter(Boolean);
   return { model, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? "stop" }] };
 }

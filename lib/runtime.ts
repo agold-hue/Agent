@@ -1,5 +1,6 @@
 import { releaseBrowser } from "./browser.js";
-import { closeTab, disconnectBrowser } from "./browser-tools.js";
+import { recordPaths } from "./browser-extras.js";
+import { closeTab, disconnectBrowser, runBrowserTool } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
 import { tools, toolsFor } from "./agent-config.js";
@@ -7,11 +8,11 @@ import { complete, estimateTokens, LLMError, supportsVision, warmCatalog, type C
 import { appendMemory, appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
 import { quickLookup } from "./research.js";
-import { isLookupQuestion, isQuickQuestion, modelFor, tierOfModel } from "./router.js";
+import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, tierOfModel, type Tier } from "./router.js";
 import { stubPageResult, stubSearchResult } from "./search.js";
 import { registrableDomain } from "./credentials.js";
 import { readMemory } from "./memory.js";
-import { acquireLease, browserShared, chargeCompletion, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { acquireLease, browserShared, chargeCompletion, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool, type ToolOutcome } from "./tools.js";
 
@@ -44,7 +45,11 @@ const CHAT_ROLLOVER_SHARE = 0.6;
 // How many identical tool calls in a row count as a stuck loop (a real failure hit ~40).
 const LOOP_LIMIT = Number(process.env.LOOP_LIMIT ?? 6);
 /** Tools with no side effects on the world: safe to run concurrently when the model asks for several at once. */
-export const READ_ONLY_TOOLS = new Set(["web_search", "fetch_page", "memory_read", "memory_grep", "memory_list", "list_items"]);
+export const READ_ONLY_TOOLS = new Set(["web_search", "fetch_page", "memory_read", "memory_grep", "memory_list", "list_items", "browser_find"]);
+/** Tools that only tidy up after the result: a turn made of these runs on the fast model. */
+const HOUSEKEEPING_TOOLS = new Set(["memory_write", "memory_append", "record_win", "record_receipt", "track_item"]);
+/** Output cap for a turn that follows a tool result: another tool call or a short reply, never an essay. */
+const TOOL_TURN_MAX_TOKENS = Number(process.env.TOOL_TURN_MAX_TOKENS ?? 1200);
 
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
 
@@ -78,6 +83,13 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
     row = (await getSession(sessionId)) ?? row;
   }
   if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t, { task: taskUserText(row.messages) }) };
+  // Near the plan's monthly cap, step the tier down instead of hard-stopping at the cap later.
+  const landed = await softLanding(t, row.model ?? "").catch(() => undefined);
+  if (landed && landed !== row.model) {
+    console.log(`[route] ${row.id}: soft landing ${row.model} -> ${landed}`);
+    row.model = landed;
+    await updateSession(row.id, { model: landed });
+  }
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   // Everything up to here is already in the DB; the loop only ever appends beyond this index, so a
   // message the user sends mid-task (its own atomic append) is never overwritten.
@@ -160,6 +172,17 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         await save();
       }
 
+      // "done" / "signed in" after a takeover: the user finished on their side. Show the model the page
+      // as it stands now and the task it was on, so it continues instead of asking what to do.
+      if (steps === 0 && row.browserbase_session_id && TAKEOVER_DONE.test(taskUserText(row.messages)) && !hasHostNotePrefix(row.messages, RESUME_PREFIX)) {
+        const previous = previousTaskText(row.messages);
+        const snap = await runBrowserTool(t, row, "browser_snapshot", {}).catch(() => undefined);
+        if (previous || snap) {
+          row.messages.push({ role: "user", content: `${RESUME_PREFIX} the user says they finished their part (signed in, solved the check, or did the step by hand). ${previous ? `Continue the task they asked for before, without asking again: "${previous.slice(0, 400)}". ` : ""}${snap ? `The browser shows this now:\n\n${snap.text.slice(0, 6000)}` : "Snapshot the browser and carry on."})` });
+          await save();
+        }
+      }
+
       // A plain factual question ("what time does Costco close", "how much is a Metro-North ticket to
       // White Plains") is answered by one search and one fast-model call, no tools, no loop. When the
       // sources do not answer it, the search results are left as a note and the full loop takes over.
@@ -177,14 +200,29 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       const context = compacted(row.messages);
       const turnStart = Date.now();
       const timings: string[] = [];
+      const early = new Map<string, Promise<ToolOutcome>>();
       let completion: Completion;
       try {
         // The reply streams into `draft` (throttled) so the page shows it as it is written.
         let lastDraft = 0;
+        const midTask = row.messages[row.messages.length - 1]?.role === "tool";
+        const cheapTurn = housekeepingTurn(row.messages);
+        early.clear();
         completion = await complete({
-          model: row.model!,
+          // A read-only call (a search, a page read, a memory lookup) starts the moment its JSON is
+          // complete in the stream, while the model is still producing the rest of its turn.
+          onToolCall: (call) => {
+            if (!READ_ONLY_TOOLS.has(call.function.name) || early.has(call.id)) return;
+            try {
+              early.set(call.id, executeTool(t, row, call.function.name, JSON.parse(call.function.arguments || "{}") as Record<string, unknown>, call.id));
+            } catch {
+              /* invalid JSON: the loop reports it */
+            }
+          },
+          model: cheapTurn ? modelFor("chat", t) : row.model!,
           messages: context,
           tools: toolsFor(quick ? "quick" : "all"),
+          maxTokens: midTask && TOOL_TURN_MAX_TOKENS > 0 ? TOOL_TURN_MAX_TOKENS : undefined,
           onText: (text) => {
             if (Date.now() - lastDraft < 700) return;
             lastDraft = Date.now();
@@ -212,6 +250,17 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           await save();
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
           continue;
+        }
+        // Figures in the reply that appear nowhere in what the model read or was told this task: one
+        // turn to re-read and correct them (or show the arithmetic), before the user sees them.
+        if (text && taskUsedTools(row.messages) && !hasHostNotePrefix(row.messages, VERIFY_PREFIX)) {
+          const missing = unverifiedFigures(row.messages, text);
+          if (missing.length) {
+            row.messages.push({ role: "user", content: `${VERIFY_PREFIX} these figures in your reply do not appear in anything you read or were told during this task: ${missing.join(", ")}. Re-read the source (browser_text, browser_extract, fetch_page, the tool result) and correct them, or if each is a calculation, show it in the reply (e.g. 3 × $12.50 = $37.50). Then send the reply again.)` });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} verify: ${missing.join(",")}`);
+            continue;
+          }
         }
         // The task worked a site it has no notes for: one more turn to write sites/<domain>.md, so the
         // next visit is a five-step task instead of thirty, then the same reply again.
@@ -250,7 +299,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         }
       });
       const ahead = new Map<number, Promise<ToolOutcome>>();
-      if (calls.length > 1) calls.forEach((c, i) => parsedArgs[i] && READ_ONLY_TOOLS.has(c.function.name) && ahead.set(i, executeTool(t, row, c.function.name, parsedArgs[i]!, c.id)));
+      if (calls.length > 1) calls.forEach((c, i) => parsedArgs[i] && READ_ONLY_TOOLS.has(c.function.name) && !early.has(c.id) && ahead.set(i, executeTool(t, row, c.function.name, parsedArgs[i]!, c.id)));
       for (const [i, call] of calls.entries()) {
         const args = parsedArgs[i];
         if (!args) {
@@ -258,8 +307,9 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           continue;
         }
         const toolStart = Date.now();
-        const out = ahead.has(i) ? await ahead.get(i)! : await executeTool(t, row, call.function.name, args, call.id);
-        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s${ahead.has(i) ? "‖" : ""}`);
+        const started_early = early.get(call.id);
+        const out = started_early ? await started_early : ahead.has(i) ? await ahead.get(i)! : await executeTool(t, row, call.function.name, args, call.id);
+        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s${started_early ? "»" : ahead.has(i) ? "‖" : ""}`);
         if (out.pending) {
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} pending:${out.pending}`);
           row.status = "waiting";
@@ -275,6 +325,16 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (out.escalateTo) {
           row.model = out.escalateTo;
           row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the notes above.)` });
+        }
+      }
+
+      // Navigating to a site on the hard list while on the task tier: move up now, before it fails.
+      if (tierOfModel(row.model ?? "", t) === "task") {
+        const hardUrl = calls.map((c, i) => (c.function.name === "browser_goto" || c.function.name === "browser_open" ? String(parsedArgs[i]?.url ?? "") : "")).find((u) => u && isHardSite(u));
+        if (hardUrl) {
+          row.model = modelFor("hard", t);
+          row.messages.push({ role: "user", content: `(This site is on the hard list, so you are now on the stronger model. Continue the task from here.)` });
+          console.log(`[route] ${row.id}: hard site ${hardUrl.slice(0, 60)} -> ${row.model}`);
         }
       }
 
@@ -384,6 +444,14 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
   // provider error) must be in it or the user sees nothing at all.
   if (report && !silent && lastAssistantText(row.messages) !== report.trim()) row.messages.push({ role: "assistant", content: report, at: stamp() });
+  // A browser task that ended well: what it did on each site becomes a replayable path in the site note.
+  if (status === "idle" && (row.kind === "chat" || row.kind === "task") && !/\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200))) {
+    const domains = [...siteActivity(row.messages).visited].filter(([, n]) => n >= 3).map(([d]) => d);
+    if (domains.length) {
+      const written = await recordPaths(t, row, domains).catch(() => [] as string[]);
+      if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}`);
+    }
+  }
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   const limitHit = row.turns >= MAX_SESSION_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap);
   // A provider error no longer terminates the chat: the thread stays open (status "error", still
@@ -503,6 +571,79 @@ export function arrivedMidTask(messages: ChatMessage[]): boolean {
   if (prev && (prev.role === "tool" || (prev.role === "assistant" && prev.tool_calls?.length))) return true;
   for (let i = start + 1; i < messages.length; i++) if (messages[i].role === "user" && messageText(messages[i]).startsWith("(That message arrived while you are mid-task")) return true;
   return false;
+}
+
+/** "done", "signed in": the user finished a takeover step; the task resumes from the current page. */
+export const TAKEOVER_DONE = /^(ok(ay)?[,.! ]*)?(done|all done|i'?m done|signed in|logged in|i'?m in|i signed in|i logged in|finished|it'?s done|you'?re in|you should be in|try (it )?now|go ahead now)\b/i;
+export const RESUME_PREFIX = "(Resuming:";
+
+/** The user's request before the current one (the task a "done" continues). */
+export function previousTaskText(messages: ChatMessage[]): string | undefined {
+  const start = taskStart(messages);
+  for (let i = start - 1; i > 0; i--) if (isUserMessage(messages[i])) return messageText(messages[i]).replace(/^\[[^\]]+\]\n/, "");
+  return undefined;
+}
+
+export const VERIFY_PREFIX = "(Verify before you finish:";
+const MONEY = /\$\s?\d[\d,]*(?:\.\d{1,2})?/g;
+const PHONE = /\(?\b\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g;
+const CONFIRMATION = /\b(?=[A-Z0-9-]{6,}\b)(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9-]+\b/g;
+
+/**
+ * Figures in a reply that the task never read or was told: dollar amounts, phone numbers and
+ * confirmation-style codes that appear in no tool result, no user message and not in the system
+ * prompt. Amounts are compared without separators, phones by digits, codes by exact token.
+ */
+export function unverifiedFigures(messages: ChatMessage[], reply: string): string[] {
+  const parts: string[] = [];
+  if (typeof messages[0]?.content === "string") parts.push(messages[0].content);
+  for (let i = taskStart(messages); i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "tool" || m.role === "user") parts.push(messageText(m));
+  }
+  const corpus = parts.join("\n");
+  const plain = corpus.replace(/,/g, "");
+  const digits = corpus.replace(/\D/g, "");
+  const missing = new Set<string>();
+  for (const m of reply.match(MONEY) ?? []) {
+    const amount = m.replace(/[$\s,]/g, "");
+    if (!plain.includes(amount) && !plain.includes(amount.replace(/\.00$/, ""))) missing.add(m.replace(/\s/g, ""));
+  }
+  for (const m of reply.match(PHONE) ?? []) if (!digits.includes(m.replace(/\D/g, ""))) missing.add(m);
+  for (const m of reply.match(CONFIRMATION) ?? []) if (!corpus.toLowerCase().includes(m.toLowerCase())) missing.add(m);
+  return [...missing].slice(0, 8);
+}
+
+/** A turn that only tidies up after the result (the site-note request, or the wrap-up after a receipt or win) runs on the fast model. */
+export function housekeepingTurn(messages: ChatMessage[]): boolean {
+  const last = messages[messages.length - 1];
+  if (last?.role === "user" && messageText(last).startsWith(SITE_NOTE_PREFIX)) return true;
+  // The previous assistant turn recorded the receipt or the win: what follows is bookkeeping and the reply.
+  for (let i = messages.length - 1; i >= taskStart(messages); i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || m.ephemeral) continue;
+    const names = (m.tool_calls ?? []).map((c) => c.function.name);
+    return names.length > 0 && names.every((n) => HOUSEKEEPING_TOOLS.has(n)) && names.some((n) => n === "record_receipt" || n === "record_win");
+  }
+  return false;
+}
+
+/** Near the monthly cap the tier steps down instead of the month ending in a hard stop: hard -> task at 80%, task -> chat at 95%. */
+export function softLandedTier(share: number, tier: Tier): Tier {
+  const hardAt = Number(process.env.SOFT_LANDING_HARD ?? 0.8);
+  const taskAt = Number(process.env.SOFT_LANDING_TASK ?? 0.95);
+  if (tier === "hard" && share >= hardAt) return share >= taskAt ? "chat" : "task";
+  if (tier === "task" && share >= taskAt) return "chat";
+  return tier;
+}
+
+async function softLanding(t: Tenant, model: string): Promise<string | undefined> {
+  const cap = env.plans.monthlyCapUsd(t.plan) * 100;
+  if (cap <= 0 || !model) return undefined;
+  const tier = tierOfModel(model, t);
+  if (tier === "chat") return undefined;
+  const landed = softLandedTier((await monthUsageCents(t)) / cap, tier);
+  return landed === tier ? undefined : modelFor(landed, t);
 }
 
 /** The host's request, once per task, for the site notes a browser task left unwritten. */
@@ -662,8 +803,45 @@ export function stubToolResult(tool: string | undefined, content: string): strin
   return content.slice(0, 240) + "\n... [older output trimmed; call the tool again if you need it]";
 }
 
+/** Earlier tasks in a long thread collapse to a recap once this many messages precede the current task. */
+const RECAP_AFTER_MESSAGES = Number(process.env.RECAP_AFTER_MESSAGES ?? 12);
+const RECAP_MAX_CHARS = 3500;
+
+/**
+ * A long chat thread drags every earlier task into every call. Once the current task starts deep in
+ * the thread, everything before it becomes one note: each earlier request with the reply it got,
+ * oldest first, built deterministically so the prefix stays identical (and cached) for the whole task.
+ * The stored thread is untouched; the details are in memory files if the model needs them.
+ */
+export function recapEarlier(messages: ChatMessage[]): ChatMessage[] {
+  const start = taskStart(messages);
+  if (start - 1 <= RECAP_AFTER_MESSAGES) return messages;
+  const pairs: string[] = [];
+  let request: string | undefined;
+  for (let i = 1; i < start; i++) {
+    const m = messages[i];
+    if (isUserMessage(m)) {
+      if (request) pairs.push(`- ${request}\n  agent: (no reply recorded)`);
+      const text = messageText(m);
+      const when = text.match(/^\[([^\]]+)\]/)?.[1]?.split(" via")[0] ?? "";
+      request = `${when ? `[${when}] ` : ""}user: ${text.replace(/^\[[^\]]+\]\n/, "").replace(/\s+/g, " ").slice(0, 200)}`;
+    } else if (request && m.role === "assistant" && !m.ephemeral && !m.tool_calls?.length && typeof m.content === "string" && m.content.trim()) {
+      pairs.push(`- ${request}\n  agent: ${m.content.replace(/\s+/g, " ").slice(0, 300)}`);
+      request = undefined;
+    }
+  }
+  if (request) pairs.push(`- ${request}\n  agent: (no reply recorded)`);
+  let recap = pairs.slice(-10).join("\n");
+  while (recap.length > RECAP_MAX_CHARS && pairs.length > 1) {
+    pairs.shift();
+    recap = pairs.slice(-10).join("\n");
+  }
+  const note: ChatMessage = { role: "user", content: `(Earlier in this thread, oldest first; the pages and details are gone from context, memory files and the tools have them if needed:\n${recap || "- (nothing of note)"})` };
+  return [messages[0], note, ...messages.slice(start)];
+}
+
 export function compacted(stored: ChatMessage[]): ChatMessage[] {
-  const messages = dropStaleScreenshots(stored.map((m) => ({ ...m })));
+  const messages = recapEarlier(dropStaleScreenshots(stored.map((m) => ({ ...m }))));
   // Always: keep only the newest tool results in full. The user's messages and the assistant's own
   // words stay, so the model remembers what it found; the raw page it found it on does not need to
   // ride along on every later call. The stable prefix keeps the prompt cache warm.

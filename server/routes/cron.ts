@@ -9,6 +9,7 @@ import { isBatchMinute, takeDigest } from "../../lib/notify.js";
 import { modelFor } from "../../lib/router.js";
 import { kick } from "../../lib/runtime.js";
 import { evalRanToday, runSearchEval } from "../../lib/search-eval.js";
+import { hasReviewWork, markedToday, markToday } from "../../lib/review-work.js";
 import { localeFor, pruneSearchCache } from "../../lib/search.js";
 import { createSession, expiredAskUserSessions, hasDigestKey, hasSessionOfKindToday, staleRunnableSessions, UsageCapError } from "../../lib/sessions.js";
 import { activeTenants, tenantById, type Tenant } from "../../lib/tenant.js";
@@ -60,7 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   await ensureSchema();
   // One-time: give bubbles from before per-message times their real time from the conversation log.
   await backfillMessageTimes().catch((err) => console.error("[cron] backfill:", err));
-  const out: Record<string, number> = { resumed: 0, followups: 0, expired: 0, digests: 0, reviews: 0, weekly: 0, triage: 0, capped: 0, browsers: 0, cache_pruned: 0, search_eval: 0 };
+  const out: Record<string, number> = { resumed: 0, followups: 0, expired: 0, digests: 0, reviews: 0, weekly: 0, triage: 0, capped: 0, browsers: 0, cache_pruned: 0, search_eval: 0, reviews_skipped: 0 };
   const start = async (t: Tenant, key: string, make: () => ReturnType<typeof createSession>) => {
     try {
       const row = await make();
@@ -176,8 +177,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const reviewHour = Number(t.settings.daily_review_hour ?? 8);
-    if (reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "review", clock.day))) {
-      await start(t, "reviews", () =>
+    if (reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "review", clock.day)) && !(await markedToday(t.id, "review-skip", clock.day).catch(() => false))) {
+      // Nothing due, no open project, nothing failed, no calendar: no model call today.
+      if (!(await hasReviewWork(t).catch(() => true))) {
+        await markToday(t.id, "review-skip", clock.day).catch(() => {});
+        out.reviews_skipped++;
+      } else await start(t, "reviews", () =>
         createSession(t, {
           channel: "email",
           kind: "review",
