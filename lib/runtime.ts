@@ -36,6 +36,8 @@ const MAX_SESSION_TURNS = Number(process.env.MAX_TURNS_PER_SESSION ?? 300);
 const TASK_TIME_LIMIT_MS = Number(process.env.TASK_TIME_LIMIT_MINUTES ?? 15) * 60_000;
 // After this long with nothing shown to the user, the model is told to post a one-line progress note.
 const PROGRESS_NOTE_MS = Number(process.env.PROGRESS_NOTE_MINUTES ?? 3) * 60_000;
+// How long a fresh message waits for siblings typed right after it before the run starts.
+const SIBLING_WAIT_MS = Number(process.env.SIBLING_WAIT_MS ?? 600);
 // A quick question ("what's up", "thanks", "how's it going") gets this many tool steps, then a reply.
 const QUICK_STEPS = Number(process.env.QUICK_STEPS ?? 3);
 const QUICK_TIME_MS = Number(process.env.QUICK_SECONDS ?? 75) * 1000;
@@ -82,10 +84,11 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   // The system message is rebuilt every run, so a session started hours ago sees today's prompt,
   // today's settings, and which services (browser, mail, Google) are available right now.
   // Messages typed in quick succession ("add milk", "remind me at 3", "note Sam's number") are one
-  // call, not three: a request under two seconds old waits a moment for its siblings.
+  // call, not three: a request under two seconds old waits a moment for its siblings. Short: every
+  // chat message is that young when its run starts, so this wait is on the path to every reply.
   const lastAt = row.messages[row.messages.length - 1]?.at;
-  if (lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
-    await new Promise((r) => setTimeout(r, 1500));
+  if (SIBLING_WAIT_MS > 0 && lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
+    await new Promise((r) => setTimeout(r, SIBLING_WAIT_MS));
     row = (await getSession(sessionId)) ?? row;
   }
   // The system message is the prompt every customer shares (one cache entry for the whole service);
