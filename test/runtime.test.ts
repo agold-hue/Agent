@@ -145,3 +145,13 @@ test("siteActivity: domains driven in the task and the site notes written; searc
   assert.ok(a.noted.has("monarchmoney.com"));
   assert.ok(SITE_NOTE_PREFIX.startsWith("("));
 });
+
+import { stripCitations } from "../lib/runtime.js";
+test("stripCitations: link trails, markers and source blocks go; the words stay; links stay when asked for", () => {
+  const reply = "Ukraine's 3rd Corps cleared about 75 km² near Lyman [[2]](https://theguardian.com/world/2026/sep/16/briefing). Poland scrambled jets [[8]](https://news.sky.com/story/x-12541713).\nLavrov said fighting will not pause [2] (source: https://example.com/a).\n\nSources:\n- https://theguardian.com/a\n- https://news.sky.com/b";
+  const out = stripCitations(reply, "what's up in Ukraine last 24 hrs?");
+  assert.equal(out, "Ukraine's 3rd Corps cleared about 75 km² near Lyman. Poland scrambled jets.\nLavrov said fighting will not pause.");
+  assert.equal(stripCitations("See [the form](https://a.com/form) for details.", "how do I file"), "See the form for details.");
+  assert.equal(stripCitations("Here: https://a.com/form", "send me the link"), "Here: https://a.com/form");
+  assert.equal(stripCitations("Paid $84.20 on 9/2.", "pay the bill"), "Paid $84.20 on 9/2.");
+});

@@ -247,8 +247,9 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
 
       const calls = completion.message.tool_calls ?? [];
       if (!calls.length) {
-        // The reply is what the user reads: drop the closing filler chat models add.
-        if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(completion.message.content);
+        // The reply is what the user reads: drop the closing filler chat models add, and the links and
+        // reference markers a search-shaped answer drags along (unless the user asked for links).
+        if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(stripCitations(completion.message.content, taskUserText(row.messages)));
         const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
         const nudge = stallNudge(row, text);
         if (nudge) {
@@ -731,6 +732,27 @@ async function siteNotesMissing(t: Tenant, messages: ChatMessage[]): Promise<str
 function hasHostNotePrefix(messages: ChatMessage[], prefix: string): boolean {
   for (let i = messages.length - 1; i >= taskStart(messages); i--) if (messages[i].role === "user" && messageText(messages[i]).startsWith(prefix)) return true;
   return false;
+}
+
+/** Whether the user asked for links or sources themselves, in which case they stay. */
+const WANTS_LINKS = /\b(link|links|url|urls|source|sources|where did you (see|get|read)|cite|citation|reference)\b/i;
+
+/**
+ * Chat replies are for a person: no "[[2]](https://...)" trails, no bare URLs in parentheses, no
+ * "Sources:" block, no "[n]" markers. Removed by the host when they slip through, unless the user
+ * asked for the links. Markdown links keep their text.
+ */
+export function stripCitations(text: string, userText = ""): string {
+  if (WANTS_LINKS.test(userText)) return text;
+  let out = text
+    .replace(/\[\[?\d+\]?\]\((https?:\/\/[^)\s]+)\)/g, "") // [[2]](https://...) and [2](https://...)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1") // [text](url) -> text
+    .replace(/\s?\((?:source|sources|via|per)?:?\s*https?:\/\/[^)\s]+\)/gi, "") // (https://...) or (source: https://...)
+    .replace(/\s?\[\d+(?:,\s?\d+)*\]/g, "") // [2] [3, 4]
+    .replace(/(^|\n)\s*(sources?|references?)\s*:?\s*\n(?:.*(?:https?:\/\/|^\s*[-•*\d]).*\n?)+$/gim, "$1") // a trailing Sources block
+    .replace(/https?:\/\/\S+/g, (u) => (u.length > 0 ? "" : u)); // any bare URL left
+  out = out.replace(/[ \t]+([.,;:])/g, "$1").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  return out || text;
 }
 
 /** The host's note when a greeting or status question is turning into a task. */

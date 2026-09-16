@@ -720,7 +720,7 @@ export function formatSearch(o: SearchOutcome, budget: { used: number; limit: nu
   });
   const read = o.pages.filter((p) => p.text);
   const distinct = new Set(read.filter((p) => p.how !== "error" && p.how !== "blocked" && p.how !== "short").map((p) => domainOf(p.finalUrl))).size;
-  if (o.pages.length) lines.push(`\n${read.length} of the top ${o.pages.length} pages read (${distinct} distinct domain${distinct === 1 ? "" : "s"}). Cite results as [n] with the URL.`);
+  if (o.pages.length) lines.push(`\n${read.length} of the top ${o.pages.length} pages read (${distinct} distinct domain${distinct === 1 ? "" : "s"}). Refer to results by [n] in your own notes and project files; in the reply to the user, no URLs and no [n], name a source in words only when it matters.`);
   o.pages.forEach((p) => {
     const n = o.hits.findIndex((h) => h.url === p.url) + 1;
     lines.push(`\n--- page [${n}] ${p.title || p.finalUrl} (${p.finalUrl}${p.published ? `, ${p.published}` : ""}, ${pageState(p)}) ---`);

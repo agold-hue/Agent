@@ -90,7 +90,7 @@ export async function runResearchTool(t: Tenant, row: SessionRow, name: string, 
 
 const LOOKUP_SYSTEM = [
   "You answer one factual question from the web sources given, for a busy person on their phone.",
-  "Two or three short lines at most, plain words: the fact or figure first, then the source as '(source: domain, date)'.",
+  "Two or three short lines at most, plain words: the fact or figure first. No URLs, no [n] markers, no 'source:' tags; name the source in words only when it carries weight ('per the USPS site').",
   "Prefer the newest and most official source; if the sources disagree, say so in half a line and give the better-supported one.",
   "Never invent a figure, a phone number, an address or an hour. If the sources do not contain the answer, or only an unreliable one, reply exactly: NEED_MORE",
 ].join(" ");
