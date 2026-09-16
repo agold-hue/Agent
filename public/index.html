@@ -3,52 +3,106 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Secretary</title>
+<title>Pete — a personal secretary that gets things done</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<meta name="theme-color" content="#07080c">
 <style>
-  :root { color-scheme: light dark; --bg:#f6f7f9; --panel:#fff; --ink:#15171c; --muted:#6b7280; --me:#1f5eff; --me-ink:#fff; --edge:#e5e7eb; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#111318; --panel:#1a1d24; --ink:#ececf1; --muted:#9aa0ad; --me:#3b6cff; --edge:#2a2f3a; } }
+  :root {
+    color-scheme: light dark;
+    --bg:#eef0f6; --surface:#ffffff; --surface-2:#f4f5fa; --ink:#0d0f18; --muted:#666c80; --faint:#9298ab;
+    --line:#e1e3ee; --accent:#5750f1; --accent-2:#0ea5c4; --accent-ink:#ffffff; --accent-soft:#ecebff;
+    --danger:#e0392f; --radius-lg:20px; --radius-md:14px; --radius-sm:10px;
+    --shadow-md:0 10px 28px -10px rgba(15,17,30,.18); --shadow-lg:0 28px 56px -20px rgba(15,17,30,.3);
+    --font-sans:"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-display:"Space Grotesk", var(--font-sans);
+    --font-mono:"JetBrains Mono", ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#07080c; --surface:#12141c; --surface-2:#171a24; --ink:#f1f2f8; --muted:#9297ac; --faint:#5c6175;
+      --line:#22252f; --accent:#8482ff; --accent-2:#2fd8ea; --accent-soft:rgba(132,130,255,.16); --danger:#ff6f6f;
+      --shadow-md:0 14px 34px -12px rgba(0,0,0,.6); --shadow-lg:0 32px 64px -20px rgba(0,0,0,.7);
+    }
+  }
   * { box-sizing:border-box; }
-  body { margin:0; font:16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
-  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 60px; }
-  header { display:flex; align-items:center; justify-content:space-between; }
-  header .brand { font-weight:700; font-size:18px; }
-  .hero { padding:56px 0 32px; }
-  h1 { font-size:clamp(28px, 5vw, 44px); line-height:1.15; margin:0 0 12px; }
-  .lead { font-size:18px; color:var(--muted); max-width:640px; margin:0 0 24px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px; margin:28px 0; }
-  .card { background:var(--panel); border:1px solid var(--edge); border-radius:14px; padding:16px; }
-  .card h3 { margin:0 0 6px; font-size:15px; }
-  .card p { margin:0; color:var(--muted); font-size:14px; }
-  form.login { background:var(--panel); border:1px solid var(--edge); border-radius:16px; padding:20px; max-width:420px; display:flex; flex-direction:column; gap:10px; }
-  input { font:inherit; padding:11px 12px; border-radius:10px; border:1px solid var(--edge); background:var(--bg); color:var(--ink); width:100%; }
-  button { font:inherit; padding:11px 14px; border-radius:10px; border:1px solid var(--edge); background:var(--panel); color:var(--ink); cursor:pointer; }
-  button.primary { background:var(--me); color:var(--me-ink); border-color:transparent; }
-  .hint { font-size:13px; color:var(--muted); }
-  .err { color:#dc2626; font-size:14px; }
+  body { margin:0; font-family:var(--font-sans); font-size:15px; line-height:1.55; background:var(--bg); color:var(--ink); }
+  .glow { position:fixed; inset:0; z-index:-1; pointer-events:none; background:
+    radial-gradient(600px 400px at 15% -5%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+    radial-gradient(500px 380px at 100% 10%, color-mix(in srgb, var(--accent-2) 18%, transparent), transparent 60%); }
+  .wrap { max-width:1040px; margin:0 auto; padding:22px 20px 70px; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:6px 0 10px; }
+  .brand { display:flex; align-items:center; gap:9px; font-family:var(--font-display); font-weight:700; font-size:17px; letter-spacing:-.01em; }
+  .brandMark { width:22px; height:22px; border-radius:7px; background:linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow:0 0 0 4px var(--accent-soft); }
+  header a.hint { text-decoration:none; }
+  .pill { font-family:var(--font-mono); font-size:11px; letter-spacing:.03em; color:var(--muted); background:var(--surface); border:1px solid var(--line); padding:5px 11px; border-radius:999px; }
+  .hero { padding:60px 0 36px; display:grid; grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr); gap:40px; align-items:start; }
+  h1 { font-family:var(--font-display); font-weight:700; font-size:clamp(32px, 4.6vw, 50px); line-height:1.08; letter-spacing:-.02em; margin:0 0 16px; }
+  h1 .accent { background:linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .lead { font-size:17px; color:var(--muted); max-width:560px; margin:0 0 26px; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .badges span { font-family:var(--font-mono); font-size:11px; color:var(--accent); background:var(--accent-soft); border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); padding:5px 10px; border-radius:999px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin:44px 0 0; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-lg); padding:18px 20px; box-shadow:0 1px 2px rgba(15,17,30,.06); transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+  .card:hover { transform:translateY(-2px); box-shadow:var(--shadow-md); border-color:color-mix(in srgb, var(--accent) 30%, var(--line)); }
+  .card .mark { width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:var(--accent-soft); color:var(--accent); margin-bottom:12px; }
+  .card h3 { margin:0 0 6px; font-size:15px; font-weight:700; letter-spacing:-.01em; }
+  .card p { margin:0; color:var(--muted); font-size:13.5px; }
+
+  form.login { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-lg); padding:26px; display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow-lg); position:sticky; top:22px; }
+  form.login h2 { margin:0 0 2px; font-family:var(--font-display); font-size:19px; font-weight:700; letter-spacing:-.01em; }
+  form.login .sub { margin:0 0 6px; color:var(--muted); font-size:13px; }
+  label.hint { font-size:12.5px; font-weight:600; color:var(--muted); }
+  input { font:inherit; padding:11px 13px; border-radius:var(--radius-sm); border:1px solid var(--line); background:var(--surface-2); color:var(--ink); width:100%; transition:border-color .15s, box-shadow .15s; }
+  input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  button { font:inherit; padding:12px 16px; border-radius:var(--radius-sm); border:1px solid var(--line); background:var(--surface); color:var(--ink); cursor:pointer; transition:transform .12s ease, filter .15s ease; }
+  button:active { transform:scale(.97); }
+  button.primary { background:linear-gradient(135deg, var(--accent), var(--accent-2)); color:var(--accent-ink); border-color:transparent; box-shadow:0 8px 20px -8px color-mix(in srgb, var(--accent) 60%, transparent); }
+  button.primary:hover { filter:brightness(1.06); }
+  .hint { font-size:12.5px; color:var(--faint); }
+  .err { color:var(--danger); font-size:13.5px; }
   [hidden] { display:none !important; }
-  .price { font-size:14px; color:var(--muted); margin-top:8px; }
+  .price { font-family:var(--font-mono); font-size:11.5px; color:var(--faint); margin-top:4px; }
+  @media (max-width: 760px) { .hero { grid-template-columns:1fr; } form.login { position:static; } }
 </style>
 </head>
 <body>
+<div class="glow" aria-hidden="true"></div>
 <div class="wrap">
   <header>
-    <div class="brand">Secretary</div>
-    <a href="#login" class="hint">Log in</a>
+    <div class="brand"><span class="brandMark" aria-hidden="true"></span>Pete</div>
+    <span class="pill">status: online</span>
   </header>
 
   <section class="hero">
-    <h1>A personal secretary that gets things done.</h1>
-    <p class="lead">Text it or email it. It remembers everything, keeps your calendar straight, works any website with your own logins, writes to your broker or the utility, chases replies, and checks with you before big decisions.</p>
-    <div class="grid">
-      <div class="card"><h3>Errands while you work</h3><p>Refunds, bills, appointments, returns, quotes. It works the ladder until it's done and asks before anything big.</p></div>
-      <div class="card"><h3>Remembers everything</h3><p>Every chat and email, your calendar, contacts, preferences. Say "next Wednesday I'm in Florida" once.</p></div>
-      <div class="card"><h3>Proactive</h3><p>Morning brief, renewals, deliveries, follow-ups on its own, quiet hours and batched heads-ups.</p></div>
-      <div class="card"><h3>Your accounts stay yours</h3><p>Logins are encrypted and only used by the login step; the AI never sees a password. Every purchase waits for your yes.</p></div>
+    <div>
+      <div class="badges"><span>ANY MODEL PROVIDER</span><span>ALWAYS ON</span><span>APPROVAL-GATED</span></div>
+      <h1>A personal secretary that <span class="accent">actually gets things done.</span></h1>
+      <p class="lead">Text it or email it. It remembers everything, keeps your calendar straight, works any website with your own logins, writes to your broker or the utility, chases replies, and checks with you before anything big.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="mark"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg></div>
+          <h3>Errands while you work</h3><p>Refunds, bills, appointments, returns, quotes. It works the ladder until it's done.</p>
+        </div>
+        <div class="card">
+          <div class="mark"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 6v6l4 2"/></svg></div>
+          <h3>Remembers everything</h3><p>Every chat and email, your calendar, contacts, preferences. Say it once.</p>
+        </div>
+        <div class="card">
+          <div class="mark"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></div>
+          <h3>Proactive</h3><p>Morning brief, renewals, deliveries, follow-ups on its own, quiet hours respected.</p>
+        </div>
+        <div class="card">
+          <div class="mark"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <h3>Your accounts stay yours</h3><p>Logins are encrypted; the AI never sees a password. Every purchase waits for your yes.</p>
+        </div>
+      </div>
     </div>
-  </section>
 
-  <section id="login">
     <form class="login" id="form">
+      <h2>Get started</h2>
+      <p class="sub">Sign in or create your account</p>
       <div id="step1">
         <label class="hint" for="email">Email</label>
         <input id="email" type="email" autocomplete="email" placeholder="you@example.com" required>
