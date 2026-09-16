@@ -9,7 +9,9 @@ import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
 import { quickLookup } from "./research.js";
 import { isLookupQuestion, isQuickQuestion, modelFor, tierOfModel } from "./router.js";
 import { stubPageResult, stubSearchResult } from "./search.js";
-import { acquireLease, browserShared, chargeCompletion, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { registrableDomain } from "./credentials.js";
+import { readMemory } from "./memory.js";
+import { acquireLease, browserShared, chargeCompletion, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool, type ToolOutcome } from "./tools.js";
 
@@ -127,6 +129,12 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         const summary = await wrapUp(t, row, `You have taken ${steps} steps on this task without finishing.`, `I've taken ${steps} steps on this without finishing, so I stopped.`);
         return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
       }
+      const spent = taskCostCents(row.messages);
+      if (cls.cents > 0 && spent >= cls.cents) {
+        const usd = (spent / 100).toFixed(2);
+        const summary = await wrapUp(t, row, `You have spent $${usd} on this task without finishing.`, `I've spent $${usd} on this without finishing, so I stopped.`);
+        return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
+      }
       const clock = taskClockStart(row.messages);
       const elapsed = clock ? Date.now() - clock : 0;
       if (cls.ms > 0 && elapsed > cls.ms) {
@@ -188,8 +196,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         return await finish(t, row, persisted, providerProblem(err), "error");
       }
       timings.push(`llm=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
-      await chargeCompletion(t, row, completion);
-      row.messages.push({ ...completion.message, at: stamp() });
+      const cents = await chargeCompletion(t, row, completion);
+      row.messages.push({ ...completion.message, at: stamp(), cost: cents });
 
       const calls = completion.message.tool_calls ?? [];
       if (!calls.length) {
@@ -204,6 +212,17 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           await save();
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
           continue;
+        }
+        // The task worked a site it has no notes for: one more turn to write sites/<domain>.md, so the
+        // next visit is a five-step task instead of thirty, then the same reply again.
+        if (text && (row.kind === "chat" || row.kind === "task") && !hasHostNotePrefix(row.messages, SITE_NOTE_PREFIX)) {
+          const missing = await siteNotesMissing(t, row.messages).catch(() => [] as string[]);
+          if (missing.length) {
+            row.messages.push({ role: "user", content: `${SITE_NOTE_PREFIX} you worked on ${missing.join(" and ")} in this task and there is no sites/${missing[0]}.md yet. Write it now with memory_write, under 40 lines: ## Sign-in (URL, what it asks, whether a code comes), ## Fast path (the exact URLs and clicks that got this result), ## Where things live, ## Quirks, ## Last verified (today). Then send your reply again unchanged.)` });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} site-note: ${missing.join(",")}`);
+            continue;
+          }
         }
         if (!text) {
           // Still nothing after a nudge: the user must not be left with a blank. Get a summary.
@@ -320,12 +339,16 @@ function providerProblem(err: unknown): string {
  * request (a lookup, a form, a bill) gets a middle budget; hard-tier work (refunds, negotiations,
  * projects) and self-started reviews get the full one.
  */
-function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number } {
+function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number; cents: number } {
   const tier = tierOfModel(row.model ?? "", t);
+  // Spend per task, by class: a lookup (a balance, a price, a figure off a page) stops at LOOKUP_BUDGET_USD
+  // with a summary instead of running its whole step budget on a strong model; real work gets TASK_BUDGET_USD
+  // (the session budget by default). 0 disables a cap.
+  const taskCents = Number(process.env.TASK_BUDGET_USD ?? env.plans.sessionBudgetUsd()) * 100;
   if (row.kind === "chat" || row.kind === "task") {
-    if (tier === "task") return { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000) };
+    if (tier === "task") return { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000), cents: Number(process.env.LOOKUP_BUDGET_USD ?? 0.5) * 100 };
   }
-  return { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS };
+  return { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS, cents: taskCents };
 }
 
 /**
@@ -418,9 +441,10 @@ const GAVE_UP = /\b(couldn'?t|could not|unable to|can'?t|cannot|wasn'?t able|not
 /** A task that stops with a failure report before this many steps has not really tried. */
 const GAVE_UP_STEPS = Number(process.env.GAVE_UP_STEPS ?? 12);
 const PROMISED_ACTION =
-  /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(now\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|search for|look (?:for|up)|open)\b|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
+  /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(now\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|search for|look (?:for|up)|open|grab|pull (?:up|it|the|that|them)|fetch|dig)\b|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
 const ASKS_FOR_ADDRESS = /\b(provide|tell me|what(?:'|’)?s|what is|send me|confirm|i need|share)\b[^.?\n]{0,60}\b(your|the)\s+(current\s+|pickup\s+|home\s+|starting\s+|exact\s+)?(location|address)\b/i;
-const OFFERS_LOOKUP = /\b(want|would you like|do you want|should|shall)\s+(me|i)\s+(to\s+)?(check|look|pull|find|see|verify|confirm|dig|get|grab|open|read|search|run|log)\b/i;
+const OFFERS_LOOKUP =
+  /\b(want|would you like|do you want|should|shall|need)\s+(me|i)\s+(to\s+)?(check|look|pull|find|see|verify|confirm|dig|get|grab|open|read|search|run|log)\b|\bsay the word\b|\bjust (?:say|tell me|give me the (?:word|go|nod|ok))\b|\b(?:let me know|tell me) (?:if|whether|when) you(?:'d| would)? (?:want|like|need)\b|\bif you (?:want|like|'d like)(?:,)? (?:i(?:'|’)?ll|i can)\b|\b(?:happy|glad) to (?:grab|pull|fetch|dig|check|look)[^.!?\n]{0,40}\bif\b/i;
 
 export function stallNudge(row: SessionRow, reply: string): string | undefined {
   if (/^NO_REPORT\b/.test(reply)) return undefined;
@@ -478,6 +502,56 @@ export function arrivedMidTask(messages: ChatMessage[]): boolean {
   const prev = messages[start - 1];
   if (prev && (prev.role === "tool" || (prev.role === "assistant" && prev.tool_calls?.length))) return true;
   for (let i = start + 1; i < messages.length; i++) if (messages[i].role === "user" && messageText(messages[i]).startsWith("(That message arrived while you are mid-task")) return true;
+  return false;
+}
+
+/** The host's request, once per task, for the site notes a browser task left unwritten. */
+export const SITE_NOTE_PREFIX = "(Before you finish:";
+/** Browser steps a task must have taken on a site before the host asks for notes on it; a two-step visit needs none. */
+const SITE_NOTE_MIN_STEPS = Number(process.env.SITE_NOTE_MIN_STEPS ?? 5);
+const NO_SITE_NOTES = /(^|\.)(duckduckgo|google|bing|yahoo|browserbase)\.(com|org)$/i;
+
+/** The sites this task drove the browser on (by domain) and the site notes it wrote or updated. */
+export function siteActivity(messages: ChatMessage[]): { visited: Map<string, number>; noted: Set<string> } {
+  const visited = new Map<string, number>();
+  const noted = new Set<string>();
+  let current = "";
+  for (let i = taskStart(messages); i < messages.length; i++) {
+    for (const c of messages[i].tool_calls ?? []) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(c.function.arguments || "{}");
+      } catch {
+        continue;
+      }
+      const name = c.function.name;
+      if ((name === "browser_goto" || name === "browser_open") && typeof args.url === "string") current = registrableDomain(args.url);
+      else if (name === "login" && typeof args.domain === "string") current = registrableDomain(args.domain);
+      if (name.startsWith("browser_") || name === "login") {
+        if (current && !NO_SITE_NOTES.test(current)) visited.set(current, (visited.get(current) ?? 0) + 1);
+      }
+      if ((name === "memory_write" || name === "memory_append") && typeof args.path === "string") {
+        const m = args.path.match(/^sites\/([^/]+)\.md$/);
+        if (m) noted.add(registrableDomain(m[1]));
+      }
+    }
+  }
+  return { visited, noted };
+}
+
+/** Domains this task worked for several steps, with no site note written in the task and none on file. */
+async function siteNotesMissing(t: Tenant, messages: ChatMessage[]): Promise<string[]> {
+  const { visited, noted } = siteActivity(messages);
+  const out: string[] = [];
+  for (const [domain, steps] of visited) {
+    if (steps < SITE_NOTE_MIN_STEPS || noted.has(domain)) continue;
+    if ((await readMemory(t, `sites/${domain}.md`)) == null) out.push(domain);
+  }
+  return out.slice(0, 2);
+}
+
+function hasHostNotePrefix(messages: ChatMessage[], prefix: string): boolean {
+  for (let i = messages.length - 1; i >= taskStart(messages); i--) if (messages[i].role === "user" && messageText(messages[i]).startsWith(prefix)) return true;
   return false;
 }
 

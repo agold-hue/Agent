@@ -29,6 +29,8 @@ export interface ChatMessage {
   at?: string;
   /** The earlier bubble this message replies to (UI-only; the model gets the quote as a "Re:" line in the text). */
   quote?: MessageQuote;
+  /** What the model call that produced this assistant message cost, in cents (fractional). Never sent to the provider. */
+  cost?: number;
 }
 
 export interface MessageQuote {

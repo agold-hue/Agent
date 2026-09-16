@@ -51,7 +51,7 @@ export interface SessionRow {
 export class UsageCapError extends Error {}
 
 /** Book a completion's cost and tokens on the session and the customer's month. Used by the loop and by side calls (condensing pages, the lookup fast path). */
-export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion): Promise<void> {
+export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion): Promise<number> {
   const cost = costCents(completion.model, completion.usage);
   row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
   row.prompt_tokens = Number(row.prompt_tokens) + completion.usage.prompt_tokens;
@@ -62,6 +62,14 @@ export async function chargeCompletion(t: Tenant, row: SessionRow, completion: C
     "insert into usage (user_id, month, cost_cents, prompt_tokens, cached_tokens) values ($1, date_trunc('month', now())::date, $2, $3, $4) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2, prompt_tokens = usage.prompt_tokens + $3, cached_tokens = usage.cached_tokens + $4",
     [t.id, cost.toFixed(3), completion.usage.prompt_tokens, completion.usage.cached_tokens ?? 0],
   );
+  return cost;
+}
+
+/** What the current task has spent so far, in cents: the cost stamped on each of its assistant messages. */
+export function taskCostCents(messages: ChatMessage[]): number {
+  let cents = 0;
+  for (let i = taskStart(messages); i < messages.length; i++) if (messages[i].role === "assistant") cents += Number(messages[i].cost ?? 0);
+  return cents;
 }
 
 const now = () => new Date().toISOString();

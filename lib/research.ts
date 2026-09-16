@@ -110,7 +110,7 @@ export interface LookupResult {
  * answer to "what time does Costco close" or "how much is a Metro-North ticket to White Plains" in
  * a few seconds and a fraction of a cent, instead of the agent loop with thirty tool definitions.
  */
-export async function lookupAnswer(question: string, opts: { locale: Locale; model: string; today?: string; charge?: (c: Completion) => Promise<void>; readTop?: number }): Promise<LookupResult> {
+export async function lookupAnswer(question: string, opts: { locale: Locale; model: string; today?: string; charge?: (c: Completion) => Promise<unknown>; readTop?: number }): Promise<LookupResult> {
   const started = Date.now();
   let cost = 0;
   const charge = async (c: Completion) => {

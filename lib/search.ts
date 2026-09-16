@@ -402,7 +402,7 @@ export interface SearchRequest {
   /** Results to return at most. */
   limit?: number;
   /** Cost of condensing calls is booked here. */
-  charge?: (c: Completion) => Promise<void>;
+  charge?: (c: Completion) => Promise<unknown>;
   /** The fast model used for condensing. */
   condenseModel?: string;
 }
@@ -518,7 +518,7 @@ function charsetOf(type: string, buf: Buffer): BufferEncoding {
  * Read several pages at once. Each has its own timeout; the slow ones come back as errors while the
  * rest are returned, and long pages are condensed around the focus by the fast model in parallel.
  */
-export async function readPages(urls: string[], opts: { focus?: string; charge?: (c: Completion) => Promise<void>; condenseModel?: string } = {}): Promise<PageRead[]> {
+export async function readPages(urls: string[], opts: { focus?: string; charge?: (c: Completion) => Promise<unknown>; condenseModel?: string } = {}): Promise<PageRead[]> {
   const pages = await Promise.all(urls.map((u) => fetchPage(u)));
   return Promise.all(pages.map((p) => condensePage(p, opts)));
 }
@@ -528,7 +528,7 @@ export async function readPages(urls: string[], opts: { focus?: string; charge?:
  * kept exactly, before it reaches the task model: a tenth of the tokens at a tenth of the price.
  * Without a model (or when the call fails) the text is cut instead.
  */
-export async function condensePage(page: PageRead, opts: { focus?: string; charge?: (c: Completion) => Promise<void>; condenseModel?: string }): Promise<PageRead> {
+export async function condensePage(page: PageRead, opts: { focus?: string; charge?: (c: Completion) => Promise<unknown>; condenseModel?: string }): Promise<PageRead> {
   if (page.text.length <= PAGE_CONDENSE_CHARS) return page;
   if (opts.condenseModel && opts.focus) {
     try {

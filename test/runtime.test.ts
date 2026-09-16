@@ -117,3 +117,31 @@ test("old tool output is stubbed on every call; the newest few stay whole", () =
   // The stored conversation is untouched.
   assert.ok((messages[3].content as string).length > 1000);
 });
+
+import { siteActivity, SITE_NOTE_PREFIX } from "../lib/runtime.js";
+import { taskCostCents } from "../lib/sessions.js";
+
+test("stallNudge: 'say the word', 'need me to' and 'I'll grab it' are offers or promises, not replies", () => {
+  const r = row([user("give me the breakdown"), call("memory_grep"), { role: "tool", tool_call_id: "c", content: "..." }]);
+  assert.ok(stallNudge(r, "I've only got the total saved, not the itemized list—need to open Monarch's transactions to pull dates. Say the word and I'll grab it."));
+  assert.ok(stallNudge(r, "Need me to pull the itemized list?"));
+  assert.ok(stallNudge(r, "Let me know if you want the full list and I'll pull it up."));
+  assert.ok(stallNudge(r, "Happy to grab the transactions if that helps."));
+  assert.equal(stallNudge(r, "You spent $325.52 on gas in the last 30 days: 9/02 Shell Brooklyn $48.10, 9/09 BP Queens $52.00."), undefined);
+  assert.equal(stallNudge(r, "Done. I'll check back tomorrow at 9 when the refund should post."), undefined);
+});
+
+test("taskCostCents sums the cost stamped on this task's assistant messages only", () => {
+  const messages: ChatMessage[] = [{ role: "system", content: "" }, user("first"), { role: "assistant", content: "a", cost: 40 }, user("second"), { role: "assistant", content: null, tool_calls: [], cost: 12.5 }, { role: "assistant", content: "b", cost: 7.5 }];
+  assert.equal(taskCostCents(messages), 20);
+});
+
+test("siteActivity: domains driven in the task and the site notes written; search engines and one-step visits ignored", () => {
+  const goto = (url: string): ChatMessage => call("browser_goto", { url });
+  const messages: ChatMessage[] = [{ role: "system", content: "" }, user("gas spend"), goto("https://app.monarchmoney.com/dashboard"), call("browser_click", { ref: "3" }), call("browser_snapshot"), call("browser_click", { ref: "9" }), call("browser_text"), goto("https://duckduckgo.com/?q=x"), call("browser_click", { ref: "1" }), call("memory_write", { path: "sites/monarchmoney.com.md", content: "## Sign-in" })];
+  const a = siteActivity(messages);
+  assert.equal(a.visited.get("monarchmoney.com"), 5);
+  assert.equal(a.visited.has("duckduckgo.com"), false);
+  assert.ok(a.noted.has("monarchmoney.com"));
+  assert.ok(SITE_NOTE_PREFIX.startsWith("("));
+});
