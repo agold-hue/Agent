@@ -4,6 +4,7 @@ import logout from "../server/routes/auth/logout.js";
 import requestCode from "../server/routes/auth/request-code.js";
 import verify from "../server/routes/auth/verify.js";
 import browserSessions from "../server/routes/browser-sessions.js";
+import browserSignin from "../server/routes/browser-signin.js";
 import checkout from "../server/routes/billing/checkout.js";
 import portal from "../server/routes/billing/portal.js";
 import history from "../server/routes/chat/history.js";
@@ -56,6 +57,7 @@ const routes: Record<string, Handler> = {
   me,
   models,
   "browser/sessions": browserSessions,
+  "browser/signin": browserSignin,
   receipts,
   run,
   stats,

@@ -35,7 +35,7 @@ export async function startTaskSession(t: Tenant, text: string, parent: SessionR
 }
 
 /** Maximum parallel tasks per user; past it a new request joins the main thread instead. */
-export const PARALLEL_TASKS = Number(process.env.PARALLEL_TASKS ?? 3);
+export const PARALLEL_TASKS = Number(process.env.PARALLEL_TASKS ?? 20);
 
 /** "also: book the dentist" / "in parallel, ..." asks for a task of its own; the prefix is dropped. */
 export const PARALLEL_PREFIX = /^(?:also|parallel|in parallel|meanwhile|separately|new task)\s*[:,-]\s*/i;

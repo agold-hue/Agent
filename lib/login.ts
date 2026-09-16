@@ -42,7 +42,7 @@ const TAG_FIELDS = `(() => {
 
 /** Where the sign-in form usually lives when the home page does not show it. */
 const LOGIN_PATHS = ["/login", "/signin", "/sign-in", "/account/login", "/auth/login", "/users/sign_in", "/ap/signin", "/en/login", "/my-account", "/account"];
-const KNOWN_LOGIN_URLS: Record<string, string> = {
+export const KNOWN_LOGIN_URLS: Record<string, string> = {
   "amazon.com": "https://www.amazon.com/ap/signin?openid.return_to=https%3A%2F%2Fwww.amazon.com%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0",
   "coned.com": "https://www.coned.com/en/login",
   "nationalgridus.com": "https://www.nationalgridus.com/Default.aspx?login=true",
