@@ -125,7 +125,8 @@ export function toChatItems(row: SessionRow): ChatItem[] {
       items.push({ kind: "user", id: `${row.id}-${i}`, text, at, ...approx, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}), ...task });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
-      if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx, ...task });
+      // A draft the host sent back to the model (an offer instead of an answer, an unverified figure) is not a bubble.
+      if (text && !m.tool_calls?.length && !m.superseded) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx, ...task });
       for (const tc of m.tool_calls ?? []) {
         if (!["checkpoint", "ask_user", "send_email", "request_code"].includes(tc.function.name)) continue;
         let input: Record<string, unknown> = {};

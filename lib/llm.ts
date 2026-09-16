@@ -31,6 +31,8 @@ export interface ChatMessage {
   quote?: MessageQuote;
   /** What the model call that produced this assistant message cost, in cents (fractional). Never sent to the provider. */
   cost?: number;
+  /** A draft reply the host sent back to the model (an offer, an unverified figure, a missing site note): the model still sees it, the chat page never shows it. */
+  superseded?: boolean;
 }
 
 export interface MessageQuote {

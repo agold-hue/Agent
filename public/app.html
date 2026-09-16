@@ -770,6 +770,11 @@
     { id: "secretary", name: AGENT, sub: "Your personal secretary · always on", hue: AGENT_HUE, items: items.filter((i) => i.kind !== "status") },
     { id: "notices", name: "Reminders & heads-ups", sub: "Timers, the morning brief, things it noticed", hue: NOTICE_HUE, items: items.filter((i) => i.kind === "agent" && i.notice) },
   ]);
+  // Models write **bold** and "# headings" out of habit; render the bold, turn a heading into a bold line, escape everything else.
+  function lightMarkdown(text) {
+    const safe = esc2(String(text || "")).replace(/^#{1,3}\s+(.+)$/gm, "<strong>$1</strong>").replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
+    return safe.replace(/^\s*[-•]\s+/gm, "• ");
+  }
   const textOf = (i) => i.kind === "tool" ? (i.name === "checkpoint" ? "Needs your ok: " + (i.input.summary || "") : i.name === "send_email" ? "Ok to send an email?" : i.name === "request_code" ? (i.input.message || "Send me the code") : "Quick question") : (i.text || "");
 
   // ---- the left column
@@ -851,7 +856,9 @@
         qd.onclick = (e) => { e.stopPropagation(); jumpTo(item.quote.id); };
         bubble.appendChild(qd);
       }
-      const body = document.createElement("span"); body.className = "chatBody"; body.textContent = item.text; bubble.appendChild(body);
+      const body = document.createElement("span"); body.className = "chatBody";
+      if (item.kind === "agent") { body.innerHTML = lightMarkdown(item.text); body.style.whiteSpace = "pre-wrap"; } else body.textContent = item.text;
+      bubble.appendChild(body);
     }
     stack.appendChild(bubble);
     if (item.reaction) {

@@ -245,7 +245,9 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         const nudge = stallNudge(row, text);
         if (nudge) {
           // The model "ended" with a promise, an offer to look something up, an empty reply, or a
-          // question it should not ask; send it back to work.
+          // question it should not ask; send it back to work. The draft stays in its context (so
+          // "send the same reply again" works) but never reaches the chat page.
+          supersedeLastReply(row.messages);
           row.messages.push({ role: "user", content: nudge });
           await save();
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
@@ -256,6 +258,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (text && taskUsedTools(row.messages) && !hasHostNotePrefix(row.messages, VERIFY_PREFIX)) {
           const missing = unverifiedFigures(row.messages, text);
           if (missing.length) {
+            supersedeLastReply(row.messages);
             row.messages.push({ role: "user", content: `${VERIFY_PREFIX} these figures in your reply do not appear in anything you read or were told during this task: ${missing.join(", ")}. Re-read the source (browser_text, browser_extract, fetch_page, the tool result) and correct them, or if each is a calculation, show it in the reply (e.g. 3 × $12.50 = $37.50). Then send the reply again.)` });
             await save();
             console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} verify: ${missing.join(",")}`);
@@ -267,6 +270,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (text && (row.kind === "chat" || row.kind === "task") && !hasHostNotePrefix(row.messages, SITE_NOTE_PREFIX)) {
           const missing = await siteNotesMissing(t, row.messages).catch(() => [] as string[]);
           if (missing.length) {
+            supersedeLastReply(row.messages);
             row.messages.push({ role: "user", content: `${SITE_NOTE_PREFIX} you worked on ${missing.join(" and ")} in this task and there is no sites/${missing[0]}.md yet. Write it now with memory_write, under 40 lines: ## Sign-in (URL, what it asks, whether a code comes), ## Fast path (the exact URLs and clicks that got this result), ## Where things live, ## Quirks, ## Last verified (today). Then send your reply again unchanged.)` });
             await save();
             console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} site-note: ${missing.join(",")}`);
@@ -571,6 +575,12 @@ export function arrivedMidTask(messages: ChatMessage[]): boolean {
   if (prev && (prev.role === "tool" || (prev.role === "assistant" && prev.tool_calls?.length))) return true;
   for (let i = start + 1; i < messages.length; i++) if (messages[i].role === "user" && messageText(messages[i]).startsWith("(That message arrived while you are mid-task")) return true;
   return false;
+}
+
+/** The reply the model just gave is being sent back to it: hide it from the chat, keep it for the model. */
+export function supersedeLastReply(messages: ChatMessage[]): void {
+  const last = messages[messages.length - 1];
+  if (last?.role === "assistant" && !last.tool_calls?.length) last.superseded = true;
 }
 
 /** "done", "signed in": the user finished a takeover step; the task resumes from the current page. */
