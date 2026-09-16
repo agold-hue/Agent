@@ -8,6 +8,7 @@ import { agentAddress, hasAccess, updateSettings, type TenantSettings } from "..
 
 const SETTABLE: Array<keyof TenantSettings> = [
   "owner_name",
+  "preferred_name",
   "quiet_hours",
   "batch_times",
   "weekly_review",

@@ -71,8 +71,91 @@ export function linesFromGlyphs(items: Glyph[]): string[] {
   return out;
 }
 
+/**
+ * pdf.js expects the browser's DOMMatrix, ImageData and Path2D to exist even when nothing is
+ * rendered: its module body runs `new DOMMatrix()` at load, so without them the import itself
+ * throws ("DOMMatrix is not defined") and every PDF reads as unreadable. On a laptop pdf.js fills
+ * them in from @napi-rs/canvas, which the serverless bundle does not carry (it is loaded by a
+ * dynamic require the bundler cannot trace). Text extraction never draws, so plain stand-ins are
+ * enough; they are installed only where the globals are missing.
+ */
+export function ensureDomGlobals(): void {
+  const g = globalThis as Record<string, unknown>;
+  if (typeof g.DOMMatrix === "undefined") {
+    g.DOMMatrix = class DOMMatrix {
+      a = 1;
+      b = 0;
+      c = 0;
+      d = 1;
+      e = 0;
+      f = 0;
+      constructor(init?: number[] | string) {
+        if (Array.isArray(init) && init.length >= 6) [this.a, this.b, this.c, this.d, this.e, this.f] = init.map(Number);
+      }
+      get is2D() {
+        return true;
+      }
+      get isIdentity() {
+        return this.a === 1 && this.b === 0 && this.c === 0 && this.d === 1 && this.e === 0 && this.f === 0;
+      }
+      multiply(o: { a: number; b: number; c: number; d: number; e: number; f: number }) {
+        return new (g.DOMMatrix as new (i: number[]) => unknown)([this.a * o.a + this.c * o.b, this.b * o.a + this.d * o.b, this.a * o.c + this.c * o.d, this.b * o.c + this.d * o.d, this.a * o.e + this.c * o.f + this.e, this.b * o.e + this.d * o.f + this.f]);
+      }
+      translate(x = 0, y = 0) {
+        return this.multiply({ a: 1, b: 0, c: 0, d: 1, e: x, f: y });
+      }
+      scale(x = 1, y = x) {
+        return this.multiply({ a: x, b: 0, c: 0, d: y, e: 0, f: 0 });
+      }
+      inverse() {
+        const det = this.a * this.d - this.b * this.c || 1;
+        return new (g.DOMMatrix as new (i: number[]) => unknown)([this.d / det, -this.b / det, -this.c / det, this.a / det, (this.c * this.f - this.d * this.e) / det, (this.b * this.e - this.a * this.f) / det]);
+      }
+      toString() {
+        return `matrix(${this.a}, ${this.b}, ${this.c}, ${this.d}, ${this.e}, ${this.f})`;
+      }
+    };
+  }
+  if (typeof g.ImageData === "undefined") {
+    g.ImageData = class ImageData {
+      data: Uint8ClampedArray;
+      width: number;
+      height: number;
+      constructor(a: number | Uint8ClampedArray, b: number, c?: number) {
+        if (typeof a === "number") {
+          this.width = a;
+          this.height = b;
+          this.data = new Uint8ClampedArray(a * b * 4);
+        } else {
+          this.data = a;
+          this.width = b;
+          this.height = c ?? a.length / (4 * b);
+        }
+      }
+    };
+  }
+  if (typeof g.Path2D === "undefined") {
+    // Every drawing call is a no-op: the text layer never paths.
+    const noop = () => {};
+    g.Path2D = class Path2D {
+      addPath = noop;
+      closePath = noop;
+      moveTo = noop;
+      lineTo = noop;
+      bezierCurveTo = noop;
+      quadraticCurveTo = noop;
+      arc = noop;
+      arcTo = noop;
+      ellipse = noop;
+      rect = noop;
+      roundRect = noop;
+    };
+  }
+}
+
 /** Every page's text from a PDF's text layer; empty strings for pages with none. */
 export async function extractPdfPages(content: Buffer): Promise<{ pages: string[]; numPages: number }> {
+  ensureDomGlobals();
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const doc = await pdfjs.getDocument({ data: new Uint8Array(content), useSystemFonts: true }).promise;
   const pages: string[] = [];

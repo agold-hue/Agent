@@ -5,6 +5,8 @@ import { decrypt, encrypt, randomToken } from "./crypto.js";
 
 export interface TenantSettings {
   owner_name?: string;
+  /** What the user wants to be called in chat ("call me Mendy"); owner_name stays the name on outgoing email. Set from Settings or by the set_preferred_name tool. */
+  preferred_name?: string;
   quiet_hours?: string; // "22-7"
   batch_times?: string; // "12:30,18:00"
   weekly_review?: string; // "Sun 18"

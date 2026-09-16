@@ -19,7 +19,7 @@ const fn = (name: string, description: string, parameters: Record<string, unknow
  * browser, mail or account tools (about 4,000 tokens fewer per call and a faster answer); everything
  * else gets the full set. Names not listed here fall back to "all".
  */
-const QUICK_TOOLS = new Set(["memory_read", "memory_append", "memory_write", "memory_grep", "memory_list", "list_items", "track_item", "calendar", "schedule_follow_up", "tell_user", "escalate_model", "start_task", "web_search", "fetch_page", "bank", "track_package", "watch_page", "document"]);
+const QUICK_TOOLS = new Set(["memory_read", "memory_append", "memory_write", "memory_grep", "memory_list", "list_items", "track_item", "calendar", "schedule_follow_up", "tell_user", "escalate_model", "start_task", "set_preferred_name", "web_search", "fetch_page", "bank", "track_package", "watch_page", "document"]);
 export function toolsFor(kind: "quick" | "all"): ToolDef[] {
   return kind === "quick" ? tools.filter((t) => QUICK_TOOLS.has(t.function.name)) : tools;
 }
@@ -77,6 +77,7 @@ export const tools: ToolDef[] = [
   // ---- the user's own browser, through the relay extension (only when their context says the relay is online)
   fn("local_browser", "Drive a tab in the USER'S OWN browser (their computer, through the relay extension) when the hosted browser is blocked by a site: banks, card issuers, airlines. Same verbs, one round trip each: goto (url), snapshot, click (ref or text), type (ref or text, text, enter), text, find (text), back. Only available while the relay is online (see '# This user'); otherwise use the hosted browser. Never type a password here either; use login flows and codes as usual.", obj({ action: { type: "string", enum: ["goto", "snapshot", "click", "type", "text", "find", "back"] }, url: { type: "string" }, ref: { type: "string" }, text: { type: "string" }, enter: { type: "boolean" } }, ["action"])),
 
+  fn("set_preferred_name", "The user said what to call them ('call me Mendy', 'it's Dr. Gold', 'not Alter, Mendy'). Saves it; from then on that is their name in chat and the greeting. Call it the moment they say it, whatever else the message contains, then confirm in a few words.", obj({ name: { type: "string", description: "Exactly what they asked to be called." } }, ["name"])),
   fn("approval_rule", "Learned approval rules: 'add' after the user agrees to stop being asked for a kind of action (action_type, optional merchant, optional max_usd); 'list'; 'remove'. Only after an explicit yes from the user.", obj({ action: { type: "string", enum: ["add", "list", "remove"] }, action_type: { type: "string" }, merchant: { type: "string" }, max_usd: { type: "number" } }, ["action"])),
 
   // ---- long documents the user sent (stored page by page)

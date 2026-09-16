@@ -392,6 +392,7 @@
   <div class="card">
     <h3>About you</h3>
     <div class="field"><label>Name (used in emails it sends: "Name (assistant)")</label><input id="s_name"></div>
+    <div class="field"><label>What to call you in chat (a nickname; blank uses the name above)</label><input id="s_nick" placeholder="Mendy"></div>
     <div class="field"><label>Time zone</label><input id="s_tz" placeholder="America/New_York"></div>
     <div class="field"><label>Family members who may email requests (comma separated)</label><input id="s_family" placeholder="partner@example.com"></div>
   </div>
@@ -524,6 +525,7 @@
     $("agentEmail").textContent = me.agent_email || "(email channel not enabled on this test deploy)";
     const s = me.settings || {};
     $("s_name").value = s.owner_name || me.name || "";
+    $("s_nick").value = s.preferred_name || "";
     $("s_tz").value = me.timezone || "";
     $("s_family").value = (s.family_emails || []).join(", ");
     $("s_cap").value = s.auto_approve_max_usd ?? 0;
@@ -544,7 +546,7 @@
   }
   $("saveSettings").onclick = async () => {
     const body = {
-      owner_name: $("s_name").value.trim(), name: $("s_name").value.trim(), timezone: $("s_tz").value.trim(),
+      owner_name: $("s_name").value.trim(), name: $("s_name").value.trim(), preferred_name: $("s_nick").value.trim(), timezone: $("s_tz").value.trim(),
       family_emails: $("s_family").value.split(",").map((s) => s.trim()).filter(Boolean),
       auto_approve_max_usd: Number($("s_cap").value || 0),
       auto_approve_types: $("s_types").value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),

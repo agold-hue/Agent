@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chunkPages, outlineOf, parsePageRange, searchPages } from "../lib/docstore.js";
-import { joinPages, linesFromGlyphs, looksScanned } from "../lib/documents.js";
+import { ensureDomGlobals, extractPdfPages, joinPages, linesFromGlyphs, looksScanned } from "../lib/documents.js";
+import fs from "node:fs";
 
 test("linesFromGlyphs rebuilds lines and marks columns from glyph positions", () => {
   const g = (str: string, x: number, y: number, width = str.length * 5) => ({ str, x, y, width, height: 10 });
@@ -38,4 +39,20 @@ test("outline, page ranges, search and chunking are deterministic and page-aware
   assert.equal(chunks[0].from, 1);
   assert.equal(chunks[chunks.length - 1].to, 3);
   assert.match(chunks[0].text, /^--- page 1 ---/);
+});
+
+test("a PDF is read even where the runtime has no DOMMatrix, ImageData or Path2D (the serverless bundle)", async () => {
+  // pdf.js runs `new DOMMatrix()` when its module loads. On Vercel the canvas package it would take
+  // them from is not in the bundle, so without stand-ins every PDF failed with "DOMMatrix is not
+  // defined" and the model was told the file could not be read.
+  const g = globalThis as Record<string, unknown>;
+  assert.equal(typeof g.DOMMatrix, "undefined");
+  ensureDomGlobals();
+  assert.equal(typeof g.DOMMatrix, "function");
+  const M = g.DOMMatrix as new (i?: number[]) => { a: number; e: number; multiply: (o: unknown) => { e: number } };
+  assert.equal(new M().a, 1);
+  assert.equal(new M([2, 0, 0, 2, 5, 7]).multiply(new M([1, 0, 0, 1, 1, 1])).e, 7);
+  const { pages, numPages } = await extractPdfPages(fs.readFileSync(new URL("./fixtures/bill.pdf", import.meta.url)));
+  assert.equal(numPages, 1);
+  assert.match(pages[0], /Amount due: \$142\.17/);
 });

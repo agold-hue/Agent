@@ -318,7 +318,7 @@ export async function customerContext(t: Tenant, opts: { parallel?: boolean; tas
   const known = await knownFacts(t, cls);
   const parts = [
     `# This user\n${[
-      `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,
+      `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>.${t.settings.preferred_name ? ` They go by "${t.settings.preferred_name}": that is the name you use with them.` : ""} Time zone: ${t.timezone}.`,
       env.mail.configured() ? `Your address (for send_email replies): ${t.slug}@${env.mail.domain()}.` : "",
       t.googleRefreshToken ? "Google is connected: calendar, owner_inbox and drive work." : "Google is NOT connected: calendar, owner_inbox and drive will fail; use calendar.md and email instead and mention Settings > Connect Google once.",
       `Approval rules: purchases/payments up to $${Number(t.settings.auto_approve_max_usd ?? 0)} auto-approved; auto-approved action types: ${(t.settings.auto_approve_types ?? []).join(", ") || "none"}.`,

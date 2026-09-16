@@ -60,6 +60,13 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
     if (name === "watch_page") return { text: await runWatchTool(t, row, args) };
     if (name === "local_browser") return { text: await runLocalBrowserTool(t, row, args) };
     if (name === "document") return { text: await runDocumentTool(t, row, args) };
+    if (name === "set_preferred_name") {
+      const preferred = s("name").replace(/\s+/g, " ").trim().slice(0, 60);
+      if (!preferred) return { text: "Nothing saved; pass the name they asked for." };
+      await updateSettings(t, { preferred_name: preferred });
+      t.settings.preferred_name = preferred;
+      return { text: `Saved: the user goes by "${preferred}" from now on (shown under Settings). Use it in this reply and every one after; never the old name.` };
+    }
     if (name === "approval_rule") {
       const rules = [...(t.settings.auto_approve_rules ?? [])];
       const action = s("action") || "list";
