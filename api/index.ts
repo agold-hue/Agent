@@ -10,7 +10,11 @@ import portal from "../server/routes/billing/portal.js";
 import history from "../server/routes/chat/history.js";
 import send from "../server/routes/chat/send.js";
 import react from "../server/routes/chat/react.js";
+import account from "../server/routes/account.js";
 import cancel from "../server/routes/chat/cancel.js";
+import orders from "../server/routes/orders.js";
+import push from "../server/routes/push.js";
+import tasks from "../server/routes/tasks.js";
 import upload from "../server/routes/chat/upload.js";
 import cron from "../server/routes/cron.js";
 import drafts from "../server/routes/drafts.js";
@@ -47,6 +51,10 @@ const routes: Record<string, Handler> = {
   "chat/send": send,
   "chat/upload": upload,
   "chat/cancel": cancel,
+  account,
+  orders,
+  push,
+  tasks,
   "chat/react": react,
   cron,
   drafts,

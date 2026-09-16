@@ -252,6 +252,7 @@
   <nav>
     <button data-tab="chat" class="on">Chats</button>
     <button data-tab="home">Home</button>
+    <button data-tab="tasks">Tasks</button>
     <button data-tab="inbox" id="inboxTab" hidden>Inbox</button>
     <button data-tab="settings">Settings</button>
     <button data-tab="logins">Logins</button>
@@ -347,6 +348,11 @@
   <div id="drafts"><div class="empty">Loading…</div></div>
 </div></main>
 
+<main id="tasks" hidden><div class="panel">
+  <div class="card"><h3>Tasks</h3><p class="hint" id="tasksMeta">Everything running, waiting on you, or done today.</p><div id="taskList"></div></div>
+  <div class="card" id="taskDetail" hidden><h3 id="tdTitle"></h3><p id="tdRequest" class="hint"></p><p id="tdResult"></p><table><thead><tr><th>When</th><th>Step</th><th>What</th><th>Came back</th></tr></thead><tbody id="tdSteps"></tbody></table><div class="row" style="margin-top:8px"><button type="button" class="btn" id="tdClose">Close</button></div></div>
+</div></main>
+
 <main id="settings" hidden><div class="panel">
   <div class="banner" id="paywall" hidden>Your trial or subscription is not active. <button class="primary" id="paywallBtn" style="margin-left:8px">Start subscription</button></div>
   <div class="card">
@@ -371,6 +377,23 @@
     <div class="field"><label>Check-in times for held heads-ups (e.g. 12:30,18:00; empty = immediately)</label><input id="s_batch"></div>
     <div class="field"><label>Quiet hours (e.g. 22-7)</label><input id="s_quiet"></div>
     <div class="field"><label>Weekly review (e.g. Sun 18; empty to disable)</label><input id="s_weekly"></div>
+  </div>
+  <div class="card">
+    <h3>Notifications</h3>
+    <p>Get a push on this device when a code is needed, something needs your ok, or a task finishes, even with the chat closed.</p>
+    <div class="row"><button type="button" class="btnPri" id="pushOn">Enable on this device</button><button type="button" class="btn" id="pushOff" hidden>Turn off</button><span class="hint" id="pushMsg"></span></div>
+  </div>
+  <div class="card">
+    <h3>Standing orders</h3>
+    <p>Things the secretary does on its own, on a schedule or when they happen.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="soWhat" placeholder="Order the groceries from the list" style="flex:2;min-width:220px"><select id="soKind"><option value="weekly">Every week</option><option value="daily">Every day</option><option value="monthly">Every month</option><option value="event">When it happens</option></select><select id="soDay"><option>Sun</option><option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option><option>Fri</option><option>Sat</option></select><input id="soDom" type="number" min="1" max="28" value="1" style="width:64px" hidden><input id="soTime" type="time" value="09:00"><button type="button" class="btnPri" id="soAdd">Add</button></div>
+    <span class="hint" id="soMsg"></span>
+    <table><tbody id="soList"></tbody></table>
+  </div>
+  <div class="card">
+    <h3>Your data</h3>
+    <p>Everything the secretary knows about you is yours: export it as one file, or delete the account and all of it.</p>
+    <div class="row"><a class="btn" href="/api/account?export=1" download>Export everything</a><button type="button" class="btn" id="delAccount" style="color:#B3261E">Delete account…</button><span class="hint" id="delMsg"></span></div>
   </div>
   <div class="card">
     <h3>Google</h3>
@@ -419,8 +442,10 @@
   document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
   function showTab(name) {
     document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-    for (const id of ["home", "chats", "inbox", "settings", "logins", "billing"]) $(id).hidden = (id === "chats" ? "chat" : id) !== name;
+    for (const id of ["home", "chats", "tasks", "inbox", "settings", "logins", "billing"]) $(id).hidden = (id === "chats" ? "chat" : id) !== name;
     if (name === "logins") loadVault();
+    if (name === "tasks") loadTasks();
+    if (name === "settings") { loadOrders(); loadPushState(); }
     if (name === "home") loadHome();
     if (name === "inbox") loadDrafts();
     if (name === "chat") { setTimeout(() => $("text").focus(), 50); return loadHistory(); }
@@ -570,6 +595,86 @@
       loadBrowserSessions();
     } catch (e) { if (win) win.close(); $("siMsg").textContent = `Could not open the browser: ${e.message}`; }
   };
+  // ---- task board
+  async function loadTasks() {
+    const r = await api("/api/tasks"); if (!r.ok) return;
+    const { items: tks } = await r.json();
+    const box = $("taskList"); box.innerHTML = "";
+    const live = tks.filter((x) => x.status === "running" || x.status === "waiting").length;
+    $("tasksMeta").textContent = tks.length ? `${live} in progress · ${tks.length - live} finished in the last day` : "Nothing yet today.";
+    for (const x of tks) {
+      const el = document.createElement("div"); el.className = "item";
+      const state = x.status === "waiting" ? "waiting for you" : x.status === "running" ? "running" : x.status === "error" ? "error" : "done";
+      el.innerHTML = `<div class="k">${x.status === "running" ? "⏳" : x.status === "waiting" ? "✋" : x.status === "error" ? "⚠️" : "✅"}</div><div class="t"><b>${esc2(x.request || x.title || x.label)}</b><small>${esc2(x.label)} · ${esc2(state)} · ${esc2(agoText(x.updated_at))} · ${x.turns} steps · $${(x.cost_usd || 0).toFixed(2)}</small>${x.result ? `<div class="hint" style="margin-top:4px">${esc2(x.result)}</div>` : ""}<div class="row" style="margin-top:6px;gap:6px"><button type="button" class="btn" data-open="${esc2(x.id)}">Steps</button>${x.status === "running" || x.status === "waiting" ? `<button type="button" class="btn" data-stop="${esc2(x.id)}">Stop</button>` : ""}</div></div>`;
+      el.querySelector("[data-open]").onclick = () => openTask(x.id);
+      const st = el.querySelector("[data-stop]"); if (st) st.onclick = async () => { await stopSession(x.id); loadTasks(); };
+      box.appendChild(el);
+    }
+  }
+  async function openTask(id) {
+    const r = await api(`/api/tasks?id=${encodeURIComponent(id)}`); if (!r.ok) return;
+    const d = await r.json();
+    $("tdTitle").textContent = d.request || d.title || d.label; $("tdRequest").textContent = `${d.label} · ${d.status} · ${d.turns} steps · $${(d.cost_usd || 0).toFixed(2)} · ${d.model || ""}`; $("tdResult").textContent = d.result || "";
+    $("tdSteps").innerHTML = d.steps.map((s) => `<tr><td>${esc2(s.at ? fmtTime(s.at) : "")}</td><td>${esc2(s.tool)}</td><td class="hint">${esc2(s.args)}</td><td class="hint">${esc2(s.result)}</td></tr>`).join("") || `<tr><td colspan="4" class="hint">No tool steps; a plain reply.</td></tr>`;
+    $("taskDetail").hidden = false; $("taskDetail").scrollIntoView({ behavior: "smooth" });
+  }
+  $("tdClose").onclick = () => { $("taskDetail").hidden = true; };
+
+  // ---- standing orders
+  function soSchedule() {
+    const k = $("soKind").value, t = $("soTime").value || "09:00";
+    return k === "event" ? "event" : k === "daily" ? `daily ${t}` : k === "weekly" ? `weekly ${$("soDay").value} ${t}` : `monthly ${$("soDom").value} ${t}`;
+  }
+  $("soKind").onchange = () => { const k = $("soKind").value; $("soDay").hidden = k !== "weekly"; $("soDom").hidden = k !== "monthly"; $("soTime").hidden = k === "event"; };
+  async function loadOrders() {
+    const r = await api("/api/orders"); if (!r.ok) return;
+    const d = await r.json(); const tb = $("soList"); tb.innerHTML = "";
+    for (const o of d.scheduled) { const tr = document.createElement("tr"); tr.innerHTML = `<td>${esc2(o.what)}</td><td class="hint">${esc2(o.schedule)}${o.last_run ? ` · last ${esc2(String(o.last_run).slice(0, 10))}` : ""}</td><td><button type="button" class="btn">Remove</button></td>`; tr.querySelector("button").onclick = async () => { await api(`/api/orders?id=${o.id}`, { method: "DELETE" }); loadOrders(); }; tb.appendChild(tr); }
+    for (const line of d.when_it_happens) { const tr = document.createElement("tr"); tr.innerHTML = `<td>${esc2(line)}</td><td class="hint">when it happens</td><td><button type="button" class="btn">Remove</button></td>`; tr.querySelector("button").onclick = async () => { await api(`/api/orders?line=${encodeURIComponent(line)}`, { method: "DELETE" }); loadOrders(); }; tb.appendChild(tr); }
+    if (!tb.childElementCount) tb.innerHTML = `<tr><td class="hint">None yet. Try "Order the groceries from the list" every Sunday, or "Pay the water bill" when it happens.</td></tr>`;
+  }
+  $("soAdd").onclick = async () => {
+    const what = $("soWhat").value.trim(); if (!what) return;
+    const r = await api("/api/orders", { method: "POST", body: JSON.stringify({ what, schedule: soSchedule() }) });
+    $("soMsg").textContent = r.ok ? "Added." : (await r.json()).error || "Could not add";
+    if (r.ok) { $("soWhat").value = ""; loadOrders(); }
+  };
+
+  // ---- push notifications
+  async function loadPushState() {
+    try {
+      const r = await api("/api/push"); const d = await r.json();
+      if (!d.enabled) { $("pushOn").disabled = true; $("pushMsg").textContent = "Not set up on this server yet (VAPID keys)."; return; }
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) { $("pushOn").disabled = true; $("pushMsg").textContent = "This browser does not support push. On iPhone, add the app to the Home Screen first."; return; }
+      const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      $("pushOff").hidden = !sub; $("pushOn").hidden = !!sub; $("pushMsg").textContent = sub ? "On for this device." : "";
+    } catch {}
+  }
+  const b64 = (s) => { const p = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from([...raw].map((c) => c.charCodeAt(0))); };
+  $("pushOn").onclick = async () => {
+    try {
+      const d = await (await api("/api/push")).json();
+      const perm = await Notification.requestPermission(); if (perm !== "granted") { $("pushMsg").textContent = "Notifications were not allowed."; return; }
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(d.public_key) });
+      const r = await api("/api/push", { method: "POST", body: JSON.stringify({ subscription: sub.toJSON() }) });
+      $("pushMsg").textContent = r.ok ? "On for this device." : "Could not register."; loadPushState();
+    } catch (e) { $("pushMsg").textContent = `Could not enable: ${e.message}`; }
+  };
+  $("pushOff").onclick = async () => {
+    try { const reg = await navigator.serviceWorker.getRegistration("/sw.js"); const sub = reg && (await reg.pushManager.getSubscription()); if (sub) { await api("/api/push", { method: "DELETE", body: JSON.stringify({ endpoint: sub.endpoint }) }); await sub.unsubscribe(); } } catch {}
+    loadPushState();
+  };
+
+  // ---- delete account
+  $("delAccount").onclick = async () => {
+    const typed = prompt(`This deletes your account, memory, logins, tasks and history. Type your email address to confirm:`);
+    if (!typed) return;
+    const r = await api("/api/account", { method: "POST", body: JSON.stringify({ confirm: typed }) });
+    if (r.ok) { location.href = "/"; } else $("delMsg").textContent = (await r.json()).error || "Could not delete";
+  };
+
   async function loadBrowserSessions() {
     const box = $("bsList"); if (!box) return;
     try {

@@ -4,7 +4,7 @@ import { q } from "./db.js";
 import { env } from "./env.js";
 import { tools, toolsFor } from "./agent-config.js";
 import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
-import { appendTranscript } from "./memory.js";
+import { appendMemory, appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
 import { isQuickQuestion, modelFor, tierOfModel } from "./router.js";
 import { acquireLease, browserShared, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
@@ -257,6 +257,19 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   }
 }
 
+/** What went wrong and what would have prevented it, appended to history/failures.md for the morning review. */
+async function postMortem(t: Tenant, row: SessionRow, report: string): Promise<void> {
+  if (row.kind !== "chat" && row.kind !== "task") return;
+  const context = compacted(row.messages).slice(-14);
+  context.unshift({ role: "system", content: "You write a three-line post-mortem of a task that did not finish: (1) what was asked and where it stopped, (2) the real cause in one line (a site's bot check, a wrong route, a missing login, an expired code, a host limit), (3) the one concrete change that would have made it succeed (a URL to use, an order of steps, a setting for the user to add). Plain text, no headings." });
+  context.push({ role: "user", content: `(The task ended with this report to the user: "${report.slice(0, 400)}". Write the post-mortem now.)` });
+  const c = await complete({ model: modelFor("chat", t), messages: context, maxTokens: 300 });
+  const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
+  if (!text) return;
+  const sites = [...new Set([...row.messages.flatMap((m) => (typeof m.content === "string" ? m.content.match(/https?:\/\/([\w.-]+)/g) ?? [] : [])).map((u) => u.replace(/^https?:\/\//, "").replace(/^www\./, ""))])].slice(0, 3);
+  await appendMemory(t, "history/failures.md", `\n### ${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${(row.title ?? row.kind).slice(0, 80)}${sites.length ? ` · ${sites.join(", ")}` : ""}\n${text}\n`);
+}
+
 /** A provider failure in the user's words, not the provider's JSON. */
 function providerProblem(err: unknown): string {
   const status = err instanceof LLMError ? err.status : undefined;
@@ -318,7 +331,10 @@ async function wrapUp(t: Tenant, row: SessionRow, reason: string, fallback: stri
 
 /** The task ended for this turn: deliver the report on the right channel and mark idle. */
 async function finish(t: Tenant, row: SessionRow, persisted: number, report: string, status: "idle" | "error"): Promise<RunOutcome> {
-  const proactive = ["review", "weekly", "followup", "triage", "digest"].includes(row.kind);
+  const proactive = ["review", "weekly", "followup", "triage", "digest", "inbox"].includes(row.kind);
+  // A task the host had to stop, or that ended on a failure: a three-line post-mortem into memory,
+  // so the morning review can propose the one change that prevents it next time.
+  if (status === "error" || /\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200))) await postMortem(t, row, report).catch(() => {});
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
   // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
   // provider error) must be in it or the user sees nothing at all.

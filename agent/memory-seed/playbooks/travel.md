@@ -19,3 +19,6 @@ Data: profile.md (Travel, Work/PTO), calendar, contacts.md, 1Password for passpo
 
 ## PTO planning
 - "When should I take days off": lay holidays over the calendar, propose the combos that maximize consecutive days, draft the PTO request per profile.md, block the calendar, prepare an out-of-office draft, and update the PTO balance.
+
+## Bookings end to end
+- A booking is not done when a page is found: search against the user's stated preferences (times, airline, seat, neighborhood, price ceiling), compare two or three options in one message with a recommendation, hold or book on the yes (checkpoint for the money), then: confirmation number recorded (record_receipt), a reservation item with the date, a calendar.md line, a follow-up the day before (check-in, directions, a ride timed to traffic), and the confirmation email filed. Report all of it in two lines.

@@ -189,6 +189,15 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         await appendAssistantMessage(row, text.slice(0, 500), true);
         return { text: "Shown to the user. Continue the task; your final reply is still needed when it is done." };
       }
+      case "start_task": {
+        const text = s("text").trim();
+        if (!text) return { text: "Nothing to start; pass the request." };
+        const { startTaskSession } = await import("./chat.js");
+        const { kick } = await import("./runtime.js");
+        const started = await startTaskSession(t, text, row.kind === "chat" ? row : undefined);
+        await kick(started.id);
+        return { text: `Started as its own task (${started.id}): "${text.slice(0, 80)}". It reports into the chat when done; do not wait for it.` };
+      }
       case "escalate_model": {
         const next = nextTier(tierOfModel(row.model ?? "", t));
         if (!next) return { text: "You are already on the most capable model. Keep going with what you have, or tell the user where you are stuck." };

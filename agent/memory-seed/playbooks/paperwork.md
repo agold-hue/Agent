@@ -21,3 +21,6 @@ Tools: the browser for web forms and PDF viewers, `drive` (save_text for summari
 
 ## Learning and certifications
 - Required trainings, license renewals, and course deadlines are renewals too. Enroll when a signup opens, add sessions to the calendar, remind the night before, and file the certificate to Drive/Work when it arrives.
+
+## Deadline radar
+- Every expiry you see in a document or an email goes into renewals.md with a follow-up early enough to act: passports 9 months out, licenses and registrations 60 days, inspections 30 days, insurance renewals 30 days, warranties and return windows a week, trials 2 days, school and camp enrolment windows the day they open. The follow-up's note says what to do, not "remind".

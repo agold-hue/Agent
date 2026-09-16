@@ -50,3 +50,18 @@ test("attachments show as their file name, and task bubbles carry the task label
   assert.deepEqual(items.map((i) => ("text" in i ? i.text : "")), ["📎 bill.pdf", "📎 IMG_1.jpeg", "📎 old.docx", "🎤 pay it today", "Tracked: ConEd $142.17 due 9/20."]);
   assert.ok(items.every((i) => "task" in i && i.task === "Check my ConEd balance"));
 });
+
+import { scheduleMatches } from "../server/routes/cron.js";
+import { SCHEDULE } from "../server/routes/orders.js";
+
+test("standing-order schedules match the local clock", () => {
+  const clock = { day: "2026-09-20", weekday: "Sun", h: 18, m: 0 };
+  assert.ok(scheduleMatches("weekly Sun 18:00", clock));
+  assert.ok(scheduleMatches("daily 18:00", clock));
+  assert.ok(scheduleMatches("monthly 20 18:00", clock));
+  assert.ok(!scheduleMatches("weekly Mon 18:00", clock));
+  assert.ok(!scheduleMatches("daily 18:01", clock));
+  assert.ok(!scheduleMatches("monthly 21 18:00", clock));
+  for (const ok of ["daily 9:00", "weekly Sun 18:00", "monthly 20 09:00"]) assert.ok(SCHEDULE.test(ok), ok);
+  for (const bad of ["weekly Someday 18:00", "hourly", "monthly 40 09:00 extra"]) assert.ok(!SCHEDULE.test(bad), bad);
+});

@@ -406,7 +406,7 @@ export async function ownSession(userId: string, id: string): Promise<SessionRow
 
 export async function recentProactiveSessions(userId: string, limit = 10): Promise<SessionRow[]> {
   return q<SessionRow>(
-    "select * from agent_sessions where user_id = $1 and kind in ('review','weekly','followup','triage','digest','correspondence') and status in ('idle','terminated') order by created_at desc limit $2",
+    "select * from agent_sessions where user_id = $1 and kind in ('review','weekly','followup','triage','digest','correspondence','inbox') and status in ('idle','terminated') order by created_at desc limit $2",
     [userId, limit],
   );
 }

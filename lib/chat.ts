@@ -206,7 +206,7 @@ export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> 
   for (const s of await recentProactiveSessions(t.id, limit)) {
     const report = (s.last_report ?? "").trim();
     if (!report || /^NO_REPORT\b/.test(report)) continue;
-    const label = s.kind === "review" ? "Morning brief" : s.kind === "weekly" ? "Week ahead" : s.kind === "digest" ? "Heads-ups" : s.kind === "followup" ? "Follow-up" : s.kind === "triage" ? "From your mail" : s.correspondent ? `Reply from ${s.correspondent}` : "Heads-up";
+    const label = s.kind === "review" ? "Morning brief" : s.kind === "weekly" ? "Week ahead" : s.kind === "digest" ? "Heads-ups" : s.kind === "followup" ? "Follow-up" : s.kind === "triage" ? "From your mail" : s.kind === "inbox" ? "Inbox" : s.correspondent ? `Reply from ${s.correspondent}` : "Heads-up";
     out.push({ kind: "agent", id: `notice-${s.id}`, text: report, at: new Date(s.updated_at).toISOString(), notice: label });
   }
   return out;

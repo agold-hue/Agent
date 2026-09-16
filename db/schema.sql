@@ -215,4 +215,26 @@ alter table followups add column if not exists channel text not null default 'ch
 alter table agent_sessions add column if not exists parent_session_id text;
 -- One hosted browser per customer at a time; each session works in its own tab of it
 alter table agent_sessions add column if not exists browser_target_id text;
+
+-- Web-push subscriptions: "code needed", "needs your ok", "done" reach the phone when the chat is closed
+create table if not exists push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  endpoint text not null unique,
+  keys jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists push_subscriptions_user on push_subscriptions(user_id);
+
+-- Standing orders: a request the agent runs on a schedule ("every Sunday, order the groceries")
+create table if not exists standing_orders (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  what text not null,
+  schedule text not null,                     -- "daily 09:00" | "weekly Sun 18:00" | "monthly 20 09:00"
+  last_run date,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+create index if not exists standing_orders_user on standing_orders(user_id);
 create index if not exists agent_sessions_parent on agent_sessions(parent_session_id) where parent_session_id is not null;

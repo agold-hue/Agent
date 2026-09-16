@@ -2,6 +2,9 @@ import { q } from "./db.js";
 import { env } from "./env.js";
 import { sendAgentMail } from "./mail.js";
 import { updateSession, type SessionRow } from "./sessions.js";
+import { pushToUser } from "./push.js";
+import { isQuickQuestion } from "./router.js";
+import { taskUserText } from "./sessions.js";
 import { localClock } from "./transcript.js";
 import type { Tenant } from "./tenant.js";
 
@@ -12,6 +15,9 @@ import type { Tenant } from "./tenant.js";
  *   answer back to this session.
  */
 export async function notifyOwner(t: Tenant, row: SessionRow, body: string, subjectHint?: string): Promise<void> {
+  // The phone hears about a code, an approval, a question, and a finished task; not a one-line chat reply.
+  const worth = !!subjectHint || row.kind !== "chat" || !isQuickQuestion(taskUserText(row.messages));
+  if (worth) await pushToUser(t, { title: subjectHint ?? (row.kind === "chat" ? "Done" : row.title ?? "Update"), body, tag: row.id }).catch(() => {});
   if (row.channel !== "email") return; // chat reads agent messages and proactive reports from the history endpoint
   if (!env.mail.configured()) return; // no mail on this server: the chat notice is the delivery
   const subject = row.email_subject ? (/^re:/i.test(row.email_subject) ? row.email_subject : `Re: ${row.email_subject}`) : subjectHint ?? "Update from your assistant";
