@@ -155,3 +155,39 @@ test("stripCitations: link trails, markers and source blocks go; the words stay;
   assert.equal(stripCitations("Here: https://a.com/form", "send me the link"), "Here: https://a.com/form");
   assert.equal(stripCitations("Paid $84.20 on 9/2.", "pay the bill"), "Paid $84.20 on 9/2.");
 });
+
+import { calm } from "../lib/runtime.js";
+import { reactionFor } from "../lib/reaction.js";
+import { isStableFactQuestion } from "../lib/research.js";
+test("calm: exclamation marks become periods outside quotes", () => {
+  assert.equal(calm("President Donald Trump was born on June 14, 1946!"), "President Donald Trump was born on June 14, 1946.");
+  assert.equal(calm("Done!! Paid $84.20."), "Done. Paid $84.20.");
+  assert.equal(calm('Draft: "Congrats on the new place!" Want me to send it?'), 'Draft: "Congrats on the new place!" Want me to send it?');
+  assert.equal(calm("Really!?"), "Really?");
+});
+
+test("reactions: a heart for thanks, a thumb for yes, nothing for questions, codes or complaints, and 'seen' only sometimes", () => {
+  assert.equal(reactionFor("Thanks!"), "❤️");
+  assert.equal(reactionFor("thank you so much", ["❤️"]), "🙌");
+  assert.equal(reactionFor("yes do it"), "👍");
+  assert.equal(reactionFor("What's president trump's birthday?"), undefined);
+  assert.equal(reactionFor("482913"), undefined);
+  assert.equal(reactionFor("why didn't you pay the bill"), undefined);
+  assert.equal(reactionFor("I'm very tired"), "❤️");
+  assert.equal(reactionFor("lol that's perfect"), "❤️", "thanks-like praise wins over the laugh");
+  assert.equal(reactionFor("haha ok"), "😂", "a laugh gets a laugh");
+  const requests = Array.from({ length: 40 }, (_, i) => `pay the con ed bill number ${i}`);
+  const seen = requests.filter((r) => reactionFor(r) === "👍").length;
+  assert.ok(seen > 5 && seen < 25, `seen ${seen} of 40`);
+  assert.equal(reactionFor("order more paper towels please", ["👍", "👍"]), undefined, "never three in a row");
+  for (const r of requests) assert.ok(reactionFor(r) === reactionFor(r), "deterministic");
+});
+
+test("stable facts skip the search; anything that moves does not", () => {
+  assert.ok(isStableFactQuestion("what's president trump's birthday?"));
+  assert.ok(isStableFactQuestion("what is the capital of Australia"));
+  assert.ok(isStableFactQuestion("how many ounces in a gallon"));
+  assert.ok(!isStableFactQuestion("what time does Costco close today"));
+  assert.ok(!isStableFactQuestion("how much is a Metro-North ticket to White Plains"));
+  assert.ok(!isStableFactQuestion("who is the current mayor of New York"));
+});

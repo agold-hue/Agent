@@ -90,10 +90,20 @@ export async function runResearchTool(t: Tenant, row: SessionRow, name: string, 
 
 const LOOKUP_SYSTEM = [
   "You answer one factual question from the web sources given, for a busy person on their phone.",
-  "Two or three short lines at most, plain words: the fact or figure first. No URLs, no [n] markers, no 'source:' tags; name the source in words only when it carries weight ('per the USPS site').",
+  "A simple fact (a date, a number, a name, a place) is the whole reply, with a period: 'June 14, 1946.' Never wrap it in a sentence that repeats the question, never an exclamation mark.",
+  "Otherwise two or three short lines at most, plain words: the fact or figure first. No URLs, no [n] markers, no 'source:' tags; name the source in words only when it carries weight ('per the USPS site').",
   "Prefer the newest and most official source; if the sources disagree, say so in half a line and give the better-supported one.",
   "Never invent a figure, a phone number, an address or an hour. If the sources do not contain the answer, or only an unreliable one, reply exactly: NEED_MORE",
 ].join(" ");
+
+/** Questions whose answer moves: never answered from memory, always from a fresh read. */
+const TIME_SENSITIVE_Q = /\b(price|prices|cost|costs|fee|fees|rate|rates|hours|open|opens|close|closes|closed|today|tonight|tomorrow|now|right now|currently|latest|newest|recent|news|score|scores|weather|forecast|schedule|available|availability|in stock|stock|deadline|due|this (week|month|year)|20[2-9]\d|who is the (current|new)|how much is|how much does|how much are|how long (is|does) the wait)\b/i;
+
+/** A stable, well-known fact (a birthday, a capital, a conversion, a historical date) the fast model can state without a search. */
+export function isStableFactQuestion(question: string): boolean {
+  const q = question.replace(/^\[[^\]]+\]\n/, "").trim();
+  return !TIME_SENSITIVE_Q.test(q) && /\b(birthday|born|die|died|death|capital|population|founded|invented|wrote|author|director|president|height|tall|long|wide|deep|distance|far|boiling|freezing|speed of|how many (ounces|feet|inches|grams|cups|miles|kilometers|days|weeks|players)|what year|when (did|was)|who (was|wrote|invented|founded|directed|painted)|meaning of|definition|convert|in (celsius|fahrenheit|miles|kilometers|inches|feet|pounds|kilograms)|area code|zip code|country code|abbreviation|stands for)\b/i.test(q);
+}
 
 export interface LookupResult {
   /** The reply, or undefined when the sources did not answer it (the caller falls back to the full loop). */
@@ -118,6 +128,28 @@ export async function lookupAnswer(question: string, opts: { locale: Locale; mod
     if (opts.charge) await opts.charge(c);
   };
   const cleaned = question.replace(/^\[[^\]]+\]\n/, "").replace(/^(can you |could you |please )?(tell me|find out|look up|check)\s*[,:]?\s*/i, "").trim();
+  // A stable, well-known fact does not need the web: one tiny call, and the search only if the model is not certain.
+  if (isStableFactQuestion(cleaned)) {
+    try {
+      const c = await complete({
+        model: opts.model,
+        temperature: 0,
+        maxTokens: 60,
+        messages: [
+          { role: "system", content: "If the question is a stable, well-known fact you are certain of (a date, a name, a number, a place, a conversion), reply with just the fact and a period, e.g. 'June 14, 1946.' or 'Canberra.' No sentence around it, no exclamation mark. If it depends on the current date, recent events, prices or availability, or you are not certain, reply exactly: UNSURE" },
+          { role: "user", content: cleaned },
+        ],
+      });
+      await charge(c);
+      const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
+      if (text && !/^UNSURE\b/i.test(text) && text.length <= 160) {
+        const empty: SearchOutcome = { queries: [cleaned], hits: [], pages: [], engine: "memory", ms: Date.now() - started, cached: false, errors: [] };
+        return { answer: text.replace(/!+$/, "."), outcome: empty, formatted: "", costCents: cost, ms: Date.now() - started };
+      }
+    } catch {
+      /* fall through to the search */
+    }
+  }
   const outcome = await searchWeb({ queries: [cleaned], locale: opts.locale, readTop: opts.readTop ?? 3, focus: cleaned, charge, condenseModel: opts.model });
   const formatted = formatSearch(outcome, { used: outcome.pages.length, limit: FETCH_BUDGET });
   if (!outcome.hits.length) return { outcome, formatted, costCents: cost, ms: Date.now() - started };

@@ -250,7 +250,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       if (!calls.length) {
         // The reply is what the user reads: drop the closing filler chat models add, and the links and
         // reference markers a search-shaped answer drags along (unless the user asked for links).
-        if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(stripCitations(completion.message.content, taskUserText(row.messages)));
+        if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(calm(stripCitations(completion.message.content, taskUserText(row.messages))));
         const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
         const nudge = stallNudge(row, text);
         if (nudge) {
@@ -746,6 +746,28 @@ async function siteNotesMissing(t: Tenant, messages: ChatMessage[]): Promise<str
 function hasHostNotePrefix(messages: ChatMessage[], prefix: string): boolean {
   for (let i = messages.length - 1; i >= taskStart(messages); i--) if (messages[i].role === "user" && messageText(messages[i]).startsWith(prefix)) return true;
   return false;
+}
+
+/**
+ * The voice rule "no exclamation marks", enforced: a reply's sentence-ending "!" becomes "." unless it
+ * sits inside quotation marks (a draft the user will send, a name). "!?" keeps the question mark.
+ */
+export function calm(text: string): string {
+  let inQuote = false;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' || ch === "“" || ch === "”") inQuote = ch === '"' ? !inQuote : ch === "“";
+    if (ch === "!" && !inQuote) {
+      const next = text[i + 1] ?? "";
+      if (next === "?") continue; // "!?" -> "?"
+      if (out.endsWith(".") || out.endsWith("!")) continue; // "!!" collapses
+      out += ".";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 /** Whether the user asked for links or sources themselves, in which case they stay. */

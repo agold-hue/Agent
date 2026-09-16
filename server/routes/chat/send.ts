@@ -22,7 +22,7 @@ import type { Tenant } from "../../../lib/tenant.js";
  * tool result), and anything else they say while a code is pending ("didn't get one, resend it")
  * shows as is.
  */
-async function echoAnswer(session: SessionRow, text: string, reaction: string, quote?: MessageQuote): Promise<void> {
+async function echoAnswer(session: SessionRow, text: string, reaction: string | undefined, quote?: MessageQuote): Promise<void> {
   const awaitingCode = session.messages.some((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === session.pending_event_id && c.function.name === "request_code"));
   const shown = awaitingCode && codeIn(text) ? text.replace(/\d(?:[\d\s-]*\d)?/g, (d) => "•".repeat(d.replace(/\D/g, "").length)) : text;
   await appendUserEcho(session, shown, reaction, quote);
