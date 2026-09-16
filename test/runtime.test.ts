@@ -157,13 +157,22 @@ test("stripCitations: link trails, markers and source blocks go; the words stay;
 });
 
 import { calm } from "../lib/runtime.js";
-import { reactionFor } from "../lib/reaction.js";
+import { isPleasantryCloser, reactionFor } from "../lib/reaction.js";
 import { isStableFactQuestion } from "../lib/research.js";
 test("calm: exclamation marks become periods outside quotes", () => {
   assert.equal(calm("President Donald Trump was born on June 14, 1946!"), "President Donald Trump was born on June 14, 1946.");
   assert.equal(calm("Done!! Paid $84.20."), "Done. Paid $84.20.");
   assert.equal(calm('Draft: "Congrats on the new place!" Want me to send it?'), 'Draft: "Congrats on the new place!" Want me to send it?');
   assert.equal(calm("Really!?"), "Really?");
+});
+
+test("isPleasantryCloser: a bare thanks/praise/ack is a closer; a request or a longer line is not", () => {
+  for (const y of ["thanks", "Thanks!", "thank you so much", "thank you", "thx", "ty", "perfect", "got it", "cheers", "🙏", "👍", "❤️", "no worries", "ok thanks", "appreciate it", "great job", "will do", "noted", "sounds good", "thanks a lot", "thanks again", "[2026-09-15 Tue 03:10 America/New_York via chat]\nthanks"]) {
+    assert.ok(isPleasantryCloser(y), y);
+  }
+  for (const n of ["thanks, now book the table", "great, order it", "can you check my bill", "what time is it", "yes", "no", "order milk", "thanks for booking the flight tomorrow please", "thank you for checking my con ed bill now"]) {
+    assert.ok(!isPleasantryCloser(n), n);
+  }
 });
 
 test("reactions: a heart for thanks, a thumb for yes, nothing for questions, codes or complaints, and 'seen' only sometimes", () => {

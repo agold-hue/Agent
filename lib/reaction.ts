@@ -25,6 +25,19 @@ function hash(s: string): number {
 }
 
 /**
+ * A message that is only a pleasantry closing the exchange: "thanks", "perfect", "got it", a lone
+ * 🙏. Pete reacts with an emoji and says nothing back, the way a person taps a heart on "thanks"
+ * instead of typing "you're welcome". Anything longer, or carrying a request, is not a closer.
+ */
+const CLOSER = /^(thank(s| you| u)?( so much| very much| a lot| a ton| again| a bunch)*|thx|tysm|tyvm|ty|ta|cheers|much appreciated|(i )?(really )?appreciate (it|you|that|this)|appreciated|perfect|great|awesome|amazing|wonderful|fantastic|excellent|brilliant|lovely|nice|cool|sweet|neat|(you'?re )?(the )?best|you rock|great (job|work)|(good|nice) (job|work|stuff)|well done|got it|gotcha|understood|noted|makes sense|sounds good|will do|ok(ay)? (thanks|cool|great|perfect)|no worries|np)[\s.!,\u2764\ud83d\ude4f\ud83d\udc4d\ud83d\ude4c\ud83d\ude0a\ud83c\udf89\ud83d\udc4f\ud83d\udcaf\ud83d\udd25\ud83d\ude0d\ud83e\udd70]*$/iu;
+export function isPleasantryCloser(text: string): boolean {
+  const t = text.replace(/^\[[^\]]*\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
+  if (!t || t.length > 40) return false;
+  if (/^[\s\ud83d\udc4d\ud83d\ude4f\u2764\ufe0f\ud83d\ude4c\ud83d\ude0a\ud83c\udf89\ud83d\udc4f\ud83d\udcaf\ud83d\udd25\ud83d\ude0d\ud83e\udd70\ud83d\udc4c]+$/u.test(t)) return true;
+  return CLOSER.test(t);
+}
+
+/**
  * The reaction for a message, or nothing. `recent` is the reactions on the last few user messages;
  * two thumbs in a row are fine, three in a row are not, so a run of requests is not a wall of 👍.
  */

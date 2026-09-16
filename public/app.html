@@ -825,6 +825,9 @@
   const DRAWER = ["😀","😂","🙂","😉","😍","🤔","😅","😢","😡","🙏","👍","👎","👏","🙌","🤝","💪","❤️","🔥","✨","🎉","✅","❌","⏰","📅","📦","💵","🛒","✉️","🔐","🔍","📞","🏠","🚗","✈️","☕","🍕"];
   const SMART = ["Thanks!", "Yes, do it", "What's today?"];
   let items = [], status = "none", pending = null, tasks = [], replyTo = null, findQuery = "", behind = 0, chips = [];
+  // composing: Pete is actually writing the reply now (a draft is streaming), the only time the typing
+  // dots show. tickTimer flips a sent message to the blue read tick 4s after it was posted.
+  let composing = false, tickTimer = null;
   // Models write **bold** and "# headings" out of habit: render the bold, make a heading a bold line, escape everything else.
   function lightMarkdown(text) {
     const safe = esc(String(text || "")).replace(/^#{1,3}\s+(.+)$/gm, "<strong>$1</strong>").replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
@@ -987,10 +990,21 @@
       const author = item.kind === "user" ? "me" : "agent";
       const at = new Date(item.at).getTime();
       const tail = !(author === lastAuthor && at - lastAt < 5 * 60 * 1000) || item.kind === "tool";
-      frag.appendChild(row(item, tail, item.kind === "user" && idx < lastReplyIdx));
+      const read = item.kind === "user" && (idx < lastReplyIdx || (!item.id.startsWith("tmp-") && Date.now() - at >= 4000));
+      frag.appendChild(row(item, tail, read));
       lastAuthor = author; lastAt = at;
     });
-    if (status === "running" && !items.some((i) => i.id === "draft") && !q) {
+    // A sent message turns blue (read) 4s after it was posted, even before Pete replies: schedule the
+    // one re-render that flips the soonest pending message.
+    if (tickTimer) { clearTimeout(tickTimer); tickTimer = null; }
+    let nextTick = Infinity;
+    shown.forEach((item, idx) => {
+      if (item.kind !== "user" || item.id.startsWith("tmp-") || idx < lastReplyIdx) return;
+      const rem = 4000 - (Date.now() - new Date(item.at).getTime());
+      if (rem > 0) nextTick = Math.min(nextTick, rem);
+    });
+    if (nextTick !== Infinity && nextTick < 60000) tickTimer = setTimeout(() => renderList(false), nextTick + 50);
+    if (status === "running" && composing && !q) {
       const t = document.createElement("div"); t.className = "m in tail typing"; t.innerHTML = `<div class="b"><span class="dots"><i></i><i></i><i></i></span></div><button type="button" class="stopLink" id="stopMain">stop</button>`;
       t.querySelector("#stopMain").onclick = () => stopSession(sessionId);
       frag.appendChild(t);
@@ -1025,7 +1039,7 @@
     const el = $("roomSub");
     const running = tasks.filter((t) => t.status === "running").length;
     let text = "online", live = false;
-    if (status === "running") { text = "typing…"; live = true; }
+    if (status === "running") { text = composing ? "typing…" : "working…"; live = true; }
     else if (pending) { text = "waiting for you"; live = true; }
     else if (status === "none") text = "online";
     if (running) text += ` · ${running} task${running === 1 ? "" : "s"} running`;
@@ -1048,7 +1062,7 @@
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
     sessionId = data.session_id; status = data.status; pending = data.pending; tasks = data.tasks || [];
     if (Array.isArray(data.chips)) chips = data.chips;
-    if (data.draft && status === "running") items.push({ kind: "agent", id: "draft", text: data.draft, at: new Date().toISOString() });
+    composing = !!(data.draft && data.status === "running");
     renderTasks();
     const nowAgent = nonUser();
     const wasNear = nearBottom();
@@ -1102,10 +1116,18 @@
       const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text, ...(quote ? { reply_to: quote } : {}) }) });
       const data = await r.json();
       if (!r.ok) { it.text += `\n(${data.error || "failed"})`; renderList(false); if (r.status === 402) showTab("billing"); return; }
-      if (data.reaction) { it.reaction = data.reaction; renderList(false); }
-      sessionId = data.session_id; status = "running"; updateSub(); renderList(false); renderRooms();
-      if (data.ack) loadHistory().catch(() => {});
-      openStream();
+      if (data.reaction) it.reaction = data.reaction;
+      sessionId = data.session_id;
+      if (data.action === "reacted") {
+        // Pete just reacted with an emoji; no typed reply is coming. Reconcile with the server so the
+        // stored message, its reaction and the 4s read tick show, without a typing indicator.
+        status = data.status || "idle"; composing = false; renderList(false); renderRooms(); updateSub();
+        loadHistory().catch(() => {});
+      } else {
+        status = "running"; updateSub(); renderList(false); renderRooms();
+        if (data.ack) loadHistory().catch(() => {});
+        openStream();
+      }
     } catch (e) { it.text += "\n(failed to send)"; renderList(false); }
     finally { $("send").disabled = false; if (window.matchMedia("(hover:hover)").matches) $("text").focus(); }
   }

@@ -153,9 +153,26 @@ export function ensureDomGlobals(): void {
   }
 }
 
+/**
+ * pdf.js in Node runs its parser in a "fake worker" that it loads with a dynamic import on a
+ * variable path (GlobalWorkerOptions.workerSrc). Vercel's bundler cannot trace that import, so
+ * pdf.worker.mjs is absent at runtime and every PDF fails with "Setting up fake worker failed:
+ * Cannot find module .../pdf.worker.mjs". Importing the worker here with a literal path makes the
+ * bundler include it, and the worker module's body sets globalThis.pdfjsWorker, which pdf.js reads
+ * (#mainThreadWorkerMessageHandler) to run on the main thread instead of the untraceable import.
+ */
+let pdfWorkerReady: Promise<void> | undefined;
+export function ensurePdfWorker(): Promise<void> {
+  return (pdfWorkerReady ??= (async () => {
+    ensureDomGlobals();
+    if (!(globalThis as { pdfjsWorker?: unknown }).pdfjsWorker) await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+  })());
+}
+
 /** Every page's text from a PDF's text layer; empty strings for pages with none. */
 export async function extractPdfPages(content: Buffer): Promise<{ pages: string[]; numPages: number }> {
   ensureDomGlobals();
+  await ensurePdfWorker();
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const doc = await pdfjs.getDocument({ data: new Uint8Array(content), useSystemFonts: true }).promise;
   const pages: string[] = [];
