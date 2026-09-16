@@ -28,7 +28,7 @@ export function autoApprove(t: Tenant, input: CheckpointInput): { ok: boolean; r
  * Only short messages count: a long sentence with a number in it is not a code.
  */
 export function codeIn(text: string): string | undefined {
-  const t = text.trim().replace(/^\[[^\]]+\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "");
+  const t = text.trim().replace(/^\[[^\]]+\]\n/, "").replace(/^Re: (?:(?:my|your) message )?"[^\n]*"\s*\n/, "").trim();
   if (t.length > 80) return undefined;
   // "905168", "code is 905168", "it's 12 34 56", "8442 is my email code", "the text code: 4471"
   const all = [...t.matchAll(/\d[\d\s-]*\d|\d/g)].map((m) => m[0].replace(/\D/g, ""));

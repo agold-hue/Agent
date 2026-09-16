@@ -134,7 +134,8 @@ export function toChatItems(row: SessionRow): ChatItem[] {
         } catch {
           /* ignore */
         }
-        items.push({ kind: "tool", id: tc.id, name: tc.function.name, input, at, resolved: answered.has(tc.id) });
+        // The id carries the session, so a reply to this card is routed back to it.
+        items.push({ kind: "tool", id: `${row.id}-${i}t${tc.id.replace(/[^\w-]/g, "")}`, name: tc.function.name, input, at, resolved: answered.has(tc.id) });
       }
     }
   });

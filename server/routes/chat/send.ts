@@ -40,12 +40,16 @@ function quoteOf(body: unknown): MessageQuote | undefined {
 async function route(t: Tenant, main: SessionRow | undefined, text: string, quote: MessageQuote | undefined): Promise<{ target: SessionRow | undefined; spawn: boolean; text: string }> {
   const tasks = await activeTaskSessions(t.id);
   if (quote) {
-    const id = quote.id.replace(/-\d+$/, "");
+    // Bubble ids are "<session>-<index>", cards "<session>-<index>t<call>".
+    const id = quote.id.replace(/-\d+(t[\w-]*)?$/, "");
     const quoted = id === main?.id ? main : (tasks.find((s) => s.id === id) ?? (await ownSession(t.id, id)));
-    if (quoted && quoted.status !== "terminated" && quoted.kind === "task") return { target: quoted, spawn: false, text };
+    // A reply to a task's bubble, or to any session's waiting card, goes to that session and never spawns.
+    if (quoted && quoted.status !== "terminated" && (quoted.kind === "task" || quoted.pending_kind)) return { target: quoted, spawn: false, text };
   }
   const waiting = [main, ...tasks].filter((s): s is SessionRow => !!s?.pending_kind);
   if (waiting.length === 1 && looksLikeAnswer(text)) return { target: waiting[0], spawn: false, text };
+  // A code never starts a task: it belongs to whatever is signing in (the thread, when nothing waits).
+  if (codeIn(text)) return { target: main, spawn: false, text };
   const explicit = PARALLEL_PREFIX.test(text);
   const busy = !!main && (main.status === "running" || !!main.pending_kind);
   if (main && (explicit || (busy && isSeparateTask(text, quote))) && tasks.length < PARALLEL_TASKS) {

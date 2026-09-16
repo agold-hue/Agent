@@ -14,6 +14,7 @@ test("a fresh request while the thread is busy runs as its own task; steers and 
   assert.ok(!isSeparateTask("what's the status on the bill"));
   assert.ok(!isSeparateTask("Hmmm"));
   assert.ok(!isSeparateTask("905168"));
+  assert.ok(!isSeparateTask('Re: "Uber texted another code to your phone to view ride prices. Send it here."\n3054'));
   assert.ok(!isSeparateTask("pay it", undefined)); // too short to be a separate task
   assert.ok(!isSeparateTask("pay the ConEd bill", { id: "s_1-2", who: "agent", text: "Balance is $142" })); // a reply stays in its thread
   assert.ok(PARALLEL_PREFIX.test("also: book the dentist"));

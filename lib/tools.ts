@@ -11,7 +11,7 @@ import { appendMemory, deleteMemory, grepMemory, listMemory, readMemory, writeMe
 import { notifyOwner } from "./notify.js";
 import { autoApprove, codeHint, codeIn, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
 import { modelFor, nextTier, tierOfModel } from "./router.js";
-import { appendAssistantMessage, appendToolResult, updateSession, type SessionRow } from "./sessions.js";
+import { appendAssistantMessage, appendToolResult, taskStart, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
 export interface SendEmailInput {
@@ -223,7 +223,11 @@ export async function resolvePending(t: Tenant, row: SessionRow, userText: strin
     }
   } else {
     const code = codeIn(userText);
-    text = `The user answered:\n\n${userText}${code ? `\n\n${codeHint(code)}` : ""}`;
+    // How many codes this task has already asked for: past two, the browser is being lost between
+    // codes (navigation, reload, a second browser), not the code.
+    const asked = row.messages.slice(taskStart(row.messages)).filter((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.function.name === "request_code")).length;
+    const warn = code && asked >= 2 ? ` This is code #${asked} in this task: enter it with login(domain, code) as the very next call, without reloading, navigating, opening a new tab or taking a screenshot first. Do not ask for another code unless the site says this one is invalid; if the site keeps asking, the session is being lost, so tell the user in one line rather than request again.` : "";
+    text = `The user answered:\n\n${userText}${code ? `\n\n${codeHint(code)}${warn}` : ""}`;
   }
   await appendToolResult(row, row.pending_event_id, text);
 }
