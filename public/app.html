@@ -945,6 +945,8 @@
     items = items.filter((it, i) => !(i > 0 && it.kind === "agent" && items[i - 1].kind === "agent" && items[i - 1].text === it.text && Math.abs(new Date(it.at) - new Date(items[i - 1].at)) < 60_000));
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
     sessionId = data.session_id; status = data.status; pending = data.pending; liveViewUrl = data.live_view_url || null; tasks = data.tasks || [];
+    // The reply being written: shown as a live bubble at the end until the real one lands.
+    if (data.draft && status === "running") items.push({ kind: "agent", id: "draft", text: data.draft, at: new Date().toISOString() });
     renderTasks();
     const nowAgent = items.filter((i) => i.kind !== "user").length;
     const wasNear = nearBottom();
@@ -970,7 +972,7 @@
       const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion)); if (!r.ok) return;
       applyHistory(await r.json());
       if (status !== "running" && !tasks.some((t) => t.status === "running")) { clearInterval(pollTimer); pollTimer = null; }
-    }, 2500);
+    }, 1200);
   }
   function optimistic(text, reaction, quote) {
     const it = { kind: "user", id: "tmp-" + Date.now(), text, at: new Date().toISOString(), reaction, ...(quote ? { quote } : {}) };

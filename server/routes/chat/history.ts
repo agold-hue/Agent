@@ -10,7 +10,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const t = await requireTenant(req, res);
   if (!t) return;
   // Cheap poll: the page sends the fingerprint it last saw; nothing changed means a tiny reply.
-  const fp = await one<{ v: string }>("select coalesce(max(updated_at)::text, '') || ':' || count(*)::text || ':' || coalesce(sum(case when status in ('running','waiting') then 1 else 0 end), 0)::text as v from agent_sessions where user_id = $1", [t.id]);
+  const fp = await one<{ v: string }>("select coalesce(max(updated_at)::text, '') || ':' || count(*)::text || ':' || coalesce(sum(case when status in ('running','waiting') then 1 else 0 end), 0)::text || ':' || coalesce(sum(length(draft)), 0)::text as v from agent_sessions where user_id = $1", [t.id]);
   const version = fp?.v ?? "";
   if (typeof req.query.v === "string" && req.query.v === version) {
     res.setHeader("Cache-Control", "no-store");
@@ -24,5 +24,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Notices (reminders, briefs, heads-ups) slot into the timeline by time, so the page reads as one conversation.
   const merged = [...items, ...notices.filter((n) => new Date(n.at).getTime() > floor)].sort((a, b) => (a.kind === "status" ? 1 : b.kind === "status" ? -1 : new Date(a.at).getTime() - new Date(b.at).getTime()));
   res.setHeader("Cache-Control", "no-store");
-  return res.status(200).json({ version, session_id: session?.id ?? null, status: session?.status ?? "none", pending: session?.pending_kind ?? null, activity: activityOf(session), live_view_url: liveView, tasks, items: merged });
+  return res.status(200).json({ version, session_id: session?.id ?? null, status: session?.status ?? "none", pending: session?.pending_kind ?? null, activity: activityOf(session), draft: session?.status === "running" ? session.draft ?? null : null, live_view_url: liveView, tasks, items: merged });
 }

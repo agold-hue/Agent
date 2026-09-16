@@ -32,6 +32,8 @@ export interface SessionRow {
   parent_session_id?: string | null;
   /** The tab (CDP target) this session drives in the customer's shared hosted browser. */
   browser_target_id?: string | null;
+  /** The reply being written right now, shown by the page as it streams; cleared when the turn ends. */
+  draft?: string | null;
   model: string | null;
   messages: ChatMessage[];
   turns: number;

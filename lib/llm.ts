@@ -209,6 +209,8 @@ export async function complete(opts: {
   tools?: ToolDef[];
   /** "none" forces a plain text reply (a wrap-up); tools stay in the request because Anthropic requires them when the history has tool calls. */
   toolChoice?: "auto" | "none";
+  /** Called with the reply text so far as it streams, so the page can show it before the completion ends. */
+  onText?: (text: string) => void;
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
@@ -258,6 +260,10 @@ export async function complete(opts: {
     // rate-limited, or rejects the request. OpenRouter caps this array at OPENROUTER_MODELS_CAP, so
     // keep the primary, one real alternative, and openrouter/auto (a catch-all) when there is one.
     if (ids.length > 1) body.models = capModels(ids.map((id) => resolveModel(id).model));
+  }
+  if (opts.onText) {
+    body.stream = true;
+    body.stream_options = { include_usage: true };
   }
   const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` };
   if (isOpenRouter()) {
@@ -341,12 +347,11 @@ export async function complete(opts: {
       console.error(`[llm] ${model}: ${res.status} ${text.slice(0, 300)}`);
       throw new LLMError(`${res.status} ${text}`.slice(0, 1000), res.status, false);
     }
-    const data = (await res.json()) as {
-      model?: string;
-      choices?: Array<{ message: ChatMessage; finish_reason?: string }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number; prompt_tokens_details?: { cached_tokens?: number }; cache_read_input_tokens?: number };
-      error?: { message?: string };
-    };
+    const data = opts.onText
+      ? await readStream(res, opts.onText).catch((e: unknown) => {
+          throw new LLMError(`stream failed: ${e instanceof Error ? e.message : String(e)}`, 200, true);
+        })
+      : ((await res.json()) as StreamedResult);
     if (data.error) throw new LLMError(data.error.message ?? "provider error", 200, false);
     const choice = data.choices?.[0];
     if (!choice) throw new LLMError("empty completion", 200, true);
@@ -371,6 +376,77 @@ export async function complete(opts: {
     };
   }
   throw lastErr ?? new LLMError("llm failed", undefined, true);
+}
+
+type StreamedResult = {
+  model?: string;
+  choices?: Array<{ message: ChatMessage; finish_reason?: string }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number; prompt_tokens_details?: { cached_tokens?: number }; cache_read_input_tokens?: number };
+  error?: { message?: string };
+};
+
+/**
+ * Assemble a streamed chat completion (SSE "data:" chunks) into the same shape as a plain one,
+ * calling `onText` with the reply so far as text arrives. Tool-call fragments are merged by index.
+ */
+export async function readStream(res: Response, onText: (text: string) => void): Promise<StreamedResult> {
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("no body");
+  const decoder = new TextDecoder();
+  let buf = "";
+  let text = "";
+  let model: string | undefined;
+  let finish: string | undefined;
+  let usage: StreamedResult["usage"];
+  let error: string | undefined;
+  const calls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
+  let lastEmit = 0;
+  const handle = (line: string) => {
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    let j: { model?: string; choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>; usage?: StreamedResult["usage"]; error?: { message?: string } };
+    try {
+      j = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    if (j.error?.message) error = j.error.message;
+    if (j.model) model = j.model;
+    if (j.usage) usage = j.usage;
+    const c = j.choices?.[0];
+    if (!c) return;
+    if (c.finish_reason) finish = c.finish_reason;
+    if (typeof c.delta?.content === "string" && c.delta.content) {
+      text += c.delta.content;
+      if (Date.now() - lastEmit > 400) {
+        lastEmit = Date.now();
+        onText(text);
+      }
+    }
+    for (const tc of c.delta?.tool_calls ?? []) {
+      const i = tc.index ?? calls.length;
+      calls[i] ??= { id: tc.id ?? `call_${Math.random().toString(36).slice(2, 10)}`, type: "function", function: { name: "", arguments: "" } };
+      if (tc.id) calls[i].id = tc.id;
+      if (tc.function?.name) calls[i].function.name += tc.function.name;
+      if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      handle(buf.slice(0, nl).trim());
+      buf = buf.slice(nl + 1);
+    }
+  }
+  if (buf.trim()) handle(buf.trim());
+  if (error) return { error: { message: error } };
+  if (text) onText(text);
+  const tool_calls = calls.filter(Boolean);
+  return { model, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? "stop" }] };
 }
 
 // ---------------------------------------------------------------- Model catalog

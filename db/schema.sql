@@ -216,6 +216,9 @@ alter table agent_sessions add column if not exists parent_session_id text;
 -- One hosted browser per customer at a time; each session works in its own tab of it
 alter table agent_sessions add column if not exists browser_target_id text;
 
+-- The reply being written right now, streamed to the page while the model is still talking
+alter table agent_sessions add column if not exists draft text;
+
 -- Web-push subscriptions: "code needed", "needs your ok", "done" reach the phone when the chat is closed
 create table if not exists push_subscriptions (
   id uuid primary key default gen_random_uuid(),

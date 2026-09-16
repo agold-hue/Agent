@@ -83,7 +83,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   const sigs: string[] = [];
   let escalatedForLoop = false;
   const save = (patch: Partial<SessionRow> = {}) =>
-    persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model, ...patch }).then(() => {
+    persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model, draft: null, ...patch }).then(() => {
       persisted = row.messages.length;
     });
 
@@ -155,7 +155,18 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       const timings: string[] = [];
       let completion: Completion;
       try {
-        completion = await complete({ model: row.model!, messages: context, tools: toolsFor(quick ? "quick" : "all") });
+        // The reply streams into `draft` (throttled) so the page shows it as it is written.
+        let lastDraft = 0;
+        completion = await complete({
+          model: row.model!,
+          messages: context,
+          tools: toolsFor(quick ? "quick" : "all"),
+          onText: (text) => {
+            if (Date.now() - lastDraft < 700) return;
+            lastDraft = Date.now();
+            void q("update agent_sessions set draft = $2 where id = $1", [row.id, text.slice(0, 4000)]).catch(() => {});
+          },
+        });
       } catch (err) {
         if (err instanceof LLMError && err.retryable) throw err; // worker will retry via cron sweep
         return await finish(t, row, persisted, providerProblem(err), "error");
@@ -346,7 +357,7 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   const rollOver = row.kind === "chat" && (limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
   if (rollOver) status = "terminated" as typeof status;
   // Append-only: never overwrite the whole array, or a message the user just sent is lost.
-  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model });
+  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null });
   // A message that landed while we were finishing: flip back to running and re-kick so it gets
   // answered now, instead of sitting idle until the user sends something else.
   if (!rollOver && status === "idle") {
