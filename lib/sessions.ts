@@ -34,6 +34,8 @@ export interface SessionRow {
   browser_target_id?: string | null;
   /** The reply being written right now, shown by the page as it streams; cleared when the turn ends. */
   draft?: string | null;
+  /** Quick replies for the last reply, written by the fast model once the reply is on the page; cleared when the next turn ends. */
+  chips?: string[] | null;
   /** Working-copy only: the per-customer context block sent after the shared prompt this run (facts, notes). Never stored. */
   contextBlock?: string;
   model: string | null;
@@ -53,7 +55,7 @@ export interface SessionRow {
 export class UsageCapError extends Error {}
 
 /** Book a completion's cost and tokens on the session and the customer's month. Used by the loop and by side calls (condensing pages, the lookup fast path). */
-export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "review" | "grade" | "other";
+export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "review" | "grade" | "chips" | "other";
 export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion, purpose: Purpose = "turn"): Promise<number> {
   const cost = costCents(completion.model, completion.usage);
   row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;

@@ -13,7 +13,7 @@ import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, tierOfModel, t
 import { stubPageResult, stubSearchResult } from "./search.js";
 import { registrableDomain } from "./credentials.js";
 import { learnFromCorrection } from "./learn.js";
-import { detectFixes, gradeReply, keepPromise, recordFixes } from "./proactive.js";
+import { detectFixes, gradeReply, keepPromise, recordFixes, suggestReplies } from "./proactive.js";
 import { recordOutcome, taskClassKey } from "./outcomes.js";
 import { readMemory } from "./memory.js";
 import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, sharedSystem, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
@@ -272,7 +272,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           const missing = unverifiedFigures(row.messages, text, row.contextBlock);
           if (missing.length) {
             supersedeLastReply(row.messages);
-            row.messages.push({ role: "user", content: `${VERIFY_PREFIX} these figures in your reply do not appear in anything you read or were told during this task: ${missing.join(", ")}. Re-read the source (browser_text, browser_extract, fetch_page, the tool result) and correct them, or if each is a calculation, show it in the reply (e.g. 3 × $12.50 = $37.50). Then send the reply again.)` });
+            row.messages.push({ role: "user", content: `${VERIFY_PREFIX} these figures in your reply do not appear in anything you read or were told during this task: ${missing.join(", ")}. Re-read the source (browser_text, browser_extract, fetch_page, the tool result) and correct them, or if each is a calculation, show it in the reply (e.g. 3 × $12.50 = $37.50). Then send the reply again as if for the first time: never mention this check, a correction, or where a figure came from.)` });
             await save();
             console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} verify: ${missing.join(",")}`);
             continue;
@@ -280,11 +280,11 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         }
         // The task worked a site it has no notes for: one more turn to write sites/<domain>.md, so the
         // next visit is a five-step task instead of thirty, then the same reply again.
+        // The reply stands as is and reaches the page now; the note is written behind it.
         if (text && (row.kind === "chat" || row.kind === "task") && !hasHostNotePrefix(row.messages, SITE_NOTE_PREFIX)) {
           const missing = await siteNotesMissing(t, row.messages).catch(() => [] as string[]);
           if (missing.length) {
-            supersedeLastReply(row.messages);
-            row.messages.push({ role: "user", content: `${SITE_NOTE_PREFIX} you worked on ${missing.join(" and ")} in this task and there is no sites/${missing[0]}.md yet. Write it now with memory_write, under 40 lines: ## Sign-in (URL, what it asks, whether a code comes), ## Fast path (the exact URLs and clicks that got this result), ## Where things live, ## Quirks, ## Last verified (today). Then send your reply again unchanged.)` });
+            row.messages.push({ role: "user", content: `${SITE_NOTE_PREFIX} you worked on ${missing.join(" and ")} in this task and there is no sites/${missing[0]}.md yet. The user already has your reply above; do not send it again. Write the note now with memory_write, under 40 lines: ## Sign-in (URL, what it asks, whether a code comes), ## Fast path (the exact URLs and clicks that got this result), ## Where things live, ## Quirks, ## Last verified (today). Then reply with exactly NO_REPORT.)` });
             await save();
             console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} site-note: ${missing.join(",")}`);
             continue;
@@ -466,15 +466,28 @@ async function wrapUp(t: Tenant, row: SessionRow, reason: string, fallback: stri
 /** The task ended for this turn: deliver the report on the right channel and mark idle. */
 async function finish(t: Tenant, row: SessionRow, persisted: number, report: string, status: "idle" | "error"): Promise<RunOutcome> {
   const proactive = ["review", "weekly", "followup", "triage", "digest", "inbox"].includes(row.kind);
-  // A task the host had to stop, or that ended on a failure: a three-line post-mortem into memory,
-  // so the morning review can propose the one change that prevents it next time.
-  if (status === "error" || /\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200))) await postMortem(t, row, report).catch(() => {});
+  // A task that answered, then only wrote its site note: the reply already in the thread is the report.
+  if (!proactive && /^NO_REPORT\b/.test(report.trim()) && lastAssistantText(row.messages)) report = lastAssistantText(row.messages);
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
   // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
   // provider error) must be in it or the user sees nothing at all.
   if (report && !silent && lastAssistantText(row.messages) !== report.trim()) row.messages.push({ role: "assistant", content: report, at: stamp() });
   const failedWords = /\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200));
+  const sessionCap = env.plans.sessionBudgetUsd() * 100;
+  const limitHit = row.turns >= MAX_SESSION_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap);
+  // A provider error no longer terminates the chat: the thread stays open (status "error", still
+  // resumable) so the next message continues it with full context. Only the real limits roll over.
+  const rollOver = row.kind === "chat" && (limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
+  if (rollOver) status = "terminated" as typeof status;
+  // The reply reaches the page now. Append-only: never overwrite the whole array, or a message the
+  // user just sent is lost. Everything below is bookkeeping the user never waits for.
+  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null, chips: null });
+  // A task the host had to stop, or that ended on a failure: a three-line post-mortem into memory,
+  // so the morning review can propose the one change that prevents it next time.
+  if (status === "error" || failedWords) await postMortem(t, row, report).catch(() => {});
   if (row.kind === "chat" || row.kind === "task") {
+    // The chips under the reply, from the reply itself; the page picks them up on its next poll.
+    if (status === "idle" && report && !silent) await suggestReplies(t, row, report).catch(() => {});
     // How this kind of task ended on this tier, for the adaptive router; and the rule in a correction, if this task was one.
     if (taskUsedTools(row.messages)) await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), status === "idle" && !failedWords).catch(() => {});
     const learned = await learnFromCorrection(t, row).catch(() => undefined);
@@ -501,14 +514,6 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
       if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}`);
     }
   }
-  const sessionCap = env.plans.sessionBudgetUsd() * 100;
-  const limitHit = row.turns >= MAX_SESSION_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap);
-  // A provider error no longer terminates the chat: the thread stays open (status "error", still
-  // resumable) so the next message continues it with full context. Only the real limits roll over.
-  const rollOver = row.kind === "chat" && (limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
-  if (rollOver) status = "terminated" as typeof status;
-  // Append-only: never overwrite the whole array, or a message the user just sent is lost.
-  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null });
   // A message that landed while we were finishing: flip back to running and re-kick so it gets
   // answered now, instead of sitting idle until the user sends something else.
   if (!rollOver && status === "idle") {
@@ -645,16 +650,20 @@ const PHONE = /\(?\b\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g;
 const CONFIRMATION = /\b(?=[A-Z0-9-]{6,}\b)(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9-]+\b/g;
 
 /**
- * Figures in a reply that the task never read or was told: dollar amounts, phone numbers and
- * confirmation-style codes that appear in no tool result, no user message and not in the system
- * prompt. Amounts are compared without separators, phones by digits, codes by exact token.
+ * Figures in a reply that nothing in the thread supports: dollar amounts, phone numbers and
+ * confirmation-style codes that appear in no tool result, no user message, no earlier reply and not
+ * in the system prompt. Amounts are compared without separators, phones by digits, codes by exact token.
  */
 export function unverifiedFigures(messages: ChatMessage[], reply: string, context = ""): string[] {
   const parts: string[] = [context];
-  if (typeof messages[0]?.content === "string") parts.push(messages[0].content);
-  for (let i = taskStart(messages); i < messages.length; i++) {
+  // The whole thread counts: what the task read or was told, and every reply the user already has
+  // from earlier tasks. Only this task's own drafts and acks are left out (they may carry the figure
+  // being checked).
+  const start = taskStart(messages);
+  for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
-    if (m.role === "tool" || m.role === "user") parts.push(messageText(m));
+    if (m.role === "assistant" && (i >= start || m.superseded || m.ephemeral)) continue;
+    parts.push(messageText(m));
   }
   const corpus = parts.join("\n");
   const plain = corpus.replace(/,/g, "");

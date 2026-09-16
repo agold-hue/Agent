@@ -26,5 +26,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const merged = [...items, ...notices.filter((n) => new Date(n.at).getTime() > floor)].sort((a, b) => (a.kind === "status" ? 1 : b.kind === "status" ? -1 : new Date(a.at).getTime() - new Date(b.at).getTime()));
   res.setHeader("Cache-Control", "no-store");
   const lastAgent = [...items].reverse().find((i) => i.kind === "agent") as { text?: string } | undefined;
-  return res.status(200).json({ chips: quickReplies(lastAgent?.text ?? "", session?.status ?? "none", session?.pending_kind ?? null), version, session_id: session?.id ?? null, status: session?.status ?? "none", pending: session?.pending_kind ?? null, activity: activityOf(session), draft: session?.status === "running" ? session.draft ?? null : null, live_view_url: liveView, tasks, items: merged });
+  // The chips the model wrote for this reply once it was on the page; the shape-based ones until then.
+  const written = session?.status === "idle" && !session.pending_kind && Array.isArray(session.chips) ? session.chips : null;
+  const chips = written ?? quickReplies(lastAgent?.text ?? "", session?.status ?? "none", session?.pending_kind ?? null);
+  return res.status(200).json({ chips, version, session_id: session?.id ?? null, status: session?.status ?? "none", pending: session?.pending_kind ?? null, activity: activityOf(session), draft: session?.status === "running" ? session.draft ?? null : null, live_view_url: liveView, tasks, items: merged });
 }

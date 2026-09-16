@@ -25,9 +25,9 @@ test("promiseTime reads the time a promise names, in the user's zone, never in t
 
 test("quickReplies come from the thread's state and the last reply", () => {
   assert.deepEqual(quickReplies("", "waiting", "checkpoint"), ["Approve", "Not now", "Change something"]);
-  assert.deepEqual(quickReplies("Want me to book the Uber for 8:15am?", "idle", null), ["Yes, book it for 8:15am", "Not yet", "Thanks"]);
-  assert.deepEqual(quickReplies("You owe Con Ed $212.10, due 9/20.", "idle", null), ["Pay it", "Thanks"]);
-  assert.deepEqual(quickReplies("Done.", "idle", null), ["Thanks", "What's today?"]);
+  assert.deepEqual(quickReplies("Want me to book the Uber for 8:15am?", "idle", null), ["Yes, book it for 8:15am", "Not yet"]);
+  assert.deepEqual(quickReplies("You owe Con Ed $212.10, due 9/20.", "idle", null), ["Pay it"]);
+  assert.deepEqual(quickReplies("Done.", "idle", null), [], "nothing to tap means no chips, never a filler");
   assert.deepEqual(quickReplies("", "running", null), ["How's it going?", "Stop that"]);
 });
 

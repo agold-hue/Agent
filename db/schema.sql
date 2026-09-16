@@ -453,3 +453,5 @@ create table if not exists readings (
   read_at timestamptz not null default now()
 );
 create index if not exists readings_user_time on readings(user_id, read_at desc);
+-- Quick replies for the last reply, written by the fast model after the reply is on the page.
+alter table agent_sessions add column if not exists chips jsonb;

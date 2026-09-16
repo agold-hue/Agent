@@ -145,7 +145,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       else if (midTask) await appendHostNote(session, MID_TASK_NOTE);
       action = "sent";
     }
-    if (willResearch && (action === "started" || action === "sent" || action === "task_started")) {
+    // The page shows typing dots and "typing…" the moment a task starts, so the "on it" bubble is off
+    // by default (CHAT_ACKS=on brings it back); anything over a minute still gets its tell_user line.
+    if (process.env.CHAT_ACKS === "on" && willResearch && (action === "started" || action === "sent" || action === "task_started")) {
       ack = researchAck(recentSaid);
       await appendAssistantMessage(session, ack, true);
     }

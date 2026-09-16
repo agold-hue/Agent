@@ -70,6 +70,16 @@ test("unverifiedFigures: amounts, phones and codes must appear in what the task 
   assert.deepEqual(unverifiedFigures(messages, "Under your $50 auto-approve limit."), [], "system prompt figures count");
   assert.deepEqual(unverifiedFigures(messages, "Total $1,206.30"), ["$1,206.30"]);
   assert.deepEqual(unverifiedFigures([...messages, ...call("browser_extract", {}, '[["09/02","$1,206.30"]]')], "Total $1,206.30 or $1206.30"), []);
+  // A figure the user already has from an earlier reply in the thread is known; this task's own superseded draft is not.
+  const thread: ChatMessage[] = [
+    ...messages,
+    { role: "assistant", content: "Refund's in: $146.82 back to your Discover." },
+    user("what's the last update on that tracking?"),
+    ...call("track_package", {}, "1Z0W31147855575702: temporarily delayed, last scan Maspeth NY 9/11"),
+    { role: "assistant", content: "Delayed since 9/11. Your $999.99 refund rides on it.", superseded: true },
+  ];
+  assert.deepEqual(unverifiedFigures(thread, "Still stuck at Maspeth. Your $146.82 refund rides on that box arriving."), []);
+  assert.deepEqual(unverifiedFigures(thread, "Your $999.99 refund rides on it."), ["$999.99"]);
 });
 
 test("recapEarlier: a deep thread collapses earlier tasks to one deterministic note; a short one is untouched", () => {

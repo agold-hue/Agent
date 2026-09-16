@@ -823,7 +823,6 @@
   const QUICK = ["👍", "❤️", "😂"];
   const SHEET_QUICK = ["👍", "❤️", "😂", "😮", "🙏"];
   const DRAWER = ["😀","😂","🙂","😉","😍","🤔","😅","😢","😡","🙏","👍","👎","👏","🙌","🤝","💪","❤️","🔥","✨","🎉","✅","❌","⏰","📅","📦","💵","🛒","✉️","🔐","🔍","📞","🏠","🚗","✈️","☕","🍕"];
-  const SMART = ["Thanks!", "Yes, do it", "What's today?"];
   let items = [], status = "none", pending = null, tasks = [], replyTo = null, findQuery = "", behind = 0, chips = [];
   // composing: Pete is actually writing the reply now (a draft is streaming), the only time the typing
   // dots show. tickTimer flips a sent message to the blue read tick 4s after it was posted.
@@ -1019,9 +1018,9 @@
   $("down").onclick = () => { $("list").scrollTo({ top: $("list").scrollHeight, behavior: "smooth" }); behind = 0; updateDown(); };
   function renderSmart() {
     const box = $("smart"); const last = items[items.length - 1];
-    const offer = last && last.kind === "agent" && status !== "running" && !pending && !$("text").value.trim();
+    const offer = last && last.kind === "agent" && status !== "running" && !pending && !$("text").value.trim() && chips.length;
     box.hidden = !offer; if (!offer) return;
-    box.innerHTML = (chips.length ? chips : SMART).map((t) => `<button type="button" class="chip">${esc(t)}</button>`).join("");
+    box.innerHTML = chips.map((t) => `<button type="button" class="chip">${esc(t)}</button>`).join("");
     box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
   }
   function renderTasks() {
@@ -1060,9 +1059,12 @@
     items = data.items.filter((i) => i.kind !== "status" && i.kind !== "tool_resolved");
     items = items.filter((it, i) => !(i > 0 && it.kind === "agent" && items[i - 1].kind === "agent" && items[i - 1].text === it.text && Math.abs(new Date(it.at) - new Date(items[i - 1].at)) < 60_000));
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
+    const wasRunning = status === "running";
     sessionId = data.session_id; status = data.status; pending = data.pending; tasks = data.tasks || [];
     if (Array.isArray(data.chips)) chips = data.chips;
     composing = !!(data.draft && data.status === "running");
+    // The chips for a fresh reply are written just after it lands: one more look a moment later.
+    if (wasRunning && status !== "running") setTimeout(() => refresh().catch(() => {}), 2500);
     renderTasks();
     const nowAgent = nonUser();
     const wasNear = nearBottom();

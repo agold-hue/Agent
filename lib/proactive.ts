@@ -5,7 +5,7 @@ import { complete, type ChatMessage } from "./llm.js";
 import { appendMemory, readMemory } from "./memory.js";
 import { pushToUser } from "./push.js";
 import { modelFor } from "./router.js";
-import { chargeCompletion, messageText, taskStart, type SessionRow } from "./sessions.js";
+import { chargeCompletion, messageText, taskStart, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 import { localClock } from "./transcript.js";
 
@@ -309,7 +309,11 @@ export async function weeklyStyleNote(t: Tenant): Promise<string | undefined> {
 
 // ------------------------------------------------------------------ 9. contextual quick replies
 
-/** Chips under the chat, from the last reply and the thread's state: one tap is a full request. */
+/**
+ * Chips under the chat while the model-written ones are not there yet (a pending approval, a task
+ * still running, the second before suggestReplies lands): from the thread's state and the reply's
+ * shape. Nothing matches means no chips, never a filler like "Thanks".
+ */
 export function quickReplies(lastAgentText: string, status: string, pending: string | null): string[] {
   if (pending === "checkpoint") return ["Approve", "Not now", "Change something"];
   if (pending === "send_email") return ["Send it", "Edit it first", "Don't send"];
@@ -325,9 +329,42 @@ export function quickReplies(lastAgentText: string, status: string, pending: str
   if (/\b(refund|dispute|claim)\b/i.test(t)) out.push("What's the next step?");
   if (/\$\s?\d/.test(t) && /\b(due|owe|balance|bill)\b/i.test(t)) out.push("Pay it");
   if (/\b(price|drop|in stock|available|opening)\b/i.test(t)) out.push("Watch it for me");
-  if (!out.length) out.push("Thanks", "What's today?");
-  else if (!out.includes("Thanks")) out.push("Thanks");
-  return [...new Set(out)].slice(0, 4);
+  return [...new Set(out)].slice(0, 3);
+}
+
+const CHIP_MAX = 36;
+
+/**
+ * The chips the user will actually want after this reply, written by the fast model from the
+ * exchange itself ("Flag it as lost", "Ping me when it moves", "Not yet"), stored on the session for
+ * the page. One small call after the reply is already on the page; a failure leaves the fallback above.
+ */
+export async function suggestReplies(t: Tenant, row: SessionRow, reply: string): Promise<string[]> {
+  const request = messageText(row.messages[taskStart(row.messages)] ?? { role: "user", content: "" }).replace(/^\[[^\]]+\]\n/, "");
+  const c = await complete({
+    model: modelFor("chat", t),
+    temperature: 0.2,
+    maxTokens: 80,
+    messages: [
+      { role: "system", content: `You write the quick-reply chips under a chat between a person and their personal secretary. Given the person's last message and the secretary's reply, list the 2 or 3 things the person is most likely to tap next: the decision the reply asks for, the obvious follow-up request, or the next thing they would want done about this. Each is at most five words, in the person's own voice, phrased as a message they would send ("Flag it as lost", "Ping me when it moves", "Not yet", "Show me the options"). Never "thanks", never a greeting, never a question about something else, never a chip that restates the reply. If the reply ends the matter and nothing follows, reply with []. JSON array of strings only.` },
+      { role: "user", content: `Person: ${request.slice(0, 500)}\n\nSecretary: ${reply.slice(0, 1200)}` },
+    ],
+  });
+  await chargeCompletion(t, row, c, "chips").catch(() => {});
+  const text = typeof c.message.content === "string" ? c.message.content : "";
+  const m = text.match(/\[[\s\S]*?\]/);
+  let chips: string[] = [];
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[0]) as unknown;
+      if (Array.isArray(parsed)) chips = parsed.filter((x): x is string => typeof x === "string").map((x) => x.trim().replace(/[.!]+$/, "")).filter((x) => x && x.length <= CHIP_MAX && !/^thanks?\b/i.test(x));
+    } catch {
+      /* no chips is fine */
+    }
+  }
+  chips = [...new Set(chips)].slice(0, 3);
+  await updateSession(row.id, { chips });
+  return chips;
 }
 
 // ------------------------------------------------------------------ 1. overnight refresh of the numbers they ask for
