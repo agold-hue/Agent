@@ -4,6 +4,7 @@ import { activityOf, chatHistory, currentChatSession, recentNotices, taskStrip }
 import { liveViewIfRunning } from "../../../lib/browser.js";
 import { env } from "../../../lib/env.js";
 import { one } from "../../../lib/db.js";
+import { quickReplies } from "../../../lib/proactive.js";
 
 /** GET -> { session_id, status, pending, items[] }. The page polls this while the agent is running. */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -24,5 +25,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Notices (reminders, briefs, heads-ups) slot into the timeline by time, so the page reads as one conversation.
   const merged = [...items, ...notices.filter((n) => new Date(n.at).getTime() > floor)].sort((a, b) => (a.kind === "status" ? 1 : b.kind === "status" ? -1 : new Date(a.at).getTime() - new Date(b.at).getTime()));
   res.setHeader("Cache-Control", "no-store");
-  return res.status(200).json({ version, session_id: session?.id ?? null, status: session?.status ?? "none", pending: session?.pending_kind ?? null, activity: activityOf(session), draft: session?.status === "running" ? session.draft ?? null : null, live_view_url: liveView, tasks, items: merged });
+  const lastAgent = [...items].reverse().find((i) => i.kind === "agent") as { text?: string } | undefined;
+  return res.status(200).json({ chips: quickReplies(lastAgent?.text ?? "", session?.status ?? "none", session?.pending_kind ?? null), version, session_id: session?.id ?? null, status: session?.status ?? "none", pending: session?.pending_kind ?? null, activity: activityOf(session), draft: session?.status === "running" ? session.draft ?? null : null, live_view_url: liveView, tasks, items: merged });
 }

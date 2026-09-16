@@ -340,6 +340,7 @@
 </main>
 
 <main id="home" hidden><div class="panel">
+  <div id="fixCards"></div>
   <div class="card">
     <h3 id="homeTitle">Today</h3>
     <div class="quick">
@@ -573,7 +574,19 @@
     div.appendChild(ask);
     return div;
   }
+  async function loadFixes() {
+    try {
+      const r = await fetch("/api/fixes"); if (!r.ok) return;
+      const d = await r.json(); const box = document.getElementById("fixCards"); if (!box) return;
+      box.innerHTML = (d.fixes || []).map((f) => `<div class="card" data-fix="${esc2(f.id)}" data-kind="${esc2(f.kind)}" data-domain="${esc2(f.domain || "")}" style="border-left:3px solid #f5578a"><h3>One thing would unblock this</h3><p>${esc2(f.message)}</p><div class="row"><button type="button" class="btnPri" data-act="go">${f.kind === "add_login" || f.kind === "check_login" ? "Add the login" : f.kind === "connect_google" ? "Connect Google" : f.kind === "enable_relay" ? "Set up local browser" : "Open settings"}</button><button type="button" class="btn" data-act="done">Dismiss</button></div></div>`).join("");
+      box.querySelectorAll("[data-fix]").forEach((card) => {
+        card.querySelector('[data-act="done"]').onclick = async () => { await fetch("/api/fixes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: card.dataset.fix }) }); loadFixes(); };
+        card.querySelector('[data-act="go"]').onclick = () => { if (card.dataset.kind === "add_login" || card.dataset.kind === "check_login") { showTab("logins"); const dom = document.getElementById("v_domain"); if (dom) { dom.value = card.dataset.domain; dom.focus(); } } else showTab("settings"); };
+      });
+    } catch {}
+  }
   async function loadHome() {
+    loadFixes();
     $("homeTitle").textContent = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
     const [tr, sr, rr] = await Promise.all([api("/api/today?days=3"), api("/api/stats"), api("/api/receipts")]);
     if (tr.ok) {
@@ -959,7 +972,7 @@
     const box = $("smart"); const last = items[items.length - 1];
     const offer = currentRoom === "secretary" && last && last.kind === "agent" && status !== "running" && !pending && !$("text").value.trim();
     box.hidden = !offer; if (!offer) return;
-    box.innerHTML = SMART.map((t) => `<button type="button" class="gcSmartChip">${esc2(t)}</button>`).join("");
+    box.innerHTML = (window.__chips && window.__chips.length ? window.__chips : SMART).map((t) => `<button type="button" class="gcSmartChip">${esc2(t)}</button>`).join("");
     box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
   }
   let liveViewUrl = null;
@@ -997,6 +1010,7 @@
     // Belt and braces: the same agent line twice in a row within a minute is one line.
     items = items.filter((it, i) => !(i > 0 && it.kind === "agent" && items[i - 1].kind === "agent" && items[i - 1].text === it.text && Math.abs(new Date(it.at) - new Date(items[i - 1].at)) < 60_000));
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
+    if (Array.isArray(data.chips)) window.__chips = data.chips;
     sessionId = data.session_id; status = data.status; pending = data.pending; liveViewUrl = data.live_view_url || null; tasks = data.tasks || [];
     // The reply being written: shown as a live bubble at the end until the real one lands.
     if (data.draft && status === "running") items.push({ kind: "agent", id: "draft", text: data.draft, at: new Date().toISOString() });

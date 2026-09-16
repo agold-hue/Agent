@@ -11,6 +11,8 @@ export interface TenantSettings {
   daily_review_hour?: number; // -1 disables
   auto_approve_max_usd?: number;
   auto_approve_types?: string[];
+  /** Learned rules: "purchase at amazon.com under $40 needs no approval". Set by the approval_rule tool after the user says yes. */
+  auto_approve_rules?: Array<{ action_type: string; merchant?: string; max_usd?: number }>;
   family_emails?: string[];
   cc_owner_on_outbound?: boolean;
   observe_forwarded_mail?: boolean;

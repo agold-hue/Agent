@@ -14,6 +14,7 @@ const SETTABLE: Array<keyof TenantSettings> = [
   "daily_review_hour",
   "auto_approve_max_usd",
   "auto_approve_types",
+  "auto_approve_rules",
   "family_emails",
   "cc_owner_on_outbound",
   "observe_forwarded_mail",

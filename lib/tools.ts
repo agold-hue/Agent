@@ -11,13 +11,15 @@ import { appendMemory, deleteMemory, grepMemory, listMemory, readMemory, writeMe
 import { notifyOwner } from "./notify.js";
 import { autoApprove, codeHint, codeIn, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
 import { runDocumentTool } from "./docstore.js";
+import { approvalProposal, logApproval, resolveFixesFor } from "./proactive.js";
+import { updateSettings } from "./tenant.js";
 import { runBankTool } from "./plaid.js";
 import { runLocalBrowserTool } from "./relay.js";
 import { runResearchTool } from "./research.js";
 import { runTrackTool } from "./tracking.js";
 import { runWatchTool } from "./watches.js";
 import { modelFor, nextTier, tierOfModel } from "./router.js";
-import { appendAssistantMessage, appendToolResult, taskStart, updateSession, type SessionRow } from "./sessions.js";
+import { appendAssistantMessage, appendHostNote, appendToolResult, taskStart, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
 export interface SendEmailInput {
@@ -58,6 +60,22 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
     if (name === "watch_page") return { text: await runWatchTool(t, row, args) };
     if (name === "local_browser") return { text: await runLocalBrowserTool(t, row, args) };
     if (name === "document") return { text: await runDocumentTool(t, row, args) };
+    if (name === "approval_rule") {
+      const rules = [...(t.settings.auto_approve_rules ?? [])];
+      const action = s("action") || "list";
+      if (action === "add") {
+        const rule = { action_type: s("action_type").toLowerCase() || "purchase", ...(s("merchant") ? { merchant: s("merchant").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "") } : {}), ...(args.max_usd != null ? { max_usd: Number(args.max_usd) } : {}) };
+        if (!rules.some((r) => JSON.stringify(r) === JSON.stringify(rule))) rules.push(rule);
+        await updateSettings(t, { auto_approve_rules: rules });
+        return { text: `Rule saved: ${rule.action_type}${rule.merchant ? ` at ${rule.merchant}` : ""}${rule.max_usd != null ? ` under $${rule.max_usd}` : ""} no longer needs approval. Tell the user in one line; they can change it under Settings.` };
+      }
+      if (action === "remove") {
+        const keep = rules.filter((r) => !(r.action_type === s("action_type").toLowerCase() && (r.merchant ?? "") === (s("merchant").toLowerCase() || "")));
+        await updateSettings(t, { auto_approve_rules: keep });
+        return { text: `Removed ${rules.length - keep.length} rule(s).` };
+      }
+      return { text: rules.length ? rules.map((r) => `- ${r.action_type}${r.merchant ? ` at ${r.merchant}` : ""}${r.max_usd != null ? ` under $${r.max_usd}` : ""}`).join("\n") : "No learned approval rules." };
+    }
     if (name === "bank") return { text: await runBankTool(t, args) };
     if (name === "track_package") return { text: await runTrackTool(args) };
 
@@ -96,6 +114,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
       case "save_login": {
         // Phone-and-code accounts (Uber, Lyft, many apps) have no password: the username alone is saved.
         const id = await saveCredential(t, { domain: registrableDomain(s("domain")), username: s("username"), password: args.password ? s("password") : "", notes: args.notes ? s("notes") : undefined });
+        await resolveFixesFor(t, "add_login", registrableDomain(s("domain"))).catch(() => {});
         return { text: JSON.stringify({ saved: true, id }) };
       }
       case "get_email_code": {
@@ -243,6 +262,12 @@ export async function resolvePending(t: Tenant, row: SessionRow, userText: strin
   let text: string;
   if (row.pending_kind === "checkpoint") {
     text = approved ? "APPROVED by the user. Proceed exactly as described in the checkpoint." : `DENIED. The user replied:\n\n${userText}\n\nTreat this as new instructions. Do not perform the checkpointed action as described. Answer briefly.`;
+    // The decision goes in the approval history; three approvals of the same kind become an offer to stop asking.
+    const logged = await logApproval(t, row, approved ? "approved" : "denied").catch(() => undefined);
+    if (approved && logged) {
+      const proposal = await approvalProposal(t, logged).catch(() => undefined);
+      if (proposal) await appendHostNote(row, proposal).catch(() => {});
+    }
   } else if (row.pending_kind === "send_email") {
     if (approved) {
       const call = [...row.messages].reverse().find((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === row.pending_event_id));

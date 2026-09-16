@@ -71,6 +71,36 @@ export interface Completion {
   usage: Usage;
   model: string;
   finish_reason: string;
+  /** The upstream provider that served the call (OpenRouter reports it). */
+  provider?: string;
+  /** Milliseconds to the first streamed token. */
+  ttft_ms?: number;
+}
+
+// ---------------- provider pinning: the provider with the best first-token time for each model, from our own telemetry
+let ranking = new Map<string, string[]>();
+let rankingAt = 0;
+const RANKING_TTL = 10 * 60_000;
+/** Refresh the per-model provider order from usage_events (p50 first-token time over 7 days, 10+ calls); never blocks a call. */
+export async function refreshProviderRanking(): Promise<void> {
+  if ((process.env.LLM_PROVIDER_PINNING ?? "on") === "off") return;
+  rankingAt = Date.now();
+  try {
+    const { q } = await import("./db.js");
+    const rows = await q<{ model: string; provider: string; p50: string }>(
+      "select model, provider, percentile_cont(0.5) within group (order by ttft_ms)::text as p50 from usage_events where created_at > now() - interval '7 days' and ttft_ms is not null and provider is not null group by model, provider having count(*) >= 10 order by model, 3",
+    );
+    const next = new Map<string, string[]>();
+    for (const r of rows) next.set(r.model, [...(next.get(r.model) ?? []), r.provider]);
+    ranking = next;
+  } catch {
+    /* telemetry is optional */
+  }
+}
+export function providerOrderFor(model: string): string[] | undefined {
+  if (Date.now() - rankingAt > RANKING_TTL) void refreshProviderRanking();
+  const order = ranking.get(model);
+  return order && order.length > 1 ? order.slice(0, 3) : undefined;
 }
 
 /**
@@ -280,6 +310,9 @@ export async function complete(opts: {
   if (isOpenRouter()) {
     // Cheapest (or fastest, LLM_SORT) healthy provider for the chosen model; fall back to others if it fails.
     body.provider = { sort: providerSort(), allow_fallbacks: true };
+    // Our own measurements beat the platform's sort: the providers that answered this model fastest, first.
+    const order = providerOrderFor(model);
+    if (order) (body.provider as Record<string, unknown>).order = order;
     body.usage = { include: true };
     // The model list is OpenRouter's fallback chain: the next model answers when the first is down,
     // rate-limited, or rejects the request. OpenRouter caps this array at OPENROUTER_MODELS_CAP, so
@@ -409,6 +442,8 @@ export async function complete(opts: {
       tc.type = "function";
     }
     return {
+      provider: data.provider,
+      ttft_ms: data.ttft_ms,
       message: { role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls?.length ? msg.tool_calls : undefined },
       usage: {
         prompt_tokens: data.usage?.prompt_tokens ?? 0,
@@ -425,6 +460,8 @@ export async function complete(opts: {
 
 type StreamedResult = {
   model?: string;
+  provider?: string;
+  ttft_ms?: number;
   choices?: Array<{ message: ChatMessage; finish_reason?: string }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number; prompt_tokens_details?: { cached_tokens?: number }; cache_read_input_tokens?: number };
   error?: { message?: string };
@@ -469,6 +506,9 @@ export async function readStream(res: Response, onText: (text: string) => void, 
   let buf = "";
   let text = "";
   let model: string | undefined;
+  let provider: string | undefined;
+  let ttft: number | undefined;
+  const started = Date.now();
   let finish: string | undefined;
   let usage: StreamedResult["usage"];
   let error: string | undefined;
@@ -486,6 +526,8 @@ export async function readStream(res: Response, onText: (text: string) => void, 
     }
     if (j.error?.message) error = j.error.message;
     if (j.model) model = j.model;
+    if ((j as { provider?: string }).provider) provider = (j as { provider?: string }).provider;
+    if (ttft === undefined && (j.choices?.[0]?.delta?.content || j.choices?.[0]?.delta?.tool_calls?.length)) ttft = Date.now() - started;
     if (j.usage) usage = j.usage;
     const c = j.choices?.[0];
     if (!c) return;
@@ -542,7 +584,7 @@ export async function readStream(res: Response, onText: (text: string) => void, 
   if (text) onText(text);
   emitReady(calls.length);
   const tool_calls = calls.filter(Boolean);
-  return { model, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? "stop" }] };
+  return { model, provider, ttft_ms: ttft, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? "stop" }] };
 }
 
 // ---------------------------------------------------------------- Model catalog

@@ -24,6 +24,7 @@ import googleDisconnect from "../server/routes/google/disconnect.js";
 import mailInbound from "../server/routes/mail-inbound.js";
 import me from "../server/routes/me.js";
 import models from "../server/routes/models.js";
+import fixes from "../server/routes/fixes.js";
 import plaid from "../server/routes/plaid.js";
 import receipts from "../server/routes/receipts.js";
 import relay from "../server/routes/relay.js";
@@ -60,6 +61,7 @@ const routes: Record<string, Handler> = {
   "chat/react": react,
   cron,
   drafts,
+  fixes,
   plaid,
   relay,
   "google/callback": googleCallback,

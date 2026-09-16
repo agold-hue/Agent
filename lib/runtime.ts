@@ -13,6 +13,7 @@ import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, tierOfModel, t
 import { stubPageResult, stubSearchResult } from "./search.js";
 import { registrableDomain } from "./credentials.js";
 import { learnFromCorrection } from "./learn.js";
+import { detectFixes, gradeReply, keepPromise, recordFixes } from "./proactive.js";
 import { recordOutcome, taskClassKey } from "./outcomes.js";
 import { readMemory } from "./memory.js";
 import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, sharedSystem, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
@@ -475,6 +476,19 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
     if (taskUsedTools(row.messages)) await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), status === "idle" && !failedWords).catch(() => {});
     const learned = await learnFromCorrection(t, row).catch(() => undefined);
     if (learned) console.log(`[learn] ${row.id}: ${learned}`);
+    // A promise in the reply ("I'll check back Thursday") is kept by the host if the model set no follow-up.
+    if (status === "idle" && report) {
+      const due = await keepPromise(t, row, report).catch(() => undefined);
+      if (due) console.log(`[promise] ${row.id}: follow-up ${due.toISOString()}`);
+    }
+    // What blocked the task becomes a fix card the user can act on in one tap.
+    if (failedWords || status === "error") {
+      const { relayStatus } = await import("./relay.js");
+      const relay = await relayStatus(t).catch(() => ({ online: false }));
+      const fixes = detectFixes(row.messages, !!t.googleRefreshToken, relay.online);
+      if (fixes.length) await recordFixes(t, fixes).catch(() => {});
+    }
+    if (status === "idle" && report && taskUsedTools(row.messages)) await gradeReply(t, row, report).catch(() => {});
   }
   // A browser task that ended well: what it did on each site becomes a replayable path in the site note.
   if (status === "idle" && (row.kind === "chat" || row.kind === "task") && !failedWords) {

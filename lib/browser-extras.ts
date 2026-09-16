@@ -626,6 +626,10 @@ export async function recordPaths(t: Tenant, row: SessionRow, domains: string[],
     if (steps.length) note = withPath(note, { name, date: new Date().toISOString().slice(0, 10), steps });
     if (readers.length) note = withReaders(note, readers);
     await writeMemory(t, path, note);
+    if (steps.length) {
+      const { notePathUse } = await import("./proactive.js");
+      await notePathUse(t, domain, name).catch(() => {});
+    }
     written.push(domain);
   }
   return written;
@@ -640,6 +644,8 @@ export async function replayPath(t: Tenant, row: SessionRow, domainArg: string, 
   const want = (nameArg ?? "").trim().toLowerCase();
   const path = want ? (paths.find((p) => p.name.toLowerCase() === want) ?? paths.find((p) => p.name.toLowerCase().includes(want) || want.includes(p.name.toLowerCase()))) : paths.length === 1 ? paths[0] : undefined;
   if (!path) return `which path? ${domain} has:\n${paths.map((p) => `- ${p.name} (${p.date}, ${p.steps.length} steps)`).join("\n")}`;
+  const { notePathUse } = await import("./proactive.js");
+  await notePathUse(t, domain, path.name).catch(() => {});
   return withPage(t, row, async (page, _browser, handle) => {
     const started = Date.now();
     const log: string[] = [];

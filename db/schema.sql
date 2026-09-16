@@ -400,3 +400,56 @@ create table if not exists document_pages (
   text text not null,
   primary key (doc_id, page)
 );
+
+-- Host initiative: promises kept, reminders, fix cards, approval history and rules, reply grades, overnight readings.
+alter table agent_sessions add column if not exists reminded_at timestamptz;
+alter table usage_events add column if not exists provider text;
+alter table usage_events add column if not exists ttft_ms int;
+create table if not exists fixes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,                         -- add_login | check_login | connect_google | enable_relay | add_bank
+  domain text,
+  message text not null,
+  created_at timestamptz not null default now(),
+  done_at timestamptz
+);
+create index if not exists fixes_open on fixes(user_id) where done_at is null;
+create table if not exists approval_log (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  action_type text not null,
+  merchant text,
+  amount_usd numeric(14,2),
+  summary text,
+  decision text not null,                     -- approved | denied | auto
+  session_id text,
+  created_at timestamptz not null default now()
+);
+create index if not exists approval_log_user on approval_log(user_id, action_type, created_at desc);
+create table if not exists reply_grades (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  session_id text,
+  score int not null,
+  issue text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists reply_grades_user on reply_grades(user_id, created_at desc);
+create table if not exists path_uses (
+  user_id uuid not null references users(id) on delete cascade,
+  domain text not null,
+  name text not null,
+  uses int not null default 0,
+  last_used_at timestamptz,
+  primary key (user_id, domain, name)
+);
+create table if not exists readings (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  domain text not null,
+  label text not null,
+  value text not null,
+  read_at timestamptz not null default now()
+);
+create index if not exists readings_user_time on readings(user_id, read_at desc);

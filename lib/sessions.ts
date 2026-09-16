@@ -53,7 +53,7 @@ export interface SessionRow {
 export class UsageCapError extends Error {}
 
 /** Book a completion's cost and tokens on the session and the customer's month. Used by the loop and by side calls (condensing pages, the lookup fast path). */
-export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "review" | "other";
+export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "review" | "grade" | "other";
 export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion, purpose: Purpose = "turn"): Promise<number> {
   const cost = costCents(completion.model, completion.usage);
   row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
@@ -71,7 +71,7 @@ export async function chargeCompletion(t: Tenant, row: SessionRow, completion: C
 
 /** One row per model call, tagged with its purpose, so spend can be read per feature (usage_events). */
 export async function recordUsageEvent(userId: string, sessionId: string | null, purpose: Purpose, c: Completion): Promise<void> {
-  await q("insert into usage_events (user_id, session_id, purpose, model, cost_cents, prompt_tokens, cached_tokens, completion_tokens) values ($1,$2,$3,$4,$5,$6,$7,$8)", [
+  await q("insert into usage_events (user_id, session_id, purpose, model, cost_cents, prompt_tokens, cached_tokens, completion_tokens, provider, ttft_ms) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [
     userId,
     sessionId,
     purpose,
@@ -80,6 +80,8 @@ export async function recordUsageEvent(userId: string, sessionId: string | null,
     c.usage.prompt_tokens,
     c.usage.cached_tokens ?? 0,
     c.usage.completion_tokens,
+    c.provider ?? null,
+    c.ttft_ms ?? null,
   ]);
 }
 
@@ -226,11 +228,36 @@ const KNOWN_FILES = ["standing_instructions.md", "profile.md", "facts.md", "cont
 const KNOWN_BUDGET = Number(process.env.KNOWN_FACTS_CHARS ?? 9000);
 
 /** The user's own facts, defaults and contacts, trimmed to the budget; empty template lines are dropped. */
-export async function knownFacts(t: Tenant): Promise<string> {
+/** Which sections of profile.md and contacts.md a class of task needs; anything not listed is sent whole. */
+const CLASS_SECTIONS: Record<string, RegExp> = {
+  money: /^(work|home|money|bank|cards?|bills?|utilities|insurance)/i,
+  shopping: /^(home|shopping|preferences|family|cards?)/i,
+  travel: /^(travel|work|family|documents?)/i,
+  calendar: /^(work|family|interruptions|calendar)/i,
+  health: /^(health|family|insurance)/i,
+  kids: /^(family|kids|school)/i,
+  home: /^(home|family|utilities)/i,
+  paperwork: /^(documents?|work|home|health|travel)/i,
+  inbox: /^(work|interruptions|family)/i,
+  research: /^(work|home|preferences)/i,
+  people: /^(family|people|friends|gifts?)/i,
+};
+
+/** Keep only the "## " sections whose heading matches, plus any text before the first heading. */
+export function scopeSections(markdown: string, keep: RegExp): string {
+  const parts = markdown.split(/\n(?=## )/);
+  const kept = parts.filter((p, i) => i === 0 && !p.startsWith("## ") ? true : keep.test(p.replace(/^## /, "").trim()));
+  return kept.join("\n");
+}
+
+export async function knownFacts(t: Tenant, cls?: string): Promise<string> {
   const parts: string[] = [];
   let used = 0;
+  const scope = cls ? CLASS_SECTIONS[cls] : undefined;
   for (const path of KNOWN_FILES) {
-    const raw = (await readMemory(t, path).catch(() => null)) ?? "";
+    let raw = (await readMemory(t, path).catch(() => null)) ?? "";
+    // A money task does not need the travel loyalty numbers: profile and contacts are sent by section.
+    if (scope && (path === "profile.md" || path === "contacts.md")) raw = scopeSections(raw, scope);
     const lines = raw
       .split("\n")
       .filter((l) => {
@@ -287,7 +314,8 @@ export function sharedSystem(): string {
  * prompt is cached once for everyone.
  */
 export async function customerContext(t: Tenant, opts: { parallel?: boolean; task?: string } = {}): Promise<string> {
-  const known = await knownFacts(t);
+  const cls = opts.task ? playbooksFor(opts.task)[0] : undefined;
+  const known = await knownFacts(t, cls);
   const parts = [
     `# This user\n${[
       `User: ${t.settings.owner_name || t.name || t.email} <${t.email}>. Time zone: ${t.timezone}.`,
@@ -303,6 +331,14 @@ export async function customerContext(t: Tenant, opts: { parallel?: boolean; tas
   if (opts.task) {
     const inline = await inlinedNotes(t, opts.task).catch(() => "");
     if (inline) parts.push(inline);
+  }
+  // Figures the host read overnight from the sites this customer keeps asking about.
+  try {
+    const { freshReadings, formatReadings } = await import("./proactive.js");
+    const readings = formatReadings(await freshReadings(t), t.timezone);
+    if (readings) parts.push(readings);
+  } catch {
+    /* optional */
   }
   if (opts.parallel !== false) {
     const note = await parallelTasksNote(t);
