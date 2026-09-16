@@ -198,8 +198,9 @@ export function capModels(models: string[], cap = OPENROUTER_MODELS_CAP): string
 
 /** How OpenRouter picks among the providers serving a model: LLM_SORT=price (default), throughput or latency. */
 function providerSort(): "price" | "throughput" | "latency" {
-  const v = (process.env.LLM_SORT ?? "price").toLowerCase();
-  return v === "throughput" || v === "latency" ? v : "price";
+  // Speed first: the provider serving this model fastest, not the cheapest one (LLM_SORT=price to flip).
+  const v = (process.env.LLM_SORT ?? "throughput").toLowerCase();
+  return v === "price" || v === "latency" ? v : "throughput";
 }
 
 export async function complete(opts: {
@@ -398,7 +399,8 @@ export async function catalog(): Promise<CatalogModel[]> {
   const base = (process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
   if (!base.includes("openrouter.ai") || !process.env.LLM_API_KEY) return [];
   try {
-    const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${process.env.LLM_API_KEY}` }, signal: AbortSignal.timeout(8000) });
+    // On a cold start this sits in front of the first model call: give it three seconds, not eight.
+    const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${process.env.LLM_API_KEY}` }, signal: AbortSignal.timeout(3000) });
     if (!res.ok) return catalogCache?.models ?? [];
     const data = (await res.json()) as { data?: Array<{ id: string; name?: string; context_length?: number; pricing?: { prompt?: string; completion?: string }; architecture?: { input_modalities?: string[] }; supported_parameters?: string[] }> };
     const models: CatalogModel[] = (data.data ?? []).map((m) => ({

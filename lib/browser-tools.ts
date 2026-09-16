@@ -105,7 +105,7 @@ function frameHost(url: string): string {
     return "embedded";
   }
 }
-const settle = async (page: Page, ms = 1500) => {
+const settle = async (page: Page, ms = 1000) => {
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await page.waitForTimeout(ms);
 };
@@ -264,7 +264,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
           return { text: `typed + Enter\n\n${await after(page)}` };
         }
         // Address and search boxes answer typing with a suggestion list that must be clicked; show it.
-        await page.waitForTimeout(1200);
+        await page.waitForTimeout(800);
         return { text: `typed into [${str("ref")}]\n\n${await after(page)}` };
       });
     case "browser_select":

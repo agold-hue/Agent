@@ -17,5 +17,25 @@
       "source": "/api/:path((?!index).*)",
       "destination": "/api/index?path=:path"
     }
+  ],
+  "headers": [
+    {
+      "source": "/(app|index)\\.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, must-revalidate"
+        }
+      ]
+    }
   ]
 }

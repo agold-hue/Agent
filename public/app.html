@@ -120,6 +120,8 @@
   .chatSearch:focus { outline:none; border-color:rgba(194,111,52,.7); }
   .chatListWrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; }
   .chatList { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:4px 6px 10px; background:#fff; }
+  /* On a wide screen the conversation, the typing dots and the composer share one centred column. */
+  .chatList, .chatTyping, .gcSmart, .taskStrip, form.chatComposer { padding-left:max(6px, calc((100% - 880px) / 2)); padding-right:max(6px, calc((100% - 880px) / 2)); }
   .chatEmpty { display:grid; gap:6px; place-items:center; text-align:center; padding:56px 20px; color:#7B766E; border:1px dashed #DED6CA; border-radius:12px; background:#F8F9FA; }
   .chatEmptyMark { font-size:34px; }
   .chatDay { display:flex; align-items:center; gap:12px; margin:14px 0 8px; font-size:12px; font-weight:500; color:var(--muted); }
@@ -424,6 +426,14 @@
     const r = await api("/api/me");
     if (r.status === 401) { location.href = "/"; return; }
     me = await r.json();
+    // A new deploy: fetch the fresh page once (the HTML is served uncached, so this is enough).
+    try {
+      const seen = localStorage.getItem("secretary:ui");
+      if (me.ui_version && seen !== me.ui_version) {
+        localStorage.setItem("secretary:ui", me.ui_version);
+        if (seen && !sessionStorage.getItem("secretary:reloaded")) { sessionStorage.setItem("secretary:reloaded", "1"); location.reload(); return; }
+      }
+    } catch {}
     if (me.assistant_name) {
       AGENT = me.assistant_name;
       document.title = AGENT;
@@ -779,11 +789,9 @@
   }
   // Never reveal the site or a link to the browser: a calm status line during tool work, and the
   // bouncing "typing" dots only while composing a reply (a post is imminent).
-  function setTyping(on, activity) {
-    const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
-    if (!on) { $("typing").innerHTML = ""; return; }
-    if (activity) { $("typing").innerHTML = `<span class="chatStatus">${esc(activity)}</span>`; return; }
-    $("typing").innerHTML = `<span class="chatDots"><i></i><i></i><i></i></span>${esc(AGENT + " is typing…")}`;
+  // While the agent works: the three dots and nothing else. No status text, no browser links.
+  function setTyping(on) {
+    $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>` : "";
   }
   $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
@@ -804,8 +812,8 @@
     if (nowAgent > prevAgent && !wasNear) behind += nowAgent - prevAgent;
     if (!$("chats").hidden && document.visibilityState === "visible" && wasNear) markSeen();
     renderRooms(); renderList(false); announce(data.items);
-    setTyping(status === "running", data.activity);
-    setStatus(status === "running" ? "running" : "idle", status === "none" ? "ready" : pending ? "waiting for you" : status === "running" ? (data.activity || "working…") : "ready");
+    setTyping(status === "running");
+    setStatus(status === "running" ? "running" : "idle", status === "none" ? "ready" : pending ? "waiting for you" : status === "running" ? "busy" : "ready");
   }
   async function loadHistory() {
     const r = await api("/api/chat/history");
@@ -843,7 +851,7 @@
       if (data.reaction) { it.reaction = data.reaction; renderList(false); }
       // The server already stored the "on it" line; refresh rather than add a local copy that a poll
       // racing this request would leave next to the server's, showing it twice.
-      sessionId = data.session_id; status = "running"; setTyping(true); setStatus("running", "working…");
+      sessionId = data.session_id; status = "running"; setTyping(true); setStatus("running", "busy");
       if (data.ack) loadHistory().catch(() => {});
       openStream();
     } catch (e) { it.text += "\n(failed to send)"; renderList(false); }
@@ -896,7 +904,7 @@
       const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: `voice.${ext}`, mimeType: blob.type || "audio/webm", data, voice: true }) });
       const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
       note.text = `🎤 ${out.text}`; renderList(false);
-      sessionId = out.session_id; status = "running"; setTyping(true); setStatus("running", "working…"); openStream();
+      sessionId = out.session_id; status = "running"; setTyping(true); setStatus("running", "busy"); openStream();
     } catch (e) { note.text = `Voice note failed: ${e.message}`; renderList(false); }
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me) loadHistory(); });

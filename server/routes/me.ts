@@ -50,6 +50,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     email: t.email,
     name: t.name,
     assistant_name: env.assistantName(),
+    // The deployed build; the page reloads itself once when this changes, so no one runs a stale UI.
+    ui_version: process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || "dev",
     slug: t.slug,
     agent_email: env.mail.configured() ? agentAddress(t) : null,
     timezone: t.timezone,
