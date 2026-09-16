@@ -30,6 +30,8 @@ export interface SessionRow {
   followup_id: string | null;
   /** For a parallel task spawned from the chat: the chat thread it belongs to. */
   parent_session_id?: string | null;
+  /** The tab (CDP target) this session drives in the customer's shared hosted browser. */
+  browser_target_id?: string | null;
   model: string | null;
   messages: ChatMessage[];
   turns: number;
@@ -248,6 +250,37 @@ export async function appendHostNote(row: SessionRow, text: string): Promise<voi
 export async function getMessages(id: string): Promise<ChatMessage[]> {
   const r = await one<{ messages: ChatMessage[] }>("select messages from agent_sessions where id = $1", [id]);
   return r?.messages ?? [];
+}
+
+/** Messages plus status, one query: the loop stops when the user cancelled the session meanwhile. */
+export async function getLoopState(id: string): Promise<{ messages: ChatMessage[]; status: SessionRow["status"] } | undefined> {
+  return one<{ messages: ChatMessage[]; status: SessionRow["status"] }>("select messages, status from agent_sessions where id = $1", [id]);
+}
+
+/**
+ * The hosted browser another of this customer's sessions is using right now, so a second task joins
+ * it (its own tab, the same cookies) instead of opening a second browser that sites see as a new device.
+ */
+export async function otherActiveBrowsers(userId: string, exceptSessionId: string): Promise<string[]> {
+  const rows = await q<{ browserbase_session_id: string }>(
+    "select distinct browserbase_session_id from agent_sessions where user_id = $1 and id <> $2 and browserbase_session_id is not null and (status in ('running', 'waiting') or updated_at > now() - interval '30 minutes') order by 1",
+    [userId, exceptSessionId],
+  );
+  return rows.map((r) => r.browserbase_session_id);
+}
+
+/** Whether any other live session still uses this hosted browser (then it must not be released). */
+export async function browserShared(browserSessionId: string, exceptSessionId: string): Promise<boolean> {
+  const r = await one<{ n: string }>("select count(*)::text as n from agent_sessions where browserbase_session_id = $1 and id <> $2 and status in ('running', 'waiting')", [browserSessionId, exceptSessionId]);
+  return Number(r?.n ?? 0) > 0;
+}
+
+/** Stop a session the user cancelled: no more turns, nothing pending, the worker drops it at its next step. */
+export async function cancelSession(row: SessionRow, note: string): Promise<void> {
+  await q(
+    "update agent_sessions set status = $2, pending_kind = null, pending_event_id = null, pending_deadline = null, lease_until = null, messages = messages || $3::jsonb, updated_at = now() where id = $1",
+    [row.id, row.kind === "task" ? "terminated" : "idle", JSON.stringify([{ role: "assistant", content: note, ephemeral: true, at: now() }])],
+  );
 }
 
 /**

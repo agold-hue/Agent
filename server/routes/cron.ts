@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { backfillMessageTimes } from "../../lib/backfill.js";
-import { ensureSchema } from "../../lib/db.js";
+import { ensureSchema, q } from "../../lib/db.js";
 import { env } from "../../lib/env.js";
 import { takeDueFollowUps } from "../../lib/followups.js";
 import { attachmentsFor, takeUntriaged } from "../../lib/inbound.js";
@@ -41,6 +41,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       out.resumed++;
     }
   }
+
+  // 0b. Parallel tasks left waiting on the user for half a day, or running with no worker for two hours: closed.
+  await q(
+    "update agent_sessions set status = 'terminated', pending_kind = null, pending_event_id = null, pending_deadline = null, lease_until = null where kind = 'task' and channel = 'chat' and ((status = 'waiting' and updated_at < now() - interval '12 hours') or (status = 'running' and updated_at < now() - interval '2 hours' and (lease_until is null or lease_until < now())))",
+  ).catch((err) => console.error("[cron] stale tasks:", err));
 
   // 1. Timers and watches.
   for (const f of await takeDueFollowUps()) {

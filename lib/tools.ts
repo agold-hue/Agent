@@ -69,7 +69,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
       case "login": {
         const browser = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
         if (!browser) return { text: "No active browser. Call browser_open first." };
-        const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined, username: args.username ? s("username") : undefined, code: args.code ? s("code") : undefined });
+        const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined, username: args.username ? s("username") : undefined, code: args.code ? s("code") : undefined, targetId: row.browser_target_id });
         console.log(`[login] ${row.id} ${s("domain")}: ${result.status}${"reason" in result ? ` (${result.reason})` : ""}`);
         const payload: Record<string, unknown> = { ...result };
         if (result.status === "needs_user") payload.live_view_url = browser.liveViewUrl;

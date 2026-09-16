@@ -1,7 +1,7 @@
 import { chromium, type Browser, type Page } from "playwright-core";
-import { createBrowser, reuseBrowser, type BrowserHandle } from "./browser.js";
+import { createBrowser, pageByTarget, reuseBrowser, targetIdOf, type BrowserHandle } from "./browser.js";
 import { env } from "./env.js";
-import { updateSession, type SessionRow } from "./sessions.js";
+import { otherActiveBrowsers, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
 /**
@@ -14,14 +14,64 @@ const MAX_ELEMENTS = 250;
 /** A click or a keystroke returns a shorter snapshot; browser_snapshot gives the whole page. */
 const ACTION_ELEMENTS = Number(process.env.ACTION_SNAPSHOT_ELEMENTS ?? 140);
 
+/**
+ * One hosted browser per customer at a time. A session reuses its own browser, else joins the browser
+ * another of the customer's sessions is using (same cookies, so one sign-in serves every task, and a
+ * site never sees a "new device"), and only opens a fresh one when none is running.
+ */
 async function handleFor(t: Tenant, row: SessionRow): Promise<BrowserHandle> {
   if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, memory, calendar and email, and tell the user browsing is not enabled.");
-  const existing = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
-  if (existing) return existing;
+  const own = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
+  if (own) return own;
+  for (const id of await otherActiveBrowsers(row.user_id, row.id).catch(() => [] as string[])) {
+    const shared = await reuseBrowser(id);
+    if (!shared) continue;
+    row.browserbase_session_id = id;
+    row.browser_target_id = null; // a tab of its own in the shared browser, opened on first use
+    await updateSession(row.id, { browserbase_session_id: id, browser_target_id: null });
+    return shared;
+  }
   const h = await createBrowser(t);
   row.browserbase_session_id = h.sessionId;
-  await updateSession(row.id, { browserbase_session_id: h.sessionId });
+  row.browser_target_id = null;
+  await updateSession(row.id, { browserbase_session_id: h.sessionId, browser_target_id: null });
   return h;
+}
+
+/**
+ * The session's own tab: found by target id on every call; opened when the session has none yet.
+ * The browser's first blank page is claimed by whichever session gets there first, so a single task
+ * still works in one tab like before; later sessions get a new tab each.
+ */
+async function pageFor(row: SessionRow, context: ReturnType<Browser["contexts"]>[number]): Promise<Page> {
+  let pages = context.pages();
+  const own = await pageByTarget(pages, row.browser_target_id);
+  if (own) return own;
+  let page: Page;
+  const blank = pages.find((p) => p.url() === "about:blank" || p.url() === "");
+  if (!row.browser_target_id && blank && pages.length === 1) page = blank;
+  else page = await context.newPage();
+  const id = await targetIdOf(page);
+  if (id) {
+    row.browser_target_id = id;
+    await updateSession(row.id, { browser_target_id: id });
+  }
+  return page;
+}
+
+/** Close the session's tab (a finished task); the browser stays for whoever else uses it. */
+export async function closeTab(row: SessionRow): Promise<void> {
+  if (!row.browserbase_session_id || !row.browser_target_id) return;
+  try {
+    const handle = await reuseBrowser(row.browserbase_session_id);
+    if (!handle) return;
+    const browser = await connect(handle);
+    const context = browser.contexts()[0];
+    const page = context ? await pageByTarget(context.pages(), row.browser_target_id) : undefined;
+    if (page && context && context.pages().length > 1) await page.close().catch(() => {});
+  } catch {
+    /* the browser is gone; nothing to close */
+  }
 }
 
 /**
@@ -55,9 +105,7 @@ async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser:
   const run = async () => {
     const browser = await connect(handle);
     const context = browser.contexts()[0] ?? (await browser.newContext());
-    let pages = context.pages();
-    if (!pages.length) pages = [await context.newPage()];
-    const page = pages[pages.length - 1];
+    const page = await pageFor(row, context);
     return await fn(page, browser, handle);
   };
   try {

@@ -80,13 +80,35 @@ export async function liveViewIfRunning(sessionId: string): Promise<string | nul
   return url;
 }
 
-/** Connect over CDP and return the page whose host matches `domain`, or the most recent page. */
-export async function attach(connectUrl: string, domain?: string): Promise<{ browser: Browser; page: Page }> {
+/** The CDP target id of a page: stable for the life of the tab, so a session finds its own tab on every reconnect. */
+export async function targetIdOf(page: Page): Promise<string | undefined> {
+  try {
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      const info = (await cdp.send("Target.getTargetInfo")) as { targetInfo?: { targetId?: string } };
+      return info.targetInfo?.targetId;
+    } finally {
+      await cdp.detach().catch(() => {});
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/** The page with this target id, if it is still open. */
+export async function pageByTarget(pages: Page[], targetId: string | null | undefined): Promise<Page | undefined> {
+  if (!targetId) return undefined;
+  for (const p of pages) if ((await targetIdOf(p)) === targetId) return p;
+  return undefined;
+}
+
+/** Connect over CDP and return the session's own tab, else the page whose host matches `domain`, else the most recent page. */
+export async function attach(connectUrl: string, domain?: string, targetId?: string | null): Promise<{ browser: Browser; page: Page }> {
   const browser = await chromium.connectOverCDP(connectUrl, { timeout: 30_000 });
   const context = browser.contexts()[0] ?? (await browser.newContext());
   const pages = context.pages();
-  let page: Page | undefined;
-  if (domain) {
+  let page: Page | undefined = await pageByTarget(pages, targetId);
+  if (!page && domain) {
     const d = domain.toLowerCase();
     page = pages.find((p) => {
       try {

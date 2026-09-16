@@ -213,4 +213,6 @@ alter table followups add column if not exists channel text not null default 'ch
 
 -- A task spawned from the chat to run alongside it (parallel tasks) remembers its chat thread
 alter table agent_sessions add column if not exists parent_session_id text;
+-- One hosted browser per customer at a time; each session works in its own tab of it
+alter table agent_sessions add column if not exists browser_target_id text;
 create index if not exists agent_sessions_parent on agent_sessions(parent_session_id) where parent_session_id is not null;

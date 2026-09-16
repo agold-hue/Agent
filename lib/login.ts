@@ -239,15 +239,17 @@ export async function loginToSite(t: Tenant, opts: {
   username?: string;
   /** A code the user sent from their phone: typed into the verification field on the current page. */
   code?: string;
+  /** The session's own tab in the shared browser. */
+  targetId?: string | null;
 }): Promise<LoginResult> {
   const domain = registrableDomain(opts.domain);
-  if (opts.code) return enterCode(opts.connectUrl, domain, opts.code);
+  if (opts.code) return enterCode(opts.connectUrl, domain, opts.code, opts.targetId);
   // A vault record, or the identifier the user just gave (Uber, Lyft and most apps sign in with a phone
   // number and a texted code; no password exists). An empty password means passwordless.
   const cred = (await findCredential(t, domain, opts.accountHint)) ?? (opts.username ? { username: opts.username.trim(), password: "", totp: undefined } : undefined);
   if (!cred) return { status: "no_credentials", domain };
 
-  const { browser, page } = await attach(opts.connectUrl, domain);
+  const { browser, page } = await attach(opts.connectUrl, domain, opts.targetId);
   try {
     if (!page.url().includes(domain)) {
       await page.goto(`https://${domain}`, { waitUntil: "domcontentloaded" }).catch(() => {});
@@ -342,8 +344,8 @@ export async function loginToSite(t: Tenant, opts: {
 }
 
 /** Type a code the user relayed into whatever verification field is showing (sign-in or card verification). */
-export async function enterCode(connectUrl: string, domain: string, code: string): Promise<LoginResult> {
-  const { browser, page } = await attach(connectUrl, domain);
+export async function enterCode(connectUrl: string, domain: string, code: string, targetId?: string | null): Promise<LoginResult> {
+  const { browser, page } = await attach(connectUrl, domain, targetId);
   try {
     const clean = code.replace(/[^0-9a-z]/gi, "");
     if (!clean) return { status: "needs_user", reason: "The code was empty after removing spaces and punctuation.", url: page.url() };

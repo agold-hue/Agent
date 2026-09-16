@@ -24,8 +24,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     "select id, title, kind, status, browserbase_session_id, created_at, updated_at from agent_sessions where user_id = $1 and browserbase_session_id is not null order by updated_at desc limit 12",
     [t.id],
   );
+  // One browser can serve several tasks (each in its own tab): list it once, naming all of them.
+  const byBrowser = new Map<string, typeof rows>();
+  for (const r of rows) byBrowser.set(r.browserbase_session_id, [...(byBrowser.get(r.browserbase_session_id) ?? []), r]);
   const items = await Promise.all(
-    rows.map(async (r) => {
+    [...byBrowser.values()].map(async (group) => {
+      const r = group[0];
       let state = "unknown";
       let startedAt: string | null = null;
       let endedAt: string | null = null;
@@ -41,8 +45,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       return {
         browser_session_id: r.browserbase_session_id,
-        task: r.title || r.kind,
-        task_status: r.status,
+        task: group.map((g) => g.title || g.kind).join(" · "),
+        task_status: group.some((g) => g.status === "running") ? "running" : group.some((g) => g.status === "waiting") ? "waiting" : r.status,
         state,
         started_at: startedAt,
         ended_at: endedAt,

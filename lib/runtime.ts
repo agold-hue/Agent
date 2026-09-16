@@ -1,5 +1,5 @@
 import { releaseBrowser } from "./browser.js";
-import { disconnectBrowser } from "./browser-tools.js";
+import { closeTab, disconnectBrowser } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
 import { tools } from "./agent-config.js";
@@ -7,7 +7,7 @@ import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCata
 import { appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
 import { isQuickQuestion, modelFor, tierOfModel } from "./router.js";
-import { acquireLease, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { acquireLease, browserShared, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool } from "./tools.js";
 
@@ -85,7 +85,14 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       // Resync to the DB (the source of truth) so a message the user sent mid-task is picked up and
       // handled in this same session, never lost. The DB only grows (every writer appends), so adopt
       // it whenever it is longer, keeping our freshly rebuilt system prompt in slot 0.
-      const dbMsgs = await getMessages(sessionId).catch(() => null);
+      const state = await getLoopState(sessionId).catch(() => undefined);
+      // The user stopped this session meanwhile: drop it here, nothing more is written.
+      if (state && state.status !== "running") {
+        console.log(`[turn] ${row.id} #${row.turns} cancelled (${state.status})`);
+        if (row.browserbase_session_id) await disconnectBrowser(row.browserbase_session_id);
+        return "done";
+      }
+      const dbMsgs = state?.messages;
       if (dbMsgs && dbMsgs.length > row.messages.length) {
         const sys = row.messages[0];
         row.messages = dbMsgs;
@@ -318,9 +325,13 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
     await appendTranscript(t, { channel: row.channel, role: "agent", text: report }).catch(() => {});
   }
   if (row.browserbase_session_id) {
+    // A finished task or self-started session lets go of its tab; the browser itself is released only
+    // when no other live session of this customer is using it (one browser per customer).
+    if (proactive || row.kind === "task") {
+      await closeTab(row).catch(() => {});
+      if (!(await browserShared(row.browserbase_session_id, row.id).catch(() => true))) await releaseBrowser(row.browserbase_session_id).catch(() => {});
+    }
     await disconnectBrowser(row.browserbase_session_id);
-    // Self-started sessions and parallel tasks are done with their browser; the chat thread keeps its own.
-    if (proactive || row.kind === "task") await releaseBrowser(row.browserbase_session_id).catch(() => {});
   }
   return status === "error" ? "error" : "done";
 }

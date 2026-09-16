@@ -202,6 +202,10 @@
   .taskChip { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:4px 10px; border:1px solid #DDE3EA; border-radius:999px; background:#fff; font-size:12px; color:#3C4043; }
   .taskChip b { font-weight:600; color:var(--ink); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .taskChip i { font-style:normal; color:var(--muted); }
+  .taskStop { border:0; background:transparent; color:var(--muted); font-size:15px; line-height:1; padding:0 2px; cursor:pointer; border-radius:50%; }
+  .taskStop:hover { color:var(--ink); background:#EEE; }
+  .chatStop { border:0; background:transparent; color:var(--muted); font:inherit; font-size:11.5px; padding:0 4px; cursor:pointer; text-decoration:underline; }
+  .chatStop:hover { color:var(--ink); }
   .taskChip .dot { width:7px; height:7px; border-radius:50%; background:var(--copper); animation:taskPulse 1.2s ease-in-out infinite; }
   .taskChip.waiting .dot { background:#E8A33D; animation:none; }
   @keyframes taskPulse { 0%,100% { opacity:.35; } 50% { opacity:1; } }
@@ -785,13 +789,20 @@
   function renderTasks() {
     const box = $("taskStrip");
     box.hidden = !tasks.length; if (!tasks.length) { box.innerHTML = ""; return; }
-    box.innerHTML = tasks.map((t) => `<span class="taskChip ${t.status === "waiting" ? "waiting" : ""}" title="${esc2(t.title)}"><span class="dot"></span><b>${esc2(t.title)}</b><i>${esc2(t.activity || "working…")}</i></span>`).join("");
+    box.innerHTML = tasks.map((t) => `<span class="taskChip ${t.status === "waiting" ? "waiting" : ""}" title="${esc2(t.title)}"><span class="dot"></span><b>${esc2(t.title)}</b><i>${t.status === "waiting" ? "waiting for you" : ""}</i><button type="button" class="taskStop" data-id="${esc2(t.id)}" title="Stop this task" aria-label="Stop this task">×</button></span>`).join("");
+    box.querySelectorAll(".taskStop").forEach((b) => b.onclick = () => stopSession(b.dataset.id));
+  }
+  async function stopSession(id) {
+    if (!id) return;
+    try { await api("/api/chat/cancel", { method: "POST", body: JSON.stringify({ id }) }); } catch {}
+    loadHistory().catch(() => {});
   }
   // Never reveal the site or a link to the browser: a calm status line during tool work, and the
   // bouncing "typing" dots only while composing a reply (a post is imminent).
-  // While the agent works: the three dots and nothing else. No status text, no browser links.
+  // While the agent works: the three dots and a small stop link. No status text, no browser links.
   function setTyping(on) {
-    $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span>` : "";
+    $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span><button type="button" class="chatStop" id="stopMain">stop</button>` : "";
+    const b = $("stopMain"); if (b) b.onclick = () => stopSession(sessionId);
   }
   $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
