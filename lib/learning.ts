@@ -271,17 +271,36 @@ export async function mergeSiteNote(t: Tenant, domain: string, n: { fastPath?: s
   if (!d.includes(".")) return;
   const path = `sites/${d}.md`;
   const existing = (await readMemory(t, path).catch(() => null)) ?? "";
-  const today = new Date().toISOString().slice(0, 10);
-  const section = (name: string, body: string | undefined, prev: string) => {
-    const kept = prev.trim();
-    if (!body?.trim()) return kept ? `## ${name}\n${kept}` : "";
-    const lines = [...new Set([body.trim(), ...kept.split("\n").map((l) => l.trim()).filter(Boolean)])].slice(0, 8);
-    return `## ${name}\n${lines.join("\n")}`;
+  await writeMemory(t, path, mergeSections(existing || `# ${d}`, n));
+}
+
+/**
+ * The site note, rewritten with the sections this pass owns and every other section kept exactly as
+ * it was. The host also writes "## Recorded paths" and "## Pages seen" there from the browser steps,
+ * and `browser_run_path` replays from them, so losing an unknown heading would cost real capability.
+ */
+export function mergeSections(existing: string, n: { fastPath?: string; quirks?: string; ok?: boolean; today?: string }): string {
+  const today = n.today ?? new Date().toISOString().slice(0, 10);
+  const head = existing.split(/^## /m)[0].trim() || "#";
+  const sections = new Map<string, string>();
+  const order: string[] = [];
+  for (const chunk of existing.split(/^## /m).slice(1)) {
+    const name = chunk.split("\n")[0].trim();
+    if (!name) continue;
+    if (!sections.has(name)) order.push(name);
+    sections.set(name, chunk.slice(chunk.indexOf("\n") + 1).trimEnd());
+  }
+  const prepend = (name: string, line?: string) => {
+    if (!line?.trim()) return;
+    const lines = [...new Set([line.trim(), ...(sections.get(name) ?? "").split("\n").map((l) => l.trim()).filter(Boolean)])].slice(0, 8);
+    if (!sections.has(name)) order.push(name);
+    sections.set(name, lines.join("\n"));
   };
-  const prev = (name: string) => existing.split(new RegExp(`^## ${name}$`, "m"))[1]?.split(/^## /m)[0] ?? "";
-  const head = existing.split(/^## /m)[0].trim() || `# ${d}`;
-  const parts = [head, section("Fast path", n.fastPath, prev("Fast path")), section("Quirks", n.quirks, prev("Quirks")), prev("Sign-in").trim() ? `## Sign-in\n${prev("Sign-in").trim()}` : "", prev("Where things live").trim() ? `## Where things live\n${prev("Where things live").trim()}` : "", `## Last verified\n${today}${n.ok ? " (worked)" : ""}`].filter(Boolean);
-  await writeMemory(t, path, `${parts.join("\n\n")}\n`);
+  prepend("Fast path", n.fastPath);
+  prepend("Quirks", n.quirks);
+  if (!sections.has("Last verified")) order.push("Last verified");
+  sections.set("Last verified", `${today}${n.ok ? " (worked)" : ""}`);
+  return `${head}\n\n${order.map((name) => `## ${name}\n${sections.get(name)}`).join("\n\n")}\n`;
 }
 
 /** "Am I getting better?" — the numbers the weekly review quotes and the morning review acts on. */

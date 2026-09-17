@@ -82,3 +82,19 @@ test("the hand-over line tells the user what to do, without jargon", () => {
   assert.match(handoverLine({ kind: "press_hold" }), /press-and-hold/i);
   assert.match(handoverLine({ kind: "recaptcha_v2" }), /Watch the browser/i);
 });
+
+test("a site note keeps every section the host and the model wrote", async () => {
+  // browser_run_path replays from "Recorded paths" and opens pages from "Pages seen": a reflection
+  // pass that dropped either would cost real capability, so unknown headings are passed through.
+  const { mergeSections } = await import("../lib/learning.js");
+  const before = "# coned.com\n\n## Sign-in\nhttps://www.coned.com/en/login, texts a code\n\n## Recorded paths\n- bill: goto /login -> click Pay bill\n\n## Pages seen\n- My account https://coned.com/accounts\n\n## Fast path\nbalance: /accounts-billing\n";
+  const after = mergeSections(before, { fastPath: "statements: /accounts-billing/statements", quirks: "the dashboard total lags a day", ok: true, today: "2026-09-17" });
+  for (const heading of ["Sign-in", "Recorded paths", "Pages seen", "Fast path", "Quirks", "Last verified"]) assert.ok(after.includes(`## ${heading}`), `lost ${heading}`);
+  assert.ok(after.includes("- bill: goto /login -> click Pay bill"));
+  // The newest fast path goes first, the old one is kept under it, and nothing is duplicated.
+  assert.match(after, /## Fast path\nstatements: \/accounts-billing\/statements\nbalance: \/accounts-billing/);
+  assert.equal(after.match(/## Fast path/g)!.length, 1);
+  assert.ok(after.includes("## Last verified\n2026-09-17 (worked)"));
+  // Running it twice changes nothing more.
+  assert.equal(mergeSections(after, { fastPath: "statements: /accounts-billing/statements", ok: true, today: "2026-09-17" }), after);
+});
