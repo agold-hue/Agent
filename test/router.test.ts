@@ -41,22 +41,22 @@ test("a thread is re-tiered per request: up at any time, down only when idle and
 });
 
 test("the ladder starts on the affordable models and climbs one rung at a time to the frontier ones", () => {
-  assert.equal(modelList(modelFor("chat"))[0], "deepseek/deepseek-chat");
-  assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+  assert.equal(modelList(modelFor("chat"))[0], "deepseek/deepseek-v4-flash");
+  assert.equal(modelList(modelFor("task"))[0], "google/gemini-3.8-flash");
   assert.equal(modelList(modelFor("hard"))[0], "anthropic/claude-sonnet-5");
   assert.equal(modelList(modelFor("max"))[0], "anthropic/claude-opus-5");
   // The cheap tiers are pools of affordable models from several vendors, not one model.
   assert.ok(DEFAULT_POOLS.task.some((m) => m.startsWith("qwen/")) && DEFAULT_POOLS.task.some((m) => m.startsWith("moonshotai/")) && DEFAULT_POOLS.task.some((m) => m.startsWith("z-ai/")));
   assert.ok(DEFAULT_POOLS.chat.length >= 4 && DEFAULT_POOLS.task.length >= 5);
   // A session on any pool member belongs to that tier.
-  assert.equal(tierOfModel("moonshotai/kimi-k2-0905,deepseek/deepseek-v4-pro"), "task");
-  assert.equal(tierOfModel("qwen/qwen3-235b-a22b-2507"), "chat");
+  assert.equal(tierOfModel("deepseek/deepseek-v4.1-flash,google/gemini-3.8-flash"), "task");
+  assert.equal(tierOfModel("qwen/qwen3.7-flash"), "chat");
   assert.equal(nextTier("chat"), "task");
   assert.equal(nextTier("task"), "hard");
   assert.equal(nextTier("hard"), "max");
   assert.equal(nextTier("max"), null);
   assert.equal(tierOfModel("anthropic/claude-opus-5"), "max");
-  assert.equal(tierOfModel("deepseek/deepseek-v4-pro"), "task");
+  assert.equal(tierOfModel("google/gemini-3.8-flash"), "task");
   // The router never starts a request on the top rung; only escalation reaches it.
   for (const t of ["dispute the charge", "negotiate the bill", "check my balance", "hi"]) assert.notEqual(tierFor(t, "chat"), "max");
   // A thread that escalated to the top comes back down for the next plain request.
@@ -64,8 +64,9 @@ test("the ladder starts on the affordable models and climbs one rung at a time t
 });
 
 test("a photo goes to the cheapest tier whose model can see it", () => {
-  // DeepSeek reads text; the first tier from task up that can look at an image is the Claude one.
-  assert.equal(visionTier("task"), "hard");
+  // DeepSeek V4 Flash reads text; the first tier from chat up that can look at an image is the task one (Gemini Flash).
+  assert.equal(visionTier("chat"), "task");
+  assert.equal(visionTier("task"), "task");
   assert.equal(visionTier("hard"), "hard");
   assert.equal(atLeastModel(modelFor("chat"), "task"), modelFor("task"));
   assert.equal(atLeastModel(modelFor("hard"), "task"), undefined);
@@ -93,39 +94,39 @@ test("a pool member whose record across customers is poor goes to the back of ev
   const wins = (model: string, n: number) => ({ model, ok: true, n });
   try {
     // Not enough history, or enough tasks ended well: the pool is used as set.
-    setModelHistory([fails("deepseek/deepseek-v4-pro", 5)]);
-    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
-    setModelHistory([fails("deepseek/deepseek-v4-pro", 3), wins("deepseek/deepseek-v4-pro", 3)]);
-    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+    setModelHistory([fails("google/gemini-3.8-flash", 5)]);
+    assert.equal(modelList(modelFor("task"))[0], "google/gemini-3.8-flash");
+    setModelHistory([fails("google/gemini-3.8-flash", 3), wins("google/gemini-3.8-flash", 3)]);
+    assert.equal(modelList(modelFor("task"))[0], "google/gemini-3.8-flash");
     assert.deepEqual(routeFor("task").demoted, []);
     // Six tasks, one ended well: the next pool member leads everywhere the task tier is named.
-    setModelHistory([fails("deepseek/deepseek-v4-pro", 5), wins("deepseek/deepseek-v4-pro", 1)]);
-    assert.ok(isPoor("deepseek/deepseek-v4-pro"));
+    setModelHistory([fails("google/gemini-3.8-flash", 5), wins("google/gemini-3.8-flash", 1)]);
+    assert.ok(isPoor("google/gemini-3.8-flash"));
     const route = routeFor("task");
-    assert.equal(route.models[0], "moonshotai/kimi-k2-0905");
-    assert.equal(route.models[route.models.length - 1], "deepseek/deepseek-v4-pro"); // still an outage fallback
-    assert.deepEqual(route.demoted, [{ model: "deepseek/deepseek-v4-pro", ok: 1, n: 6 }]);
-    assert.equal(modelList(reroutedModel(modelFor("chat"), "how much is an uber to JFK", false)!)[0], "moonshotai/kimi-k2-0905");
-    assert.equal(modelList(atLeastModel(modelFor("chat"), "task")!)[0], "moonshotai/kimi-k2-0905");
+    assert.equal(route.models[0], "deepseek/deepseek-v4.1-flash");
+    assert.equal(route.models[route.models.length - 1], "google/gemini-3.8-flash"); // still an outage fallback
+    assert.deepEqual(route.demoted, [{ model: "google/gemini-3.8-flash", ok: 1, n: 6 }]);
+    assert.equal(modelList(reroutedModel(modelFor("chat"), "how much is an uber to JFK", false)!)[0], "deepseek/deepseek-v4.1-flash");
+    assert.equal(modelList(atLeastModel(modelFor("chat"), "task")!)[0], "deepseek/deepseek-v4.1-flash");
     // A thread that started on the demoted model still belongs to the task tier.
-    assert.equal(tierOfModel("deepseek/deepseek-v4-pro,moonshotai/kimi-k2-0905"), "task");
+    assert.equal(tierOfModel("google/gemini-3.8-flash,deepseek/deepseek-v4.1-flash"), "task");
     // Two poor members: least bad first among them, both behind the clean ones.
-    setModelHistory([fails("deepseek/deepseek-v4-pro", 6), fails("moonshotai/kimi-k2-0905", 4), wins("moonshotai/kimi-k2-0905", 2)]);
+    setModelHistory([fails("google/gemini-3.8-flash", 6), fails("deepseek/deepseek-v4.1-flash", 4), wins("deepseek/deepseek-v4.1-flash", 2)]);
     const chain = modelList(modelFor("task"));
-    assert.equal(chain[0], "qwen/qwen3-max");
-    assert.deepEqual(chain.slice(-2), ["moonshotai/kimi-k2-0905", "deepseek/deepseek-v4-pro"]);
+    assert.equal(chain[0], "deepseek/deepseek-v4-pro");
+    assert.deepEqual(chain.slice(-2), ["deepseek/deepseek-v4.1-flash", "google/gemini-3.8-flash"]);
     // The catalog fallback chain never re-introduces a poor model.
     const cat = (id: string, price: number): CatalogModel => ({ id, name: id, in: price / 5, out: (price * 4) / 5, context: 200_000, tools: true, vision: true });
-    const models = [cat("deepseek/deepseek-v4-pro", 6), cat("google/gemini-2.5-pro", 11), cat("anthropic/claude-haiku-4.5", 6), cat("openai/gpt-5-mini", 5.5)];
-    assert.ok(!withFallbacks(["google/gemini-2.5-pro"], models).includes("deepseek/deepseek-v4-pro"));
+    const models = [cat("google/gemini-3.8-flash", 6), cat("google/gemini-2.5-pro", 11), cat("anthropic/claude-haiku-4.5", 6), cat("openai/gpt-5-mini", 5.5)];
+    assert.ok(!withFallbacks(["google/gemini-2.5-pro"], models).includes("google/gemini-3.8-flash"));
     setModelHistory([]);
-    assert.ok(withFallbacks(["google/gemini-2.5-pro"], models).includes("deepseek/deepseek-v4-pro"));
+    assert.ok(withFallbacks(["google/gemini-2.5-pro"], models).includes("google/gemini-3.8-flash"));
     // Once the failures age out of the window the configured order is back.
-    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+    assert.equal(modelList(modelFor("task"))[0], "google/gemini-3.8-flash");
     // MODEL_HISTORY=off keeps the pools as set.
-    setModelHistory([fails("deepseek/deepseek-v4-pro", 6)]);
+    setModelHistory([fails("google/gemini-3.8-flash", 6)]);
     process.env.MODEL_HISTORY = "off";
-    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+    assert.equal(modelList(modelFor("task"))[0], "google/gemini-3.8-flash");
   } finally {
     delete process.env.MODEL_HISTORY;
     setModelHistory([]);

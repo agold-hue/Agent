@@ -724,11 +724,22 @@ const DEFAULT_PRICES: Record<string, { in: number; out: number }> = {
   "deepseek/deepseek-chat": { in: 0.3, out: 1.2 },
   "deepseek/deepseek-flash": { in: 0.3, out: 1.2 },
   "deepseek/deepseek-v4-pro": { in: 1.32, out: 3.96 },
+  "deepseek/deepseek-v4-flash": { in: 0.09, out: 0.18 },
+  "deepseek/deepseek-v4.1-flash": { in: 0.3, out: 1.2 },
   "google/gemini-2.5-flash-lite": { in: 0.1, out: 0.4 },
   "google/gemini-2.5-flash": { in: 0.3, out: 2.5 },
   "google/gemini-2.5-pro": { in: 1.25, out: 10 },
   "google/gemini-3.1-flash-lite": { in: 0.25, out: 1.5 },
+  "google/gemini-3.5-flash-lite": { in: 0.3, out: 2.5 },
   "google/gemini-3.8-flash": { in: 0.75, out: 3.75 },
+  "openai/gpt-5.6-luna": { in: 0.2, out: 1.2 },
+  "qwen/qwen3.7-flash": { in: 0.03, out: 0.13 },
+  "qwen/qwen3.8-flash": { in: 0.15, out: 0.47 },
+  "z-ai/glm-5.3-flash": { in: 0.09, out: 0.3 },
+  "x-ai/grok-4.3": { in: 1.25, out: 2.5 },
+  "minimax/minimax-m3": { in: 0.3, out: 1.2 },
+  "moonshotai/kimi-k2.6": { in: 0.95, out: 4 },
+  "mistralai/mistral-small-2603": { in: 0.15, out: 0.6 },
   "anthropic/claude-haiku-4.5": { in: 1, out: 5 },
   "anthropic/claude-sonnet-5": { in: 2, out: 10 },
   "anthropic/claude-opus-5": { in: 5, out: 25 },
@@ -755,7 +766,8 @@ export function priceFor(modelId: string): { in: number; out: number } {
 function cacheDiscount(model: string): number {
   const m = model.toLowerCase();
   if (/claude|anthropic|deepseek/.test(m)) return 0.1;
-  if (/gemini|google/.test(m)) return 0.25;
+  if (/gemini-2\./.test(m)) return 0.25;
+  if (/gemini|google/.test(m)) return 0.1; // Gemini 3.x bills cached input at a tenth, like Claude
   if (/gpt|openai/.test(m)) return 0.5;
   return 1;
 }
@@ -778,7 +790,7 @@ function resolveModelName(modelId: string): string {
 export function supportsVision(model: string): boolean {
   const primary = modelList(model)[0] ?? model;
   if (liveVision.has(primary) || liveVision.has(resolveModelName(primary))) return true;
-  const list = (process.env.VISION_MODELS ?? "gemini,gpt-4o,gpt-5,claude,qwen-vl,pixtral,llama-4").split(",").map((s) => s.trim().toLowerCase());
+  const list = (process.env.VISION_MODELS ?? "gemini,gpt-4o,gpt-5,claude,qwen-vl,qwen3.,pixtral,llama-4,deepseek-v4.1,glm-5.3-flash,glm-5v,minimax-m3,kimi-k2.,grok-4.").split(",").map((s) => s.trim().toLowerCase());
   return list.some((s) => s && primary.toLowerCase().includes(s));
 }
 

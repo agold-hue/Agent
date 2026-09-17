@@ -19,8 +19,12 @@ import type { Tenant } from "./tenant.js";
  *   MODEL_HARD  judgment against a counterparty: refunds, disputes, negotiations, appeals, contracts
  *   MODEL_MAX   the strongest model there is, reached only by escalation from the hard tier
  *
- * The default pools are the affordable, capable agentic models on OpenRouter (DeepSeek, Qwen, Kimi,
- * GLM, MiniMax, Grok, Gemini Flash) for the two cheap tiers, and the frontier models above them.
+ * The default pools are the current generation of affordable, capable agentic models on OpenRouter
+ * (Gemini 3.8 Flash, DeepSeek V4.1 Flash and V4 Pro, Qwen 3.8 Flash, GLM 5.3 Flash, Grok 4.3,
+ * MiniMax M3, Kimi K2.6 for browser work; DeepSeek V4 Flash, Qwen 3.7 Flash, Gemini 3.5 Flash-Lite,
+ * GPT-5.6 Luna, Mistral Small 4 for chat, lookups and page condensing) and the frontier models above
+ * them. Browser work starts on Gemini 3.8 Flash: the newest Flash, a fast first-party tool caller that
+ * reads screenshots, at a fifth of Sonnet's price per token, with the cheaper members behind it.
  * Ids the live catalog does not know are skipped, so a renamed model never breaks a tier.
  * GET /api/models lists every id with live prices and tool support.
  */
@@ -29,8 +33,8 @@ export const TIERS: Tier[] = ["chat", "task", "hard", "max"];
 
 /** The affordable, capable pools. Order is preference among equals; the outcome record and price decide otherwise. */
 export const DEFAULT_POOLS: Record<Tier, string[]> = {
-  chat: ["deepseek/deepseek-chat", "qwen/qwen3-235b-a22b-2507", "google/gemini-3.1-flash-lite", "z-ai/glm-4.5-air", "meta-llama/llama-4-maverick", "mistralai/mistral-medium-3.1"],
-  task: ["deepseek/deepseek-v4-pro", "moonshotai/kimi-k2-0905", "qwen/qwen3-max", "z-ai/glm-4.6", "x-ai/grok-4-fast", "minimax/minimax-m2", "google/gemini-3.8-flash"],
+  chat: ["deepseek/deepseek-v4-flash", "qwen/qwen3.7-flash", "google/gemini-3.5-flash-lite", "openai/gpt-5.6-luna", "mistralai/mistral-small-2603"],
+  task: ["google/gemini-3.8-flash", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro", "qwen/qwen3.8-flash", "z-ai/glm-5.3-flash", "x-ai/grok-4.3", "minimax/minimax-m3", "moonshotai/kimi-k2.6"],
   hard: ["anthropic/claude-sonnet-5", "google/gemini-2.5-pro", "openai/gpt-5"],
   max: ["anthropic/claude-opus-5"],
 };
@@ -40,7 +44,7 @@ export function poolFor(tier: Tier, t?: Tenant): string[] {
   const plan = (t?.plan ?? "starter").toUpperCase();
   const configured = process.env[`MODEL_${tier.toUpperCase()}_${plan}`] || process.env[`MODEL_${tier.toUpperCase()}`];
   if (configured) return modelList(configured);
-  if (geminiDirect()) return [{ chat: "gemini-2.5-flash-lite", task: "gemini-2.5-flash", hard: "gemini-2.5-pro", max: "gemini-2.5-pro" }[tier]]; // Google-only: Pro takes the top
+  if (geminiDirect()) return [{ chat: "gemini-3.5-flash-lite", task: "gemini-3.8-flash", hard: "gemini-2.5-pro", max: "gemini-2.5-pro" }[tier]]; // Google-only: Pro takes the top
   return DEFAULT_POOLS[tier];
 }
 
