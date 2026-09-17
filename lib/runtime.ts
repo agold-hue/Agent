@@ -55,6 +55,14 @@ const CHAT_ROLLOVER_TURNS = Number(process.env.CHAT_ROLLOVER_TURNS ?? 120);
 const CHAT_ROLLOVER_SHARE = 0.6;
 // How many identical tool calls in a row count as a stuck loop (a real failure hit ~40).
 const LOOP_LIMIT = Number(process.env.LOOP_LIMIT ?? 6);
+/**
+ * Turns in a row that call no tool and show the user nothing before the host steps in. The loop
+ * guard above watches for repeated tool calls; this watches for the opposite failure, a model that
+ * stops calling tools at all and just writes.
+ */
+const BARREN_LIMIT = Number(process.env.BARREN_TURN_LIMIT ?? 4);
+/** The most time the loop will hold back for a turn that might run long. */
+const MAX_TURN_HEADROOM_MS = Number(process.env.MAX_TURN_HEADROOM_MS ?? 90_000);
 /** Tools with no side effects on the world: safe to run concurrently when the model asks for several at once. */
 export const READ_ONLY_TOOLS = new Set(["web_search", "fetch_page", "memory_read", "memory_grep", "memory_list", "list_items", "browser_find", "list_files", "read_pdf_fields", "get_email_code"]);
 /** Browser steps that change the page. Several in one turn run in order and only the last returns a snapshot. */
@@ -162,6 +170,9 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
   // with zero progress. Track recent tool calls; on a repeating pattern, escalate once to a stronger
   // model, then stop with a clear message rather than spin.
   const sigs: string[] = [];
+  // Turns in a row that called no tool and showed the user nothing.
+  let barren = 0;
+  let escalatedForBarren = false;
   let escalatedForLoop = false;
   let escalatedForStall = false;
   // The browser opened on the task's site while the model thinks about its first step (F6).
@@ -176,7 +187,12 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
     });
 
   try {
-    while (Date.now() - started < budgetMs) {
+    // A turn is started only when there is room to finish it. The loop used to start one with a
+    // millisecond left, and a single browser_click took 87 seconds — so the invocation blew past its
+    // budget and Vercel killed it at 300s mid-turn, losing the work and stalling the session until
+    // cron swept it. Headroom tracks the longest turn this run has actually taken.
+    let longestTurnMs = 20_000;
+    while (Date.now() - started < budgetMs - Math.min(longestTurnMs, MAX_TURN_HEADROOM_MS)) {
       // Resync to the DB (the source of truth) so a message the user sent mid-task is picked up and
       // handled in this same session, never lost. The DB only grows (every writer appends), so adopt
       // it whenever it is longer, keeping our freshly rebuilt system prompt in slot 0.
@@ -293,6 +309,9 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
       // kept under the context budget.
       const context = withContextBlock(compacted(row.messages), row.contextBlock);
       const turnStart = Date.now();
+      const trackTurn = () => {
+        longestTurnMs = Math.max(longestTurnMs, Date.now() - turnStart);
+      };
       const timings: string[] = [];
       const early = new Map<string, Promise<ToolOutcome>>();
       let completion: Completion;
@@ -337,7 +356,33 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
       row.messages.push({ ...completion.message, at: stamp(), cost: cents });
 
       const calls = completion.message.tool_calls ?? [];
+      if (calls.length) barren = 0;
       if (!calls.length) {
+        // A turn that calls no tool and delivers nothing to the user is a turn that did not happen.
+        // One or two are normal (a reply cut off, a nudge, a hand-off). A run of them is a model
+        // talking to itself: in one real session fifteen turns in a row produced 600 tokens of prose,
+        // no tool call and no reply, six seconds each, until the invocation hit the 300-second wall.
+        // The loop guard could not see it, because it watches tool calls and there were none.
+        barren++;
+        if (barren >= BARREN_LIMIT) {
+          trackTurn();
+          await save();
+          const stuckOn = tierOfModel(row.model ?? "", t);
+          const up = nextTier(stuckOn);
+          if (!escalatedForBarren && up && !tooDearForValue(taskUserText(row.messages), up)) {
+            escalatedForBarren = true;
+            barren = 0;
+            await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), stuckOn, false, outcomeExtra(row)).catch(() => {});
+            await handoff(t, row);
+            row.model = modelFor(up, t);
+            row.messages.push({ role: "user", content: "(Your last few turns produced text but took no action and told the user nothing, so nothing has happened. Stop writing and act: take the next step with a tool, or, if the task cannot be done, say in one line exactly what is blocking you. You are now on a stronger model.)" });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${barrenLabel(completion)} x${BARREN_LIMIT} -> escalate`);
+            continue;
+          }
+          console.log(`[turn] ${row.id} #${row.turns} ${barrenLabel(completion)} x${BARREN_LIMIT} -> stop`);
+          return await finish(t, row, persisted, await wrapUp(t, row, "You have taken several turns in a row without acting or reporting.", "I got stuck going round in circles on this without getting anywhere, so I stopped rather than keep burning time."), "idle");
+        }
         // The reply is what the user reads: drop the closing filler chat models add, and the links and
         // reference markers a search-shaped answer drags along (unless the user asked for links).
         if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(calm(stripCitations(completion.message.content, taskUserText(row.messages))));
@@ -744,7 +789,7 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
   // provider error) must be in it or the user sees nothing at all.
   if (report && !silent && lastAssistantText(row.messages) !== report.trim()) row.messages.push({ role: "assistant", content: report, at: stamp() });
-  const failedWords = /\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200));
+  const failedWords = notDelivered(report);
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   const limitHit = row.turns >= MAX_SESSION_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap);
   // A provider error no longer terminates the chat: the thread stays open (status "error", still
@@ -754,39 +799,13 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   // The reply reaches the page now. Append-only: never overwrite the whole array, or a message the
   // user just sent is lost. Everything below is bookkeeping the user never waits for.
   await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null, chips: null }, row.lease_owner ? { owner: row.lease_owner } : undefined);
-  // A task the host had to stop, or that ended on a failure: a three-line post-mortem into memory,
-  // so the morning review can propose the one change that prevents it next time.
-  if (status === "error" || failedWords) await postMortem(t, row, report).catch(() => {});
-  if (row.kind === "chat" || row.kind === "task") {
-    // The chips under the reply, from the reply itself; the page picks them up on its next poll.
-    if (status === "idle" && report && !silent) await suggestReplies(t, row, report).catch(() => {});
-    // How this kind of task ended on this tier, for the adaptive router; and the rule in a correction, if this task was one.
-    if (taskUsedTools(row.messages)) await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), status === "idle" && !failedWords, outcomeExtra(row)).catch(() => {});
-    const learned = await learnFromCorrection(t, row).catch(() => undefined);
-    if (learned) console.log(`[learn] ${row.id}: ${learned}`);
-    // A promise in the reply ("I'll check back Thursday") is kept by the host if the model set no follow-up.
-    if (status === "idle" && report) {
-      const due = await keepPromise(t, row, report).catch(() => undefined);
-      if (due) console.log(`[promise] ${row.id}: follow-up ${due.toISOString()}`);
-    }
-    // What blocked the task becomes a fix card the user can act on in one tap.
-    if (failedWords || status === "error") {
-      const { relayStatus } = await import("./relay.js");
-      const relay = await relayStatus(t).catch(() => ({ online: false }));
-      const fixes = detectFixes(row.messages, !!t.googleRefreshToken, relay.online);
-      if (fixes.length) await recordFixes(t, fixes).catch(() => {});
-    }
-    if (status === "idle" && report && taskUsedTools(row.messages)) await gradeReply(t, row, report).catch(() => {});
-  }
-  // A browser task that ended well: what it did on each site becomes a path that worked in the site
-  // note. One that stopped keeps its checkpoint, marked unfinished, so the next task starts from it.
-  if (row.kind === "chat" || row.kind === "task") {
-    const finished = status === "idle" && !failedWords;
-    const domains = [...siteActivity(row.messages).visited].filter(([, n]) => n >= (finished ? 3 : 2)).map(([d]) => d);
-    if (domains.length) {
-      const written = await recordPaths(t, row, domains, report, finished).catch(() => [] as string[]);
-      if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}${finished ? "" : " (unfinished)"}`);
-    }
+  // The user hears first. This used to sit at the end, behind up to seven housekeeping model calls —
+  // about half a minute in the logs — so an email or a phone notification arrived that much late.
+  if (report && !silent) {
+    // Mail triage can wait for the check-in times; a timer the user or the agent set fires on time.
+    const holdable = row.kind === "triage";
+    if (holdable && shouldDefer(t, report)) await deferToDigest(t, "From your mail", report);
+    else await notifyOwner(t, row, report, row.kind === "review" ? "Morning brief" : row.kind === "weekly" ? "Week ahead" : row.kind === "digest" ? "Heads-ups" : undefined);
   }
   // A message that landed while we were finishing: flip back to running and re-kick so it gets
   // answered now, instead of sitting idle until the user sends something else.
@@ -798,16 +817,57 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
       await kick(row.id);
     }
   }
-  if (report && !silent) {
-    // Mail triage can wait for the check-in times; a timer the user or the agent set fires on time.
-    const holdable = row.kind === "triage";
-    if (holdable && shouldDefer(t, report)) await deferToDigest(t, "From your mail", report);
-    else await notifyOwner(t, row, report, row.kind === "review" ? "Morning brief" : row.kind === "weekly" ? "Week ahead" : row.kind === "digest" ? "Heads-ups" : undefined);
-    await appendTranscript(t, { channel: row.channel, role: "agent", text: report }).catch(() => {});
+
+  // Everything below is bookkeeping nobody is waiting for, and most of it is a model call of its own:
+  // the chips, the post-mortem, the correction, the promise, the grade, the paths, the lessons. Run
+  // serially they took about thirty seconds of wall clock per task and held the invocation open to
+  // the point of hitting Vercel's 300-second wall. They are independent of each other, so they go
+  // together — except the two that both rewrite sites/<domain>.md, which would race.
+  const chatOrTask = row.kind === "chat" || row.kind === "task";
+  const finished = status === "idle" && !failedWords;
+  const housekeeping: Array<Promise<unknown>> = [];
+  const quietly = (label: string, work: () => Promise<unknown>) => housekeeping.push(work().catch((e: unknown) => console.error(`[after] ${row.id} ${label}: ${e instanceof Error ? e.message : String(e)}`)));
+
+  if (status === "error" || failedWords) quietly("post-mortem", () => postMortem(t, row, report));
+  if (report && !silent) quietly("transcript", () => appendTranscript(t, { channel: row.channel, role: "agent", text: report }));
+  if (chatOrTask) {
+    // The chips under the reply, from the reply itself; the page picks them up on its next poll.
+    if (status === "idle" && report && !silent) quietly("chips", () => suggestReplies(t, row, report));
+    // How this kind of task ended on this tier, for the adaptive router; and the rule in a correction, if this task was one.
+    if (taskUsedTools(row.messages)) quietly("outcome", () => recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), finished, outcomeExtra(row)));
+    quietly("correction", async () => {
+      const learned = await learnFromCorrection(t, row);
+      if (learned) console.log(`[learn] ${row.id}: ${learned}`);
+    });
+    // A promise in the reply ("I'll check back Thursday") is kept by the host if the model set no follow-up.
+    if (status === "idle" && report)
+      quietly("promise", async () => {
+        const due = await keepPromise(t, row, report);
+        if (due) console.log(`[promise] ${row.id}: follow-up ${due.toISOString()}`);
+      });
+    // What blocked the task becomes a fix card the user can act on in one tap.
+    if (failedWords || status === "error")
+      quietly("fixes", async () => {
+        const { relayStatus } = await import("./relay.js");
+        const relay = await relayStatus(t).catch(() => ({ online: false }));
+        const fixes = detectFixes(row.messages, !!t.googleRefreshToken, relay.online);
+        if (fixes.length) await recordFixes(t, fixes);
+      });
+    if (status === "idle" && report && taskUsedTools(row.messages)) quietly("grade", () => gradeReply(t, row, report));
+    // The two that write sites/<domain>.md, in order, so neither loses the other's edit: what the
+    // browser actually did on each site, then what the reflection learned about it.
+    quietly("paths+lessons", async () => {
+      const domains = [...siteActivity(row.messages).visited].filter(([, n]) => n >= (finished ? 3 : 2)).map(([d]) => d);
+      if (domains.length) {
+        const written = await recordPaths(t, row, domains, report, finished).catch(() => [] as string[]);
+        if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}${finished ? "" : " (unfinished)"}`);
+      }
+      await learn(t, row, report);
+    });
+  } else {
+    quietly("lessons", () => learn(t, row, report));
   }
-  // Learn from it, win or lose. One cheap call that turns this task into lessons the next one starts
-  // with, and into the numbers behind "am I getting better". Never allowed to delay or fail the reply.
-  await learn(t, row, report).catch(() => {});
+  await Promise.allSettled(housekeeping);
   if (row.browserbase_session_id) {
     // A finished task or self-started session lets go of its tab; the browser itself is released only
     // when no other live session of this customer is using it (one browser per customer).
@@ -1419,4 +1479,27 @@ export async function kick(sessionId: string): Promise<void> {
   } catch {
     /* the cron sweep picks it up if the kick did not land */
   }
+}
+
+/** Why a turn produced nothing, for the log: the usual cause is prose cut off at the tier's output cap. */
+function barrenLabel(c: Completion): string {
+  const out = c.usage.completion_tokens;
+  return `barren (${c.finish_reason}${out ? `, ${out} tokens of prose` : ", nothing"})`;
+}
+
+/**
+ * Whether a final report means the task did NOT get done. Six failure words used to decide this, and
+ * the adaptive router trains on it, so a reply that promised instead of delivering was recorded as a
+ * success: "It's drafted with all the details we agreed on — just needs to be generated into a PDF.
+ * Say 'go' and I'll produce it." scored as a win for the cheapest model, which then kept being
+ * chosen for that kind of work. A promise is not a delivery.
+ */
+export function notDelivered(report: string): boolean {
+  const head = report.slice(0, 300);
+  if (/\b(stopped|couldn'?t|could not|unable|blocked|failed|ran out of|gave up)\b/i.test(head)) return true;
+  // "just needs to be…", "say go and I'll…", "I'll produce it", "ready for me to…": the work is still
+  // in front of the model, not behind it.
+  if (/\b(just needs? to be|still needs? to be|ready (for me )?to (be )?(generate|produce|send|submit|create)|say ["']?go["']?|let me know (and|if) I'?ll|shall I (go ahead|proceed)|want me to (go ahead|proceed|do it))\b/i.test(head)) return true;
+  if (/\b(i'?ll|i will|let me) (now )?(generate|produce|create|write|draft|send|submit|start|do) (it|that|this|them)\b/i.test(head)) return true;
+  return false;
 }

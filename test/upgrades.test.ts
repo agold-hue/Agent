@@ -147,3 +147,29 @@ test("a progress line that says nothing, or says it twice, is refused", async ()
   assert.ok(sameProgress("Still working...", "still working…"));
   assert.ok(!sameProgress("Signed in", "Bill is $142"));
 });
+
+test("a promise is not recorded as a task the model completed", async () => {
+  const { notDelivered } = await import("../lib/runtime.js");
+  // The exact reply that was logged as a win for the cheapest model at 2:59 AM.
+  assert.ok(notDelivered("It's drafted with all the details we agreed on — just needs to be generated into a PDF. Say \"go\" and I'll produce it."));
+  assert.ok(notDelivered("I'll generate it now and send it over."));
+  assert.ok(notDelivered("Ready to produce the document — want me to go ahead?"));
+  assert.ok(notDelivered("I couldn't get past the sign-in."));
+  // Real deliveries are still wins.
+  assert.ok(!notDelivered("Done — here's the operating agreement: https://app/api/files?t=abc"));
+  assert.ok(!notDelivered("Paid it. Confirmation 88213."));
+  assert.ok(!notDelivered("Your balance is $142.18, due the 15th."));
+});
+
+test("the online PDF and OCR farms are refused, with the tool that does the job", async () => {
+  const { pointlessSite } = await import("../lib/browser-tools.js");
+  // The four sites the 3 AM session actually crawled, one of which cost 86 seconds on a single click.
+  for (const url of ["https://www.ilovepdf.com/", "i2pdf.com", "https://pdfonfly.com/x", "https://www.imagetotext.info/"]) {
+    assert.notEqual(pointlessSite(url), "", `${url} should be refused`);
+  }
+  assert.match(pointlessSite("https://www.ilovepdf.com/"), /make_pdf/);
+  // Ordinary sites are untouched.
+  for (const url of ["https://www.coned.com/en/login", "amazon.com/orders", "https://chase.com"]) {
+    assert.equal(pointlessSite(url), "");
+  }
+});

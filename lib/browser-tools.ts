@@ -233,6 +233,33 @@ export async function ref(page: Page, r: string) {
   return page.locator(sel).first();
 }
 
+/**
+ * Free online utility sites the agent has no business on any more. It reached for ilovepdf,
+ * imagetotext, pdfonfly and i2pdf to "generate a PDF" — work make_pdf does in-process in
+ * milliseconds — and those pages are ad farms: one real click there took 86 seconds and threw a
+ * hundred detached-frame errors from doubleclick, criteo, rubicon and friends.
+ *
+ * Refused with the tool that actually does the job, rather than silently allowed.
+ */
+const POINTLESS_SITES: Array<[RegExp, string]> = [
+  [/\b(ilovepdf|smallpdf|i?2pdf|pdfonfly|pdf24|sejda|soda ?pdf|combinepdf|freepdfconvert|pdfcandy|tinypdf|onlineconvertfree|convertio|cloudconvert)\b/i, "make_pdf writes the PDF here in milliseconds, and fill_pdf fills a form. Call one of those instead — no browser needed."],
+  [/\b(imagetotext|onlineocr|i2ocr|prepostseo|ocr2edit)\b/i, "A PDF or image the user sent is already extracted as text in the message, and browser_download plus read_pdf_fields covers the rest. No OCR site is needed."],
+  [/\b(tinyurl|bitly|bit\.ly)\b/i, "Give the user the real link; a shortener adds nothing."],
+];
+
+/** The refusal for a site whose job a local tool already does, or "" when the site is fine. */
+export function pointlessSite(url: string): string {
+  if (process.env.ALLOW_UTILITY_SITES === "1") return "";
+  let host = url;
+  try {
+    host = new URL(normalizeUrl(url)).hostname;
+  } catch {
+    /* not a URL; match the raw text */
+  }
+  for (const [re, why] of POINTLESS_SITES) if (re.test(host)) return `Not opening ${host}: ${why}`;
+  return "";
+}
+
 /** "amazon.com/orders", "www.coned.com" or a full URL, all reaching the same place. */
 export function normalizeUrl(url: string): string {
   const u = url.trim();
@@ -495,6 +522,8 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
       return withPage(t, row, async (page, _b, h) => {
         let extra = "";
         if (str("url")) {
+          const no = pointlessSite(str("url"));
+          if (no) return { text: no };
           await page.goto(normalizeUrl(str("url")), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
           extra = await arrive(t, page);
           // A sign-in wall on a site whose login is in the vault: sign in now, in this same call.
@@ -506,7 +535,9 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         }
         return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}${extra}` };
       });
-    case "browser_goto":
+    case "browser_goto": {
+      const no = pointlessSite(str("url"));
+      if (no) return { text: no };
       return withPage(t, row, async (page, _b, h) => {
         await page.goto(normalizeUrl(str("url")), { waitUntil: "domcontentloaded", timeout: 45_000 });
         const note = await arrive(t, page);
@@ -515,6 +546,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
         return { text: `${await page.title()}\n${page.url()}${note}${auto ? `\n${auto.line}` : ""}\n\n${snap}` };
       });
+    }
     case "browser_snapshot":
       return withPage(t, row, async (page) => {
         let snap = await snapshot(page);
