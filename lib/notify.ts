@@ -16,7 +16,8 @@ import type { Tenant } from "./tenant.js";
  */
 export async function notifyOwner(t: Tenant, row: SessionRow, body: string, subjectHint?: string): Promise<void> {
   // The phone hears about a code, an approval, a question, and a finished task; not a one-line chat reply.
-  const worth = !!subjectHint || row.kind !== "chat" || !isQuickQuestion(taskUserText(row.messages));
+  // A side reply answers something the user just typed while watching the chat: never a push.
+  const worth = row.kind !== "aside" && (!!subjectHint || row.kind !== "chat" || !isQuickQuestion(taskUserText(row.messages)));
   if (worth) await pushToUser(t, { title: subjectHint ?? (row.kind === "chat" ? "Done" : row.title ?? "Update"), body, tag: row.id }).catch(() => {});
   if (row.channel !== "email") return; // chat reads agent messages and proactive reports from the history endpoint
   if (!env.mail.configured()) return; // no mail on this server: the chat notice is the delivery

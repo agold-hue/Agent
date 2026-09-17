@@ -4,465 +4,500 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Pete</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Bodoni+Moda:wght@500&display=swap">
-<meta name="theme-color" content="#111318">
+<meta name="theme-color" content="#f0f2f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#202c33" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link id="favicon" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2325d366'/%3E%3Cpath d='M32 14c-10 0-18 7-18 16 0 4 1.6 7.7 4.4 10.5L16 50l10.4-3.3c1.8.5 3.7.8 5.6.8 10 0 18-7 18-16S42 14 32 14z' fill='%23fff'/%3E%3C/svg%3E">
 <style>
-  :root { color-scheme: light dark; --bg:#f6f7f9; --panel:#fff; --ink:#15171c; --muted:#6b7280; --me:#1f5eff; --me-ink:#fff; --tool:#fff7e6; --tool-edge:#f5b200; --edge:#e5e7eb; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#111318; --panel:#1a1d24; --ink:#ececf1; --muted:#9aa0ad; --me:#3b6cff; --tool:#2a2411; --tool-edge:#c99700; --edge:#2a2f3a; } }
-  * { box-sizing:border-box; }
-  body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); height:100dvh; display:flex; flex-direction:column; }
-  header { padding:8px 12px; display:flex; align-items:center; gap:6px; border-bottom:1px solid var(--edge); background:var(--panel); }
-  header h1 { font-size:16px; margin:0 6px 0 0; font-weight:600; white-space:nowrap; }
-  nav { display:flex; gap:2px; overflow-x:auto; flex:1; min-width:0; }
-  nav button { border:none; background:transparent; padding:8px 9px; border-radius:8px; color:var(--muted); white-space:nowrap; font-size:14px; }
-  nav button.on { background:var(--bg); color:var(--ink); }
-  #status { font-size:12px; color:var(--muted); margin-left:auto; white-space:nowrap; }
-  #status::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; background:#9ca3af; margin-right:6px; vertical-align:middle; }
-  #status.running::before { background:#f59e0b; animation:pulse 1s infinite; }
-  #status.idle::before { background:#22c55e; }
-  @keyframes pulse { 50% { opacity:.3; } }
-  main { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
-  .panel { max-width:720px; width:100%; margin:0 auto; display:flex; flex-direction:column; gap:14px; }
-  .msg { max-width:min(78%, 720px); padding:10px 14px; border-radius:16px; white-space:pre-wrap; word-wrap:break-word; background:var(--panel); border:1px solid var(--edge); }
-  .msg.user { align-self:flex-end; background:var(--me); color:var(--me-ink); border-color:transparent; border-bottom-right-radius:4px; }
-  .msg.agent { align-self:flex-start; border-bottom-left-radius:4px; }
-  .msg.agent.streaming::after { content:"▍"; animation:pulse 1s infinite; }
-  .msg.tool { align-self:flex-start; background:var(--tool); border-color:var(--tool-edge); }
-  .msg.tool h4 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; }
-  .msg.tool .actions { margin-top:10px; display:flex; gap:8px; }
-  .msg.tool.resolved { opacity:.6; }
-  .msg.tool.resolved .actions { display:none; }
-  .time { font-size:11px; color:var(--muted); margin-top:4px; }
-  .msg.user { position:relative; margin-bottom:14px; }
-  .reaction { position:absolute; left:-6px; bottom:-14px; background:var(--panel); border:1px solid var(--edge); border-radius:999px; font-size:15px; line-height:1; padding:3px 6px; box-shadow:0 1px 3px rgba(0,0,0,.12); animation:pop .25s ease-out; }
+  /* ===== Tokens: WhatsApp's palette, Apple's restraint ===== */
+  :root {
+    color-scheme: light dark;
+    --bg:#f0f2f5; --side:#ffffff; --pane:#efeae2; --head:#f0f2f5; --ink:#111b21; --muted:#667781; --faint:#8696a0;
+    --line:rgba(17,27,33,.09); --hair:rgba(17,27,33,.14);
+    --in:#ffffff; --out:#d9fdd3; --accent:#00a884; --accent-deep:#008069; --accent-ink:#008069; --tick:#53bdeb; --badge:#25d366;
+    --pill:#ffffff; --card:#ffffff; --input:#ffffff; --field:#f0f2f5; --hover:rgba(17,27,33,.05); --danger:#ea4335;
+    --shadow:0 1px .5px rgba(11,20,26,.13); --float:0 8px 28px rgba(11,20,26,.18), 0 1px 2px rgba(11,20,26,.08);
+    --doodle:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'><g fill='none' stroke='%23000' stroke-opacity='.05' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'><circle cx='24' cy='26' r='7'/><path d='M74 18l4 4-4 4-4-4z'/><path d='M124 30c6-8 18-8 24 0'/><path d='M40 84h14M47 77v14'/><circle cx='104' cy='94' r='3'/><path d='M140 124l6 6m0-6l-6 6'/><path d='M20 134c4 6 12 6 16 0'/><circle cx='88' cy='150' r='6'/><path d='M112 60l3-6 3 6-3 6z'/><path d='M160 80c-4 0-6 3-6 6s3 6 6 6 6-3 6-6'/><path d='M60 120l6-6 6 6'/></g></svg>");
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#111b21; --side:#111b21; --pane:#0b141a; --head:#202c33; --ink:#e9edef; --muted:#8696a0; --faint:#667781;
+      --line:rgba(134,150,160,.15); --hair:rgba(134,150,160,.22);
+      --in:#202c33; --out:#005c4b; --accent:#00a884; --accent-deep:#00a884; --accent-ink:#53bdeb; --tick:#53bdeb; --badge:#00a884;
+      --pill:#182229; --card:#202c33; --input:#2a3942; --field:#2a3942; --hover:rgba(255,255,255,.06); --danger:#f15c6d;
+      --shadow:0 1px .5px rgba(0,0,0,.35); --float:0 10px 30px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.3);
+      --doodle:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'><g fill='none' stroke='%23fff' stroke-opacity='.045' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'><circle cx='24' cy='26' r='7'/><path d='M74 18l4 4-4 4-4-4z'/><path d='M124 30c6-8 18-8 24 0'/><path d='M40 84h14M47 77v14'/><circle cx='104' cy='94' r='3'/><path d='M140 124l6 6m0-6l-6 6'/><path d='M20 134c4 6 12 6 16 0'/><circle cx='88' cy='150' r='6'/><path d='M112 60l3-6 3 6-3 6z'/><path d='M160 80c-4 0-6 3-6 6s3 6 6 6 6-3 6-6'/><path d='M60 120l6-6 6 6'/></g></svg>");
+    }
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; }
+  body { margin:0; font:15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--ink); height:100dvh; overflow:hidden; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+  button { font:inherit; color:inherit; }
+  [hidden] { display:none !important; }
+  ::selection { background:rgba(0,168,132,.25); }
+
+  /* ===== Shell: rail · list · pane ===== */
+  .app { display:grid; grid-template-columns:64px minmax(0,1fr); height:100dvh; background:var(--bg); }
+  .rail { display:flex; flex-direction:column; align-items:center; gap:4px; padding:10px 0 calc(10px + env(safe-area-inset-bottom)); background:var(--head); border-right:1px solid var(--line); }
+  .rail button { position:relative; width:44px; height:44px; border:0; border-radius:12px; background:transparent; color:var(--muted); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; transition:background .15s, color .15s, transform .15s; }
+  .rail button:hover { background:var(--hover); color:var(--ink); }
+  .rail button:active { transform:scale(.92); }
+  .rail button.on { background:var(--hover); color:var(--ink); }
+  .rail button.on::after { content:""; position:absolute; left:-10px; top:12px; width:3px; height:20px; border-radius:3px; background:var(--accent); }
+  .rail .grow { flex:1; }
+  .rail .me { width:34px; height:34px; border-radius:50%; margin-bottom:4px; }
+  .railBadge { position:absolute; top:6px; right:6px; min-width:16px; height:16px; padding:0 4px; border-radius:8px; background:var(--badge); color:#fff; font-size:10px; font-weight:700; line-height:16px; text-align:center; }
+
+
+  .avatar { display:inline-flex; align-items:center; justify-content:center; border-radius:50%; color:#fff; font-weight:600; letter-spacing:.02em; line-height:1; flex:none; background:linear-gradient(145deg,#34d399,#00a884 60%,#008069); box-shadow:inset 0 -2px 6px rgba(0,0,0,.12); }
+  .avatar.you { background:linear-gradient(145deg,#8ab4f8,#3b6cff 60%,#1a56c4); }
+
+  .pane { position:relative; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--pane); }
+  main { display:flex; flex-direction:column; min-width:0; min-height:0; flex:1; }
+  main.page { overflow-y:auto; background:var(--bg); }
+  .pageWrap { max-width:720px; width:100%; margin:0 auto; padding:18px 16px calc(24px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:18px; }
+
+  /* ===== The chat ===== */
+  .chatHead { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:12px; padding:8px 12px; padding-top:calc(8px + env(safe-area-inset-top)); min-height:60px; background:var(--head); border-bottom:1px solid var(--line); -webkit-backdrop-filter:saturate(180%) blur(20px); backdrop-filter:saturate(180%) blur(20px); }
+  .chatHead .who { min-width:0; display:flex; flex-direction:column; gap:1px; }
+  .chatHead .name { font-size:16px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chatHead .sub { font-size:12.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; transition:color .2s; }
+  .chatHead .sub.live { color:var(--accent-ink); }
+  .tools { display:inline-flex; align-items:center; gap:2px; }
+  .icon { display:inline-flex; align-items:center; justify-content:center; width:40px; height:40px; border:0; border-radius:50%; background:transparent; color:var(--muted); cursor:pointer; padding:0; transition:background .15s, color .15s, transform .1s; }
+  .icon:hover { background:var(--hover); color:var(--ink); }
+  .icon:active { transform:scale(.9); }
+  .icon.on { color:var(--accent-ink); }
+  .findBar { display:flex; align-items:center; gap:8px; padding:6px 12px; background:var(--head); border-bottom:1px solid var(--line); }
+  .findBar input { flex:1; min-width:0; height:34px; padding:0 12px; border:0; border-radius:9px; background:var(--field); font:inherit; font-size:14px; color:var(--ink); outline:none; }
+
+  .listWrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; background:var(--pane) var(--doodle); }
+  .list { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:14px 0 10px; scroll-behavior:auto; }
+  .list, .below { padding-left:max(16px, calc((100% - 1040px) / 2 + 16px)); padding-right:max(16px, calc((100% - 1040px) / 2 + 16px)); }
+  .chatEmpty { display:grid; gap:8px; place-items:center; text-align:center; margin:60px auto; max-width:320px; padding:22px 18px; border-radius:14px; background:var(--pill); box-shadow:var(--shadow); color:var(--muted); font-size:13.5px; }
+  .chatEmpty b { color:var(--ink); font-size:15px; }
+  .chatEmpty .mark { width:56px; height:56px; border-radius:50%; background:linear-gradient(145deg,#34d399,#00a884 60%,#008069); display:grid; place-items:center; color:#fff; }
+  .day { display:flex; justify-content:center; margin:10px 0 12px; }
+  .day span { padding:5px 12px; border-radius:8px; background:var(--pill); box-shadow:var(--shadow); font-size:12px; color:var(--muted); font-weight:500; }
+  .sys { display:flex; justify-content:center; margin:4px 0 10px; }
+  .sys span { max-width:80%; padding:6px 12px; border-radius:8px; background:#fdf4d5; color:#54470a; box-shadow:var(--shadow); font-size:12.5px; text-align:center; }
+  @media (prefers-color-scheme: dark) { .sys span { background:#182229; color:#ffd279; } }
+
+  .m { position:relative; display:flex; margin:2px 0; touch-action:pan-y pinch-zoom; user-select:none; animation:rise .22s cubic-bezier(.2,.9,.25,1.1); }
+  .m.in { justify-content:flex-start; padding-right:12%; }
+  .m.out { justify-content:flex-end; padding-left:12%; }
+  .m.tail { margin-top:10px; }
+  .m.hasReact { margin-bottom:16px; }
+  @keyframes rise { from { opacity:0; transform:translateY(8px) scale(.98); } to { opacity:1; transform:none; } }
+  @media (prefers-reduced-motion: reduce) { .m { animation:none; } }
+  .b { position:relative; max-width:min(100%, 620px); min-width:78px; padding:6px 8px 8px 9px; border-radius:10px; background:var(--in); box-shadow:var(--shadow); font-size:14.5px; line-height:1.38; color:var(--ink); user-select:text; }
+  .m.out .b { background:var(--out); }
+  .m.in.tail .b { border-top-left-radius:0; }
+  .m.out.tail .b { border-top-right-radius:0; }
+  .m.tail .b::before { content:""; position:absolute; top:0; width:8px; height:13px; background:inherit; }
+  .m.in.tail .b::before { left:-8px; clip-path:polygon(100% 0, 0 0, 100% 100%); }
+  .m.out.tail .b::before { right:-8px; clip-path:polygon(0 0, 100% 0, 0 100%); }
+  .txt { white-space:pre-wrap; overflow-wrap:anywhere; }
+  a.fileCard { display:flex; align-items:center; gap:10px; margin:8px 0 2px; padding:8px 10px; border:1px solid var(--line); border-radius:12px; background:#fff; text-decoration:none; color:inherit; max-width:340px; }
+  a.fileCard:hover { border-color:var(--copper); }
+  a.fileCard .fileIcon { flex:none; width:34px; height:34px; border-radius:8px; background:#F1F3F7; color:#5B6572; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; }
+  a.fileCard .fileMeta { min-width:0; display:flex; flex-direction:column; }
+  a.fileCard .fileMeta b { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  a.fileCard .fileMeta i { font-style:normal; font-size:11.5px; color:var(--muted); }
+  .txt::after { content:""; display:inline-block; width:52px; height:1px; }
+  .m.out .txt::after { width:70px; }
+  .b.big .txt { font-size:44px; line-height:1.15; }
+  .b.big .txt::after { width:0; display:block; height:14px; }
+  .b.streaming .txt::after { content:"▍"; width:auto; height:auto; color:var(--accent); animation:blink 1s infinite; }
+  @keyframes blink { 50% { opacity:.2; } }
+  .meta { position:absolute; right:7px; bottom:4px; display:inline-flex; align-items:center; gap:3px; font-size:11px; color:var(--faint); font-variant-numeric:tabular-nums; user-select:none; }
+  .ticks { display:inline-flex; color:var(--faint); }
+  .ticks.read { color:var(--tick); }
+  .lbl { display:flex; align-items:center; gap:5px; margin:0 0 3px; font-size:12px; color:var(--muted); font-style:italic; }
+  .lbl.task { font-style:normal; color:var(--accent-ink); font-weight:500; }
+  .quote { display:grid; grid-template-columns:auto 1fr; margin:-1px -3px 6px -4px; border-radius:7px; background:rgba(17,27,33,.06); overflow:hidden; cursor:pointer; font-size:13px; line-height:1.3; }
+  .m.out .quote { background:rgba(0,0,0,.07); }
+  @media (prefers-color-scheme: dark) { .quote, .m.out .quote { background:rgba(0,0,0,.25); } }
+  .quote i { display:block; width:4px; background:var(--accent); }
+  .m.out .quote i { background:#1a56c4; }
+  .quote div { padding:5px 9px 6px 8px; min-width:0; }
+  .quote .who { display:block; font-weight:600; color:var(--accent-ink); font-size:12.5px; margin-bottom:1px; }
+  .m.out .quote .who { color:#1a56c4; }
+  .quote .qt { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; color:var(--muted); }
+  .m.flash .b { animation:flash 1.5s ease-out; }
+  @keyframes flash { 0%,40% { box-shadow:0 0 0 3px rgba(0,168,132,.55); } 100% { box-shadow:var(--shadow); } }
+
+  /* interactive cards: approvals, questions, codes */
+  .b.card { padding:0; min-width:min(100%, 300px); overflow:hidden; }
+  .b.card .ct { padding:9px 12px 0; font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-ink); }
+  .b.card .txt { display:block; padding:4px 12px 22px; }
+  .b.card .meta { bottom:6px; right:12px; }
+  .b.card.resolved { opacity:.62; }
+  .cbtns { display:flex; flex-direction:column; border-top:1px solid var(--line); }
+  .cbtns button { height:44px; border:0; border-bottom:1px solid var(--line); background:transparent; color:var(--accent-ink); font-size:15px; font-weight:500; cursor:pointer; }
+  .cbtns button:last-child { border-bottom:0; }
+  .cbtns button:hover { background:var(--hover); }
+  .cbtns .hint { padding:10px 12px; font-size:12.5px; color:var(--muted); text-align:center; }
+  .b.card.resolved .cbtns { display:none; }
+
+  .react { position:absolute; bottom:-13px; display:inline-flex; align-items:center; height:24px; padding:0 7px; border-radius:12px; background:var(--pill); box-shadow:var(--shadow); border:1px solid var(--line); font-size:14px; line-height:1; cursor:pointer; animation:pop .25s cubic-bezier(.2,.9,.25,1.3); }
+  .m.in .react { left:10px; } .m.out .react { right:10px; }
   @keyframes pop { from { transform:scale(.4); opacity:0; } to { transform:scale(1); opacity:1; } }
-  @media (prefers-reduced-motion: reduce) { .reaction { animation:none; } }
-  .msg.user .time { color:rgba(255,255,255,.75); }
-  .notice { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:4px; }
-  button { font:inherit; border:1px solid var(--edge); background:var(--panel); color:var(--ink); border-radius:10px; padding:8px 12px; cursor:pointer; }
-  button.primary { background:var(--me); color:var(--me-ink); border-color:transparent; }
-  button:disabled { opacity:.5; cursor:default; }
-  form#composer { display:block; padding:4px 0 calc(4px + env(safe-area-inset-bottom)); border:0; background:transparent; }
-  textarea { resize:none; font:inherit; }
-  .card { background:var(--panel); border:1px solid var(--edge); border-radius:14px; padding:16px; }
-  .card h3 { margin:0 0 8px; font-size:15px; }
-  .card p, .hint { color:var(--muted); font-size:13px; margin:4px 0; }
-  .field { display:flex; flex-direction:column; gap:4px; margin:8px 0; }
+
+  /* hover bar: quick reactions, reply, copy */
+  .hbar { position:absolute; top:-30px; z-index:4; display:inline-flex; align-items:center; gap:2px; padding:3px 4px; border-radius:20px; background:var(--pill); box-shadow:var(--float); opacity:0; visibility:hidden; transform:translateY(4px); transition:opacity .12s, transform .12s; }
+  .m.in .hbar { left:0; } .m.out .hbar { right:0; }
+  .m:hover .hbar, .hbar:hover { opacity:1; visibility:visible; transform:none; }
+  .m:hover { z-index:6; }
+  .hbar button { border:0; background:transparent; width:32px; height:32px; border-radius:50%; font-size:18px; line-height:1; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; color:var(--muted); transition:transform .12s; }
+  .hbar button:hover { background:var(--hover); transform:scale(1.15); }
+  @media (hover:none) { .hbar { display:none; } }
+  .swipeMark { position:absolute; left:-40px; top:50%; transform:translateY(-50%) scale(.7); opacity:0; width:30px; height:30px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; background:var(--pill); box-shadow:var(--shadow); color:var(--muted); font-size:15px; pointer-events:none; }
+  .m.out .swipeMark { left:auto; right:-40px; }
+  .swipeMark.armed { background:var(--accent); color:#fff; }
+
+  /* long-press sheet */
+  .sheet { position:fixed; z-index:130; display:flex; flex-direction:column; gap:8px; width:min(300px, calc(100vw - 16px)); animation:pop .18s cubic-bezier(.2,.9,.25,1.2); transform-origin:top left; }
+  .sheetReacts { display:flex; align-items:center; justify-content:space-between; gap:2px; padding:6px 8px; border-radius:999px; background:var(--pill); box-shadow:var(--float); }
+  .sheetEm { border:0; background:transparent; font-size:26px; line-height:1; padding:5px; border-radius:50%; cursor:pointer; transition:transform .12s; }
+  .sheetEm:hover { transform:scale(1.25); }
+  .sheetMenu { display:flex; flex-direction:column; border-radius:13px; background:var(--pill); box-shadow:var(--float); overflow:hidden; }
+  .sheetItem { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border:0; border-bottom:1px solid var(--line); background:transparent; font-size:15px; color:var(--ink); text-align:left; cursor:pointer; }
+  .sheetItem:last-child { border-bottom:0; }
+  .sheetItem:hover { background:var(--hover); }
+  .sheetItem svg { color:var(--muted); }
+
+  .down { position:absolute; right:18px; bottom:16px; z-index:3; display:inline-flex; align-items:center; justify-content:center; width:42px; height:42px; padding:0; border:0; border-radius:50%; background:var(--pill); color:var(--muted); cursor:pointer; box-shadow:var(--float); animation:pop .2s; }
+  .down:hover { color:var(--ink); }
+  .downBadge { position:absolute; top:-8px; left:50%; transform:translateX(-50%); min-width:20px; height:20px; padding:0 6px; display:inline-flex; align-items:center; justify-content:center; border-radius:10px; background:var(--badge); color:#fff; font-size:11.5px; font-weight:700; line-height:1; }
+
+  .typing .b { display:inline-flex; align-items:center; gap:4px; padding:12px 14px; min-width:0; }
+  .dots { display:inline-flex; gap:4px; }
+  .dots i { width:7px; height:7px; border-radius:50%; background:var(--faint); animation:bounce 1.2s ease-in-out infinite; }
+  .dots i:nth-child(2) { animation-delay:.15s; } .dots i:nth-child(3) { animation-delay:.3s; }
+  @keyframes bounce { 0%,60%,100% { transform:translateY(0); opacity:.45; } 30% { transform:translateY(-4px); opacity:1; } }
+  .stopLink { margin-left:8px; align-self:center; border:0; background:transparent; color:var(--muted); font-size:12px; padding:4px 8px; border-radius:8px; cursor:pointer; text-decoration:none; }
+  .stopLink:hover { background:var(--hover); color:var(--ink); }
+
+  .below { background:var(--head); border-top:1px solid var(--line); padding-top:6px; padding-bottom:calc(6px + env(safe-area-inset-bottom)); }
+  .smart { display:flex; gap:8px; padding:2px 0 8px; flex-wrap:wrap; }
+  .chip { padding:7px 14px; border:1px solid var(--hair); border-radius:999px; background:var(--pill); color:var(--accent-ink); font-size:13.5px; font-weight:500; cursor:pointer; transition:background .12s, transform .1s; }
+  .chip:hover { background:var(--hover); } .chip:active { transform:scale(.96); }
+  .tasks { display:flex; flex-wrap:wrap; gap:6px; padding:2px 0 8px; }
+  .taskChip { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:4px 6px 4px 10px; border-radius:999px; background:var(--pill); box-shadow:var(--shadow); font-size:12.5px; color:var(--muted); }
+  .taskChip b { font-weight:500; color:var(--ink); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .taskChip .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 1.2s ease-in-out infinite; }
+  .taskChip.waiting .dot { background:#f5a623; animation:none; }
+  @keyframes pulse { 0%,100% { opacity:.35; } 50% { opacity:1; } }
+  .taskStop { border:0; background:transparent; color:var(--faint); width:20px; height:20px; border-radius:50%; font-size:14px; line-height:1; padding:0; cursor:pointer; }
+  .taskStop:hover { background:var(--hover); color:var(--ink); }
+  form.composer { display:block; }
+  .replyCard { display:grid; grid-template-columns:4px 1fr auto; margin:0 0 6px; border-radius:9px; background:var(--pill); box-shadow:var(--shadow); overflow:hidden; font-size:13px; }
+  .replyCard i { background:var(--accent); }
+  .replyCard > div { padding:6px 10px; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .replyCard .who { font-weight:600; color:var(--accent-ink); font-size:12.5px; }
+  .replyCard .qt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+  .replyCard button { align-self:center; margin-right:6px; }
+  .drawer { display:grid; grid-template-columns:repeat(auto-fill, minmax(44px, 1fr)); gap:4px; padding:10px; margin-bottom:6px; border-radius:13px; background:var(--pill); box-shadow:var(--shadow); max-height:220px; overflow-y:auto; }
+  .drawerEm { border:0; background:transparent; font-size:24px; line-height:1; padding:8px 0; border-radius:10px; cursor:pointer; transition:transform .1s; }
+  .drawerEm:hover { background:var(--hover); transform:scale(1.15); }
+  .row2 { display:flex; align-items:flex-end; gap:4px; }
+  .box { flex:1; min-width:0; min-height:42px; max-height:200px; resize:none; padding:11px 14px; border:0; border-radius:21px; background:var(--input); font:inherit; font-size:15px; line-height:1.35; color:var(--ink); outline:none; box-shadow:var(--shadow); margin:0 4px; }
+  .box::placeholder { color:var(--muted); }
+  .send { width:42px; height:42px; padding:0; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; border:0; background:var(--accent); color:#fff; cursor:pointer; box-shadow:0 2px 6px rgba(0,168,132,.35); transition:transform .12s, background .12s; animation:pop .18s; }
+  .send:hover { background:var(--accent-deep); } .send:active { transform:scale(.9); }
+  .send:disabled { opacity:.6; }
+  .mic.rec { background:var(--danger); color:#fff; animation:pulse 1s infinite; }
+
+  /* ===== Pages: iOS grouped lists ===== */
+  .pageTitle { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin:6px 2px 0; }
+  .pageTitle h1 { margin:0; font-size:30px; font-weight:700; letter-spacing:-.02em; }
+  .pageTitle span { font-size:13px; color:var(--muted); }
+  .card { background:var(--card); border-radius:14px; padding:14px 16px; box-shadow:var(--shadow); }
+  .card h3 { margin:0 0 8px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .card p, .hint { color:var(--muted); font-size:13.5px; margin:4px 0; line-height:1.45; }
+  .card.hero { background:linear-gradient(145deg,#00a884,#008069); color:#fff; box-shadow:0 8px 24px rgba(0,128,105,.25); }
+  .card.hero h3, .card.hero p { color:rgba(255,255,255,.85); }
+  .field { display:flex; flex-direction:column; gap:5px; margin:10px 0; }
   .field label { font-size:13px; color:var(--muted); }
-  .field input, .field select { font:inherit; padding:9px 11px; border-radius:10px; border:1px solid var(--edge); background:var(--bg); color:var(--ink); }
+  .field input, .field select, .card input:not([type=checkbox]), .card select { font:inherit; padding:10px 12px; border-radius:10px; border:1px solid var(--hair); background:var(--field); color:var(--ink); outline:none; transition:border-color .12s, box-shadow .12s; }
+  .field input:focus, .card input:focus, .card select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(0,168,132,.18); }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:9px 16px; border:1px solid var(--hair); border-radius:999px; background:var(--card); color:var(--ink); font-size:14px; font-weight:500; cursor:pointer; text-decoration:none; transition:background .12s, transform .1s; }
+  .btn:hover { background:var(--hover); } .btn:active { transform:scale(.97); }
+  .btn.pri { background:var(--accent); border-color:transparent; color:#fff; box-shadow:0 2px 6px rgba(0,168,132,.3); }
+  .btn.pri:hover { background:var(--accent-deep); }
+  .btn.danger { color:var(--danger); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .card.hero .btn { background:#fff; color:var(--accent-deep); border-color:transparent; }
   table { width:100%; border-collapse:collapse; font-size:14px; }
-  td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--edge); }
-  .banner { background:var(--tool); border:1px solid var(--tool-edge); border-radius:12px; padding:12px 14px; }
-  code { background:var(--bg); padding:2px 6px; border-radius:6px; }
-  .score { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
-  .score div { background:var(--bg); border-radius:12px; padding:10px; text-align:center; }
-  .score b { display:block; font-size:22px; }
-  .score span { font-size:12px; color:var(--muted); }
-  .quick { display:flex; gap:8px; flex-wrap:wrap; }
-  .quick button { border-radius:999px; font-size:14px; }
-  .item { display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--edge); }
+  td, th { text-align:left; padding:9px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  tr:last-child td { border-bottom:0; }
+  td a { color:var(--accent-ink); text-decoration:none; }
+  .banner { background:#fdf4d5; color:#54470a; border-radius:12px; padding:12px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  @media (prefers-color-scheme: dark) { .banner { background:#2a2411; color:#ffd279; } }
+  code { background:var(--field); padding:2px 6px; border-radius:6px; font-size:13px; }
+  .score { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:8px; }
+  .score div { background:var(--field); border-radius:12px; padding:12px 8px; text-align:center; }
+  .score b { display:block; font-size:24px; font-weight:700; letter-spacing:-.02em; }
+  .score span { font-size:11.5px; color:var(--muted); }
+  .quick { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; }
+  .quick button { display:flex; align-items:center; gap:8px; padding:10px 12px; border:0; border-radius:12px; background:var(--field); color:var(--ink); font-size:13.5px; font-weight:500; cursor:pointer; text-align:left; transition:transform .1s, background .12s; }
+  .quick button:hover { background:var(--hover); } .quick button:active { transform:scale(.97); }
+  .quick button span { font-size:18px; }
+  .item { display:flex; gap:12px; align-items:flex-start; padding:10px 0; border-bottom:1px solid var(--line); }
   .item:last-child { border-bottom:none; }
-  .item .k { font-size:18px; width:26px; text-align:center; flex:none; }
-  .item .t { flex:1; min-width:0; }
-  .item .t small { display:block; color:var(--muted); font-size:12px; }
-  .item.overdue .t small { color:#dc2626; }
-  .item button { padding:5px 9px; font-size:13px; }
-  .draft { border:1px solid var(--edge); border-radius:14px; padding:12px 14px; background:var(--panel); touch-action:pan-y; transition:transform .15s, opacity .15s; }
-  .draft h4 { margin:0 0 4px; font-size:14px; }
-  .draft .to { color:var(--muted); font-size:12px; }
-  .draft pre { white-space:pre-wrap; font:inherit; margin:8px 0; max-height:220px; overflow:auto; }
+  .item .k { font-size:20px; width:34px; height:34px; border-radius:10px; background:var(--field); display:grid; place-items:center; flex:none; }
+  .item .t { flex:1; min-width:0; font-size:14.5px; }
+  .item .t small { display:block; color:var(--muted); font-size:12.5px; margin-top:2px; }
+  .item.overdue .t small { color:var(--danger); }
+  .item > .btn, .item > a > .btn { padding:6px 12px; font-size:13px; }
+  .item.link { cursor:pointer; align-items:center; }
+  .item.link:hover { background:var(--hover); margin:0 -16px; padding-left:16px; padding-right:16px; }
+  .item .chev { color:var(--faint); font-size:18px; }
+  .draft { border-radius:14px; padding:14px 16px; background:var(--card); box-shadow:var(--shadow); touch-action:pan-y; transition:transform .15s, opacity .15s; }
+  .draft h4 { margin:0 0 4px; font-size:15px; font-weight:600; }
+  .draft .to { color:var(--muted); font-size:12.5px; }
+  .draft pre { white-space:pre-wrap; font:inherit; margin:10px 0; max-height:220px; overflow:auto; color:var(--ink); }
   .draft.gone { transform:translateX(120%); opacity:0; }
   .draft.gone-left { transform:translateX(-120%); opacity:0; }
-  #mic.rec { background:#dc2626; color:#fff; border-color:transparent; }
   .empty { color:var(--muted); font-size:14px; padding:6px 0; }
 
-  /* ===== Chats, after the Oepfiles desk: one white surface, the list on the left, the room on the right ===== */
-  :root { --ink:#1F1F1F; --muted:#5F6368; --faint:#9AA0A6; --copper:#C26F34; --copper-hover:#A85D28; --line:#E3E6EA; --blue:#1A73E8; --blue-ink:#1A56C4; --blue-soft:#E8F0FE; --font-body:"IBM Plex Sans"; --font-didone:"Bodoni Moda"; }
-  body { font-family: var(--font-body), system-ui, -apple-system, "Segoe UI", sans-serif; font-size:14px; color:var(--ink); background:#fff; }
-  header { background:#fff; border-bottom:1px solid var(--line); }
-  header h1 { font-family: var(--font-didone), Georgia, serif; font-weight:500; font-size:22px; letter-spacing:-0.01em; }
-  header h1::before { content:""; display:inline-block; width:8px; height:8px; margin:0 8px 2px 0; border-radius:50%; background:linear-gradient(135deg,#F0A65E,var(--copper)); box-shadow:0 0 0 4px rgba(194,111,52,.18); }
-  nav button { color:var(--muted); font-weight:500; border-radius:999px; }
-  nav button.on { background:rgba(194,111,52,.12); color:var(--copper-hover); }
-  main#chats { flex:1; min-height:0; display:grid; grid-template-columns:minmax(250px,300px) minmax(0,1fr); gap:0; padding:0 16px 0 12px; overflow:hidden; background:#fff; }
-  .inboxCol { display:flex; flex-direction:column; min-width:0; min-height:0; border-right:1px solid var(--line); padding:12px 10px 8px 0; }
-  .chatSearchBar { display:flex; align-items:center; gap:12px; margin:0 0 10px; padding:0 16px; height:46px; border-radius:26px; background:var(--blue-soft); color:#444746; }
-  .chatSearchBar input { flex:1; min-width:0; border:0; background:transparent; font:inherit; font-size:15px; color:var(--ink); outline:none; }
-  .chatSearchBar input::placeholder { color:var(--muted); }
-  .pageHead { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:2px 0 8px; }
-  .pageTitle { font-family:var(--font-didone), Georgia, serif; font-weight:400; font-size:24px; line-height:1.25; margin:0; color:var(--ink); }
-  .pageMeta { font-size:12px; font-weight:500; color:var(--muted); }
-  .inboxList { display:flex; flex-direction:column; gap:4px; overflow-y:auto; padding:6px 0 6px 0; }
-  .inboxItem { position:relative; display:grid; grid-template-columns:34px 1fr auto; gap:10px; align-items:start; padding:10px 10px; border:0; border-radius:10px; background:transparent; color:inherit; text-align:left; font:inherit; cursor:pointer; }
-  .inboxItem:hover { background:rgba(20,20,20,.04); }
-  .inboxItemOn, .inboxItemOn:hover { background:var(--blue-soft); }
-  .inboxItemUnread .inboxWho, .inboxItemUnread .inboxPreview { color:var(--ink); font-weight:700; }
-  .avatarCircle { display:inline-flex; width:34px; height:34px; border-radius:50%; align-items:center; justify-content:center; font-weight:700; color:#fff; letter-spacing:.02em; line-height:1; font-size:13px; flex:none; }
-  .inboxBody { min-width:0; display:flex; flex-direction:column; gap:2px; }
-  .inboxTop { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
-  .inboxWho { font-size:13.5px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .inboxWhen { font-size:10.5px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
-  .inboxSub { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .inboxPreview { font-size:12.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .inboxBadge { align-self:center; min-width:20px; padding:2px 6px; border-radius:999px; background:var(--copper); color:#fff; font-size:10.5px; font-weight:800; text-align:center; }
-  .room { display:flex; flex-direction:column; min-width:0; min-height:0; padding:10px 0 8px 20px; }
-  .roomHead { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-bottom:10px; margin-bottom:4px; border-bottom:1px solid var(--line); min-width:0; }
-  .roomTitle { font-family:var(--font-didone), Georgia, serif; font-size:22px; color:var(--ink); line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .roomSub { font-size:11.5px; font-weight:500; color:var(--muted); }
-  .roomTools { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
-  .toolChip { display:inline-flex; align-items:center; gap:5px; padding:4px 11px; border:1px solid #D9D2C6; border-radius:999px; background:#fff; color:var(--ink); font:inherit; font-size:12.5px; font-weight:600; cursor:pointer; }
-  .toolChip:hover { border-color:var(--copper); color:var(--copper); }
-  .toolChipOn { border-color:var(--copper); background:rgba(194,111,52,.1); color:var(--copper); }
-  .backChip { display:none; }
-  .chatSearch { margin:6px 0 4px; padding:8px 14px; border:1px solid #E4DCD0; border-radius:999px; background:#FFFDFB; font:inherit; font-size:13.5px; color:var(--ink); width:100%; box-sizing:border-box; }
-  .chatSearch:focus { outline:none; border-color:rgba(194,111,52,.7); }
-  .chatListWrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; }
-  .chatList { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:4px 6px 10px; background:#fff; }
-  /* On a wide screen the conversation, the typing dots and the composer share one centred column. */
-  .chatList, .chatTyping, .gcSmart, .taskStrip, form.chatComposer { padding-left:max(6px, calc((100% - 880px) / 2)); padding-right:max(6px, calc((100% - 880px) / 2)); }
-  .chatEmpty { display:grid; gap:6px; place-items:center; text-align:center; padding:56px 20px; color:#7B766E; border:1px dashed #DED6CA; border-radius:12px; background:#F8F9FA; }
-  .chatEmptyMark { font-size:34px; }
-  .chatDay { display:flex; align-items:center; gap:12px; margin:14px 0 8px; font-size:12px; font-weight:500; color:var(--muted); }
-  .chatDay::before, .chatDay::after { content:""; flex:1; height:1px; background:#ECEAE6; }
-  .chatMsg { position:relative; display:grid; grid-template-columns:36px 1fr; gap:12px; padding:4px 2px 2px; border-radius:12px; touch-action:pan-y pinch-zoom; user-select:none; }
-  .chatMsg .chatBody { user-select:text; }
-  .chatMsgGrouped { padding-top:0; }
-  .chatMsgMine { grid-template-columns:1fr; }
-  .chatMsgMine .chatGutter { display:none; }
-  .chatMsgMine .chatMain { display:flex; flex-direction:column; align-items:flex-end; }
-  .chatMsgMine .chatHead { flex-direction:row-reverse; }
-  .chatMsgMine .chatName { display:none; }
-  .chatGutter { width:36px; }
-  .chatMain { min-width:0; position:relative; }
-  .chatHead { display:flex; align-items:baseline; gap:8px; margin-bottom:3px; }
-  .chatName { font-size:13px; font-weight:600; color:var(--ink); }
-  .chatTime { font-size:11.5px; color:var(--faint); }
-  .chatNotice { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--copper); }
-  .chatStack { position:relative; display:inline-flex; flex-direction:column; max-width:70%; }
-  .chatBubble { position:relative; display:inline-block; max-width:100%; padding:8px 12px; border-radius:18px; border-top-left-radius:6px; background:#F1F3F4; border:1px solid #D3D8DE; font-size:14px; line-height:1.45; color:var(--ink); box-shadow:none; }
-  .chatBubbleMine { background:var(--blue-soft); border:1px solid #B9CEF2; border-radius:18px; border-top-right-radius:6px; }
-  .chatBubbleEmoji .chatBody { font-size:250%; line-height:1.15; }
-  .chatBody { white-space:pre-wrap; overflow-wrap:anywhere; }
-  .chatCard h4 { margin:0 0 6px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--copper); }
-  .chatCard .actions { display:flex; gap:8px; margin-top:10px; }
-  .chatCard.resolved { opacity:.65; }
-  .chatCard.resolved .actions { display:none; }
-  .btnPri { display:inline-flex; align-items:center; justify-content:center; padding:8px 16px; border:1px solid var(--copper); border-radius:999px; background:var(--copper); color:#fff; font:inherit; font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; cursor:pointer; }
-  .btnPri:hover { background:var(--copper-hover); border-color:var(--copper-hover); }
-  .btn { display:inline-flex; align-items:center; padding:7px 14px; border:1px solid #D9D2C6; border-radius:999px; background:#fff; color:var(--ink); font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
-  .btn:hover { border-color:var(--copper); color:var(--copper); }
-  .chatReacts { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
-  .chatMsgMine .chatReacts { justify-content:flex-end; }
-  .chatReact { display:inline-flex; align-items:center; gap:5px; height:26px; padding:0 8px; border:1px solid #DADCE0; border-radius:8px; background:#F1F3F4; font:inherit; font-size:14px; line-height:1; cursor:pointer; }
-  .chatReactMine { border-color:#A8C7FA; background:var(--blue-soft); }
-  .gcBar { position:absolute; bottom:100%; left:0; z-index:3; display:inline-flex; align-items:center; gap:6px; padding-bottom:6px; opacity:0; visibility:hidden; }
-  .chatMsgMine .gcBar { left:auto; right:0; }
-  .chatStack:hover .gcBar, .gcBar:hover { opacity:1; visibility:visible; }
-  .chatStack:hover { z-index:8; }
-  .gcQuick { display:inline-flex; align-items:center; gap:2px; padding:3px 6px; border-radius:12px; background:#F1F3F4; border:1px solid var(--line); }
-  .gcEm { border:0; background:transparent; font:inherit; font-size:20px; line-height:1; padding:4px 5px; border-radius:8px; cursor:pointer; }
-  .gcEm:hover { background:var(--line); }
-  .gcActs { display:inline-flex; align-items:center; gap:2px; padding:3px 4px; border-radius:12px; background:#fff; border:1px solid #DDE1E6; }
-  .gcIcon { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:0; border-radius:8px; background:transparent; color:#444746; cursor:pointer; }
-  .gcIcon:hover { background:#E8EAED; color:var(--ink); }
-  @media (hover:none) { .gcBar { display:none; } }
-  .chatSwipeMark { position:absolute; left:-44px; top:50%; transform:translateY(-50%) scale(.7); opacity:0; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; background:rgba(20,20,20,.08); color:var(--muted); font-size:16px; pointer-events:none; }
-  .chatMsgMine .chatSwipeMark { left:auto; right:-44px; }
-  .chatSwipeArmed { background:var(--copper); color:#fff; }
-  .chatSheet { position:fixed; z-index:130; display:flex; flex-direction:column; gap:6px; width:280px; }
-  .chatSheetReacts { display:flex; align-items:center; justify-content:space-between; gap:2px; padding:6px 8px; border-radius:999px; background:#fff; box-shadow:0 6px 22px rgba(20,20,20,.16), 0 1px 3px rgba(20,20,20,.06); }
-  .chatSheetEm { border:0; background:transparent; font-size:26px; line-height:1; padding:5px; border-radius:50%; cursor:pointer; }
-  .chatSheetEm:hover { background:#F1F3F4; }
-  .chatSheetMenu { display:flex; flex-direction:column; border-radius:14px; background:#fff; box-shadow:0 8px 28px rgba(20,20,20,.16), 0 1px 3px rgba(20,20,20,.06); overflow:hidden; }
-  .chatSheetItem { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border:0; border-bottom:1px solid #F1F3F4; background:transparent; font:inherit; font-size:15px; color:var(--ink); text-align:left; cursor:pointer; }
-  .chatSheetItem:last-child { border-bottom:0; }
-  .chatSheetItem:hover { background:#F8F9FA; }
-  .chatDown { position:absolute; right:16px; bottom:16px; z-index:3; display:inline-flex; align-items:center; justify-content:center; width:42px; height:42px; padding:0; border:1px solid #D3D8DE; border-radius:50%; background:#fff; color:var(--blue); cursor:pointer; box-shadow:0 6px 18px rgba(20,20,20,.16), 0 1px 2px rgba(20,20,20,.06); }
-  .chatDown:hover { background:var(--blue-soft); }
-  .chatDownBadge { position:absolute; top:-7px; right:-7px; min-width:22px; height:22px; padding:0 6px; box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; border:2px solid #fff; border-radius:999px; background:var(--blue); color:#fff; font-size:11.5px; font-weight:700; line-height:1; }
-  .chatDoing { color:var(--ink); }
-  .chatElapsed { font-variant-numeric:tabular-nums; opacity:.75; }
-  .chatWatch { color:var(--copper); text-decoration:none; border-bottom:1px dotted currentColor; }
-  .chatWatch:hover { opacity:.8; }
-  .fileCard { display:flex; align-items:center; gap:10px; margin-top:8px; padding:8px 10px; border:1px solid #DDE3EA; border-radius:12px; background:#fff; text-decoration:none; color:inherit; max-width:340px; }
-  .fileCard:hover { border-color:var(--copper); }
-  .fileIcon { flex:none; width:34px; height:34px; border-radius:8px; background:#F1F3F7; color:#5B6572; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; letter-spacing:.02em; }
-  .fileMeta { min-width:0; display:flex; flex-direction:column; }
-  .fileMeta b { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .fileMeta i { font-style:normal; font-size:11.5px; color:var(--muted); }
-  .chatTyping { min-height:18px; display:flex; align-items:center; gap:8px; padding:0 6px 4px; font-size:11.5px; color:var(--muted); }
-  .chatStatus { color:var(--muted); }
-  .chatDots { display:inline-flex; gap:3px; }
-  .chatDots i { width:5px; height:5px; border-radius:50%; background:var(--copper); animation:dotBounce 1.2s ease-in-out infinite; }
-  .chatDots i:nth-child(2) { animation-delay:.15s; } .chatDots i:nth-child(3) { animation-delay:.3s; }
-  @keyframes dotBounce { 0%,60%,100% { transform:translateY(0); opacity:.5; } 30% { transform:translateY(-4px); opacity:1; } }
-  .gcSmart { display:flex; gap:8px; padding:6px 4px 2px; flex-wrap:wrap; }
-  .gcSmartChip { padding:6px 16px; border:1px solid #C2D7FA; border-radius:999px; background:#fff; color:var(--blue-ink); font:inherit; font-size:13.5px; font-weight:600; cursor:pointer; }
-  .gcSmartChip:hover { background:var(--blue-soft); }
-  form.chatComposer { display:block; padding:4px 0 calc(4px + env(safe-area-inset-bottom)); border:0; background:transparent; }
-  .chatQuote { display:grid; grid-template-columns:auto 1fr; column-gap:8px; align-items:start; margin:-2px 0 6px; padding:6px 10px 6px 8px; border-left:3px solid #34A853; border-radius:8px; background:rgba(20,20,20,.05); font-size:12.5px; line-height:1.35; color:#3C4043; cursor:pointer; }
-  .chatBubbleMine .chatQuote { background:rgba(26,86,196,.08); border-left-color:var(--blue, #1A56C4); }
-  .chatQuote .chatQuoteWho { display:block; font-size:12px; }
-  .chatQuote .chatQuoteText { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-  .chatMsgFlash .chatBubble { animation:chatFlash 1.6s ease-out; }
-  @keyframes chatFlash { 0%,40% { box-shadow:0 0 0 3px rgba(52,168,83,.55); } 100% { box-shadow:none; } }
-  .taskStrip { display:flex; flex-wrap:wrap; gap:6px; padding:4px 0 6px; }
-  .taskChip { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:4px 10px; border:1px solid #DDE3EA; border-radius:999px; background:#fff; font-size:12px; color:#3C4043; }
-  .taskChip b { font-weight:600; color:var(--ink); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .taskChip i { font-style:normal; color:var(--muted); }
-  .taskStop { border:0; background:transparent; color:var(--muted); font-size:15px; line-height:1; padding:0 2px; cursor:pointer; border-radius:50%; }
-  .taskStop:hover { color:var(--ink); background:#EEE; }
-  .chatStop { border:0; background:transparent; color:var(--muted); font:inherit; font-size:11.5px; padding:0 4px; cursor:pointer; text-decoration:underline; }
-  .chatStop:hover { color:var(--ink); }
-  .taskChip .dot { width:7px; height:7px; border-radius:50%; background:var(--copper); animation:taskPulse 1.2s ease-in-out infinite; }
-  .taskChip.waiting .dot { background:#E8A33D; animation:none; }
-  @keyframes taskPulse { 0%,100% { opacity:.35; } 50% { opacity:1; } }
-  .chatTaskTag { display:inline-flex; align-items:center; margin-left:6px; padding:1px 7px; border-radius:999px; background:#EEF3FF; color:#1A56C4; font-size:11px; font-weight:600; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .chatReplyCard { display:grid; grid-template-columns:auto 1fr auto; column-gap:8px; align-items:start; margin:0 0 6px; padding:8px 8px 8px 10px; border:1px solid #DDE3EA; border-radius:14px; background:#fff; color:#3C4043; font-size:13px; }
-  .chatQuoteMark { font-size:16px; line-height:1; color:#34A853; }
-  .chatQuoteWho { font-weight:600; color:var(--ink); }
-  .chatReplyCardText { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#3C4043; }
-  .chatReplyCardClose { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border:0; border-radius:50%; background:transparent; color:#444746; cursor:pointer; font-size:16px; }
-  .chatReplyCardClose:hover { background:#F1F3F4; }
-  .chatDrawer { display:grid; grid-template-columns:repeat(auto-fill, minmax(46px, 1fr)); gap:6px; padding:12px; margin-bottom:6px; border:1px solid #ECE6DE; border-radius:14px; background:#fff; max-height:220px; overflow-y:auto; }
-  .chatDrawerEm { border:0; background:transparent; font-size:24px; line-height:1; padding:8px 0; border-radius:10px; cursor:pointer; }
-  .chatDrawerEm:hover { background:#FFF4E8; }
-  .chatRow { display:flex; align-items:center; gap:4px; }
-  .chatIcon { flex-shrink:0; display:inline-flex; align-items:center; justify-content:center; width:40px; height:40px; border:0; border-radius:50%; background:transparent; color:#444746; cursor:pointer; padding:0; }
-  .chatIcon:hover, .chatIconOn { background:#F1F3F4; }
-  .chatPlus { background:var(--blue-soft); color:var(--blue-ink); }
-  .chatPlus:hover { background:#C2D7FA; }
-  .rcBox { flex:1; min-width:0; min-height:40px; max-height:200px; resize:none; padding:10px 16px; border:1px solid transparent; border-radius:24px; background:#F0F4F9; font:inherit; font-size:14px; line-height:1.5; color:var(--ink); outline:none; }
-  .rcBox:focus { border-color:#C2D7FA; background:#EDF2FA; }
-  .chatSide { display:inline-flex; align-items:center; gap:4px; }
-  .chatSend { width:40px; height:40px; padding:0; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; border:0; background:var(--copper); color:#fff; cursor:pointer; }
-  .chatSend:hover { background:var(--copper-hover); }
-  .chatSend:disabled { opacity:.6; }
-  .chatMic.rec { background:#FCE8E6; color:#C5221F; }
-  #status { color:var(--muted); }
+  /* ===== Mobile: full-screen chat, tab bar below ===== */
+  .tabbar { display:none; }
   @media (max-width: 900px) {
-    main#chats { grid-template-columns:1fr; padding:0 12px; }
-    .inboxCol { display:none; border-right:0; padding-right:0; }
-    main#chats.showList .inboxCol { display:flex; }
-    main#chats.showList .room { display:none; }
-    .backChip { display:inline-flex; }
-    .chatStack { max-width:84%; }
-    .room { padding-left:0; }
+    .app { grid-template-columns:1fr; grid-template-rows:minmax(0,1fr) auto; }
+    .rail { display:none; }
+    .pane { min-height:0; }
+    .tabbar { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; padding:6px 4px calc(6px + env(safe-area-inset-bottom)); background:var(--head); border-top:1px solid var(--line); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); }
+    .tabbar button { position:relative; display:flex; flex-direction:column; align-items:center; gap:3px; padding:4px 0; border:0; background:transparent; color:var(--muted); font-size:10.5px; font-weight:500; cursor:pointer; }
+    .tabbar button.on { color:var(--accent-ink); }
+    .tabbar button .railBadge { top:-2px; right:calc(50% - 22px); }
+    .m.in { padding-right:8%; } .m.out { padding-left:8%; }
+    .chatEmpty { margin:40px auto; }
+    /* 16px keeps iOS from zooming into a focused field. */
+    .box, .findBar input, .field input, .field select, .card input, .card select { font-size:16px; }
   }
-  @media (prefers-reduced-motion: reduce) { .chatDots i { animation:none; } }
-  @media (max-width: 600px) { #status { font-size:0; margin-left:4px; } #status::before { width:9px; height:9px; margin:0; } }
-  [hidden] { display:none !important; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Pete</h1>
-  <nav>
-    <button data-tab="chat" class="on">Chats</button>
-    <button data-tab="home">Home</button>
-    <button data-tab="tasks">Tasks</button>
-    <button data-tab="inbox" id="inboxTab" hidden>Inbox</button>
-    <button data-tab="settings">Settings</button>
-    <button data-tab="logins">Logins</button>
-    <button data-tab="billing">Billing</button>
+<div class="app">
+  <nav class="rail" aria-label="Sections">
+    <button type="button" data-tab="chat" class="on" title="Chats" aria-label="Chats"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/></svg><span class="railBadge" id="railBadge" hidden></span></button>
+    <button type="button" data-tab="home" title="Today" aria-label="Today"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 2v4M16 2v4"/></svg></button>
+    <button type="button" data-tab="tasks" title="Tasks" aria-label="Tasks"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg></button>
+    <button type="button" data-tab="inbox" id="inboxTab" hidden title="Inbox" aria-label="Inbox"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l2.5-7h13L21 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 12h5l1.5 3h5L16 12h5"/></svg></button>
+    <button type="button" data-tab="logins" title="Logins" aria-label="Logins"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l2 2M14 9l2 2"/></svg></button>
+    <button type="button" data-tab="billing" title="Billing" aria-label="Billing"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20M6 15h4"/></svg></button>
+    <span class="grow"></span>
+    <button type="button" data-tab="settings" title="Settings" aria-label="Settings"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    <span class="avatar me you" id="meAvatar" title="You">Y</span>
   </nav>
-  <span id="status">connecting</span>
-</header>
 
-<main id="chats">
-  <aside class="inboxCol">
-    <div class="chatSearchBar">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-      <input id="roomSearch" placeholder="Search chats" autocomplete="off">
-    </div>
-    <div class="pageHead"><h2 class="pageTitle">Chats</h2><span class="pageMeta" id="chatsMeta"></span></div>
-    <div class="inboxList" id="roomList"></div>
-  </aside>
-  <section class="room">
-    <div class="roomHead">
-      <div style="min-width:0;display:flex;align-items:center;gap:8px">
-        <button type="button" class="toolChip backChip" id="backChip" aria-label="All chats">‹</button>
-        <div style="min-width:0"><div class="roomTitle" id="roomTitle">Pete</div><div class="roomSub" id="roomSub">Your personal secretary · always on</div></div>
-      </div>
-      <span class="roomTools">
-        <button type="button" class="toolChip" id="findChip" title="Search this conversation" aria-label="Search this conversation"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
-        <button type="button" class="toolChip" id="notifyChip" title="Desktop notifications" aria-label="Desktop notifications"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 17h12l-1.5-2V11a4.5 4.5 0 0 0-9 0v4L6 17zM10 20h4"/></svg></button>
-      </span>
-    </div>
-    <input id="findBox" class="chatSearch" placeholder="Search this conversation…" hidden>
-    <div class="chatListWrap">
-      <div class="chatList" id="list"></div>
-      <button type="button" id="down" class="chatDown" hidden title="Jump to the latest" aria-label="Jump to the latest"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span id="downBadge" class="chatDownBadge" hidden></span></button>
-    </div>
-    <div class="chatTyping" id="typing" aria-live="polite"></div>
-    <div class="gcSmart" id="smart" hidden></div>
-    <div class="taskStrip" id="taskStrip" hidden></div>
-    <form id="composer" class="chatComposer">
-      <div id="replyCard" class="chatReplyCard" hidden>
-        <span class="chatQuoteMark" aria-hidden="true">❝</span>
-        <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span class="chatQuoteWho" id="replyWho"></span><span class="chatReplyCardText" id="replyText"></span></span>
-        <button type="button" class="chatReplyCardClose" id="replyClose" aria-label="Cancel reply">×</button>
-      </div>
-      <div id="emojiDrawer" class="chatDrawer" hidden></div>
-      <div class="chatRow">
-        <button type="button" id="attach" class="chatIcon chatPlus" title="Attach a photo or document" aria-label="Attach"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
-        <textarea id="text" class="rcBox" rows="1" placeholder="Message Pete" autofocus></textarea>
-        <span class="chatSide">
-          <button type="button" id="emojiBtn" class="chatIcon" title="Emoji" aria-label="Emoji"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8M9 10h.01M15 10h.01"/></svg></button>
-          <button type="button" id="mic" class="chatIcon chatMic" title="Voice" aria-label="Voice"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"/></svg></button>
-          <button type="submit" id="send" class="chatSend" hidden aria-label="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 2.6a1 1 0 0 1 1.05-.14l17 8.5a1 1 0 0 1 0 1.8l-17 8.5A1 1 0 0 1 3 20.4l1.7-6.9L13 12 4.7 10.5 3 3.6a1 1 0 0 1 .4-1z"/></svg></button>
+
+  <section class="pane">
+    <main id="chats">
+      <div class="chatHead">
+        <span class="avatar" id="headAvatar" style="width:40px;height:40px;font-size:16px">P</span>
+        <div class="who"><div class="name" id="roomTitle">Pete</div><div class="sub" id="roomSub">connecting…</div></div>
+        <span class="tools">
+          <button type="button" class="icon" id="findChip" title="Search this conversation" aria-label="Search this conversation"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+          <button type="button" class="icon" id="soundChip" title="Message sounds" aria-label="Message sounds"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10z"/><path id="soundWave" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/><path id="soundOffX" d="M17 9l4 6M21 9l-4 6" hidden/></svg></button>
+          <button type="button" class="icon" id="notifyChip" title="Desktop notifications" aria-label="Desktop notifications"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 17h12l-1.5-2V11a4.5 4.5 0 0 0-9 0v4L6 17zM10 20h4"/></svg></button>
         </span>
       </div>
-      <input type="file" id="file" multiple hidden>
-    </form>
+      <div class="findBar" id="findBar" hidden><input id="findBox" placeholder="Search this conversation…"><button type="button" class="icon" id="findClose" aria-label="Close search">✕</button></div>
+      <div class="listWrap">
+        <div class="list" id="list"></div>
+        <button type="button" id="down" class="down" hidden title="Jump to the latest" aria-label="Jump to the latest"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span id="downBadge" class="downBadge" hidden></span></button>
+      </div>
+      <div class="below">
+        <div class="smart" id="smart" hidden></div>
+        <div class="tasks" id="taskStrip" hidden></div>
+        <form id="composer" class="composer">
+          <div id="replyCard" class="replyCard" hidden><i></i><div><span class="who" id="replyWho"></span><span class="qt" id="replyText"></span></div><button type="button" class="icon" id="replyClose" aria-label="Cancel reply">✕</button></div>
+          <div id="emojiDrawer" class="drawer" hidden></div>
+          <div class="row2">
+            <button type="button" id="emojiBtn" class="icon" title="Emoji" aria-label="Emoji"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8M9 10h.01M15 10h.01"/></svg></button>
+            <button type="button" id="attach" class="icon" title="Attach a photo or document" aria-label="Attach"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+            <textarea id="text" class="box" rows="1" placeholder="Message" autofocus></textarea>
+            <button type="button" id="mic" class="icon mic" title="Voice" aria-label="Voice"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"/></svg></button>
+            <button type="submit" id="send" class="send" hidden aria-label="Send"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 2.6a1 1 0 0 1 1.05-.14l17 8.5a1 1 0 0 1 0 1.8l-17 8.5A1 1 0 0 1 3 20.4l1.7-6.9L13 12 4.7 10.5 3 3.6a1 1 0 0 1 .4-1z"/></svg></button>
+          </div>
+          <input type="file" id="file" multiple hidden>
+        </form>
+      </div>
+    </main>
+
+    <main id="home" class="page" hidden><div class="pageWrap">
+      <div class="pageTitle"><h1 id="homeTitle">Today</h1><span id="homeSub"></span></div>
+      <div id="fixCards" style="display:contents"></div>
+      <div class="card">
+        <h3>Ask for</h3>
+        <div class="quick">
+          <button data-say="I want to return something I bought. Ask me what and I'll tell you."><span>↩️</span>Return something</button>
+          <button data-say="Where are my packages? Check everything in transit and give me expected days."><span>📦</span>Where's my package</button>
+          <button data-say="Book me an appointment. Ask me for what, where, and when, then handle it."><span>📅</span>Book an appointment</button>
+          <button data-say="Pay a bill for me. Ask me which one if you don't already know."><span>💵</span>Pay a bill</button>
+          <button data-say="Find me the cheapest price for something. Ask me what it is."><span>🔍</span>Find the cheapest</button>
+          <button data-say="Make a reservation for me. Ask me where, when, and how many."><span>🍽️</span>Reservation</button>
+          <button data-say="Add to my grocery list: "><span>🛒</span>Grocery list</button>
+          <button data-say="Remind me "><span>⏰</span>Remind me</button>
+        </div>
+      </div>
+      <div class="card"><h3>What's today</h3><div id="todayList"><div class="empty">Loading…</div></div></div>
+      <div class="card"><h3>Scoreboard</h3><div class="score" id="score"></div><div id="wins"></div></div>
+      <div class="card"><h3>Done receipts</h3><p>Proof for everything it finished: order and confirmation numbers, and a screenshot when there was one.</p><div id="receipts"><div class="empty">Nothing yet.</div></div></div>
+      <div class="card" id="docsCard" hidden><h3>Documents it made for you</h3><p>PDFs it wrote, forms it filled and pages it saved as proof.</p><div id="docs"></div></div>
+    </div></main>
+
+    <main id="inbox" class="page" hidden><div class="pageWrap">
+      <div class="pageTitle"><h1>Inbox</h1></div>
+      <div class="card"><h3>Replies waiting for your ok</h3><p>Drafts your agent wrote in your Gmail, in your voice. Send, or swipe left to discard. Say "change it" in chat to rewrite one.</p></div>
+      <div id="drafts" style="display:flex;flex-direction:column;gap:12px"><div class="empty">Loading…</div></div>
+    </div></main>
+
+    <main id="tasks" class="page" hidden><div class="pageWrap">
+      <div class="pageTitle"><h1>Tasks</h1><span id="tasksMeta">Everything running, waiting on you, or done today.</span></div>
+      <div class="card"><div id="taskList"></div></div>
+      <div class="card" id="taskDetail" hidden><h3 id="tdTitle"></h3><p id="tdRequest" class="hint"></p><p id="tdResult"></p><table><thead><tr><th>When</th><th>Step</th><th>What</th><th>Came back</th></tr></thead><tbody id="tdSteps"></tbody></table><div class="row" style="margin-top:10px"><button type="button" class="btn" id="tdClose">Close</button></div></div>
+    </div></main>
+
+    <main id="settings" class="page" hidden><div class="pageWrap">
+      <div class="pageTitle"><h1>Settings</h1></div>
+      <div class="banner" id="paywall" hidden>Your trial or subscription is not active. <button class="btn pri" id="paywallBtn">Start subscription</button></div>
+      <div class="card" style="padding-top:4px;padding-bottom:4px">
+        <div class="item link" data-go="logins"><div class="k">🔐</div><div class="t">Site logins<small>Accounts the agent may use, and the hosted browser</small></div><span class="chev">›</span></div>
+        <div class="item link" data-go="billing" id="billingRow"><div class="k">💳</div><div class="t">Subscription<small>Plan, usage and billing</small></div><span class="chev">›</span></div>
+        <div class="item link" data-go="inbox" id="inboxRow" hidden><div class="k">✉️</div><div class="t">Inbox<small>Replies waiting for your ok</small></div><span class="chev">›</span></div>
+      </div>
+      <div class="card"><h3>Your agent</h3><p>Email tasks to <code id="agentEmail">…</code>. Auto-forward receipts, bills and confirmations there and it will keep track. Replies to its emails come back to it automatically.</p></div>
+      <div class="card">
+        <h3>About you</h3>
+        <div class="field"><label>Name (used in emails it sends: "Name (assistant)")</label><input id="s_name"></div>
+        <div class="field"><label>What to call you in chat (a nickname; blank uses the name above)</label><input id="s_nick" placeholder="Mendy"></div>
+        <div class="field"><label>Time zone</label><input id="s_tz" placeholder="America/New_York"></div>
+        <div class="field"><label>Family members who may email requests (comma separated)</label><input id="s_family" placeholder="partner@example.com"></div>
+      </div>
+      <div class="card">
+        <h3>Approvals</h3>
+        <div class="field"><label>Purchases and payments up to this amount run without asking ($, 0 = always ask)</label><input id="s_cap" type="number" min="0" step="1"></div>
+        <div class="field"><label>Action types that never need approval (comma separated: purchase, payment, message, signup, agreement…)</label><input id="s_types" placeholder="message"></div>
+        <div class="field"><label>Copy me on every email it sends to someone else</label><select id="s_cc"><option value="true">Yes</option><option value="false">No</option></select></div>
+      </div>
+      <div class="card">
+        <h3>Rhythm</h3>
+        <div class="field"><label>Morning brief hour (0-23, -1 to disable)</label><input id="s_review" type="number" min="-1" max="23"></div>
+        <div class="field"><label>Check-in times for held heads-ups (e.g. 12:30,18:00; empty = immediately)</label><input id="s_batch"></div>
+        <div class="field"><label>Quiet hours (e.g. 22-7)</label><input id="s_quiet"></div>
+        <div class="field"><label>Weekly review (e.g. Sun 18; empty to disable)</label><input id="s_weekly"></div>
+      </div>
+      <div class="card">
+        <h3>Notifications</h3>
+        <p>Get a push on this device when a code is needed, something needs your ok, or a task finishes, even with the chat closed.</p>
+        <div class="row"><button type="button" class="btn pri" id="pushOn">Enable on this device</button><button type="button" class="btn" id="pushOff" hidden>Turn off</button><span class="hint" id="pushMsg"></span></div>
+      </div>
+      <div class="card">
+        <h3>Standing orders</h3>
+        <p>Things the secretary does on its own, on a schedule or when they happen.</p>
+        <div class="row"><input id="soWhat" placeholder="Order the groceries from the list" style="flex:2;min-width:220px"><select id="soKind"><option value="weekly">Every week</option><option value="daily">Every day</option><option value="monthly">Every month</option><option value="event">When it happens</option></select><select id="soDay"><option>Sun</option><option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option><option>Fri</option><option>Sat</option></select><input id="soDom" type="number" min="1" max="28" value="1" style="width:70px" hidden><input id="soTime" type="time" value="09:00"><button type="button" class="btn pri" id="soAdd">Add</button></div>
+        <span class="hint" id="soMsg"></span>
+        <table><tbody id="soList"></tbody></table>
+      </div>
+      <div class="card">
+        <h3>Google</h3>
+        <p>Connect your own Google account for your real calendar, inbox triage with drafts in your voice, and Drive filing. It can read, label and draft; it can never send as you.</p>
+        <div class="row"><button class="btn" id="gConnect">Connect Google</button><button class="btn" id="gDisconnect" hidden>Disconnect</button><span class="hint" id="gState"></span></div>
+      </div>
+      <div class="card" id="bankCard" hidden>
+        <h3>Bank accounts</h3>
+        <p>Connect a bank through Plaid so balances and spending questions are answered from the account data in a second, with no portal session. Read-only; the secretary cannot move money through it.</p>
+        <div class="row"><button type="button" class="btn pri" id="bankConnect">Connect a bank</button><span class="hint" id="bankMsg"></span></div>
+        <table><tbody id="bankList"></tbody></table>
+      </div>
+      <div class="card">
+        <h3>Local browser</h3>
+        <p>Some sites block hosted browsers (banks, airlines). Install the relay extension in your own browser and paste a token here, and the secretary can use a tab on your computer for those sites. It only acts when it sends a command, and you see everything in that tab.</p>
+        <div class="row"><button type="button" class="btn" id="relayToken">Create a token</button><span class="hint" id="relayState"></span></div>
+        <p class="hint" id="relayShown" hidden></p>
+      </div>
+      <div class="card">
+        <h3>Your data</h3>
+        <p>Everything the secretary knows about you is yours: export it as one file, or delete the account and all of it.</p>
+        <div class="row"><a class="btn" href="/api/account?export=1" download>Export everything</a><button type="button" class="btn danger" id="delAccount">Delete account…</button><span class="hint" id="delMsg"></span></div>
+      </div>
+      <div class="row"><button class="btn pri" id="saveSettings">Save</button><span class="hint" id="saveMsg"></span><button class="btn" id="logout" style="margin-left:auto">Log out</button></div>
+    </div></main>
+
+    <main id="logins" class="page" hidden><div class="pageWrap">
+      <div class="pageTitle"><h1>Logins</h1></div>
+      <div class="card">
+        <h3>Site logins</h3>
+        <p>Add the accounts the agent may use. Stored encrypted; only the login step ever reads a password, the AI never does. For sites with an authenticator app, paste the setup key so it can enter codes itself.</p>
+        <div class="field"><label>Website</label><input id="v_domain" placeholder="amazon.com"></div>
+        <div class="field"><label>Username or email</label><input id="v_user" autocomplete="off"></div>
+        <div class="field"><label>Password</label><input id="v_pass" type="password" autocomplete="new-password"></div>
+        <div class="field"><label>Authenticator setup key (optional)</label><input id="v_totp" autocomplete="off" placeholder="JBSWY3DPEHPK3PXP"></div>
+        <div class="field"><label>Notes (optional)</label><input id="v_notes"></div>
+        <div class="row"><button class="btn pri" id="vAdd">Save login</button><span class="hint" id="vMsg"></span></div>
+      </div>
+      <div class="card"><h3>Saved</h3><table><thead><tr><th>Site</th><th>Account</th><th>2FA</th><th></th></tr></thead><tbody id="vList"></tbody></table></div>
+      <div class="card"><h3>Sign in to a site</h3><p>For sites that block automated sign-ins or keep texting codes (utilities, banks, Uber): sign in once yourself in the secretary's own browser. It stays signed in from then on, so no code is ever asked again.</p><div class="row"><input id="siDomain" placeholder="e.g. coned.com or uber" style="flex:1;min-width:180px"><button type="button" class="btn pri" id="siOpen">Open sign-in page</button></div><div class="row" style="margin-top:8px"><input id="siUser" placeholder="email or phone (optional)" autocomplete="off" style="flex:1;min-width:150px"><input id="siPass" type="password" placeholder="password (optional)" autocomplete="new-password" style="flex:1;min-width:150px"></div><p class="hint">Sites log you out after a while. With the login saved here too, the secretary signs back in on its own; a site that only texts codes (Uber) will need one code from you each time its session expires. Passwords are encrypted and never shown to the AI.</p><span class="hint" id="siMsg"></span></div>
+      <div class="card"><h3>Browser sessions</h3><p>Every hosted browser the secretary used: watch one live, replay a recording of what it did, or stop one that is still running.</p><table><thead><tr><th>Task</th><th>When</th><th>State</th><th></th></tr></thead><tbody id="bsList"></tbody></table><span class="hint" id="bsMsg"></span></div>
+    </div></main>
+
+    <main id="billing" class="page" hidden><div class="pageWrap">
+      <div class="pageTitle"><h1>Billing</h1></div>
+      <div class="card hero"><h3>Subscription</h3><p id="bStatus" style="font-size:16px;color:#fff">…</p><p id="bUsage"></p><div class="row" style="margin-top:10px"><button class="btn" id="bCheckout" hidden>Start subscription</button><button class="btn" id="bPortal" hidden>Manage billing</button></div></div>
+    </div></main>
   </section>
-</main>
 
-<main id="home" hidden><div class="panel">
-  <div class="card">
-    <h3 id="homeTitle">Today</h3>
-    <div class="quick">
-      <button data-say="I want to return something I bought. Ask me what and I'll tell you.">Return something</button>
-      <button data-say="Where are my packages? Check everything in transit and give me expected days.">Where's my package</button>
-      <button data-say="Book me an appointment. Ask me for what, where, and when, then handle it.">Book an appointment</button>
-      <button data-say="Pay a bill for me. Ask me which one if you don't already know.">Pay a bill</button>
-      <button data-say="Find me the cheapest price for something. Ask me what it is.">Find the cheapest</button>
-      <button data-say="Make a reservation for me. Ask me where, when, and how many.">Reservation</button>
-      <button data-say="Add to my grocery list: ">Grocery list</button>
-      <button data-say="Remind me ">Remind me</button>
-    </div>
-  </div>
-  <div class="card">
-    <h3>What's today</h3>
-    <div id="todayList"><div class="empty">Loading…</div></div>
-  </div>
-  <div class="card">
-    <h3>Scoreboard</h3>
-    <div class="score" id="score"></div>
-    <div id="wins"></div>
-  </div>
-  <div class="card">
-    <h3>Done receipts</h3>
-    <p>Proof for everything it finished: order and confirmation numbers, and a screenshot when there was one.</p>
-    <div id="receipts"><div class="empty">Nothing yet.</div></div>
-  </div>
-  <div class="card" id="docsCard" hidden>
-    <h3>Documents it made for you</h3>
-    <div id="docs"></div>
-  </div>
-</div></main>
-
-<main id="inbox" hidden><div class="panel">
-  <div class="card">
-    <h3>Replies waiting for your ok</h3>
-    <p>Drafts your agent wrote in your Gmail, in your voice. Send, or swipe left to discard. Say "change it" in chat to rewrite one.</p>
-  </div>
-  <div id="drafts"><div class="empty">Loading…</div></div>
-</div></main>
-
-<main id="tasks" hidden><div class="panel">
-  <div class="card"><h3>Tasks</h3><p class="hint" id="tasksMeta">Everything running, waiting on you, or done today.</p><div id="taskList"></div></div>
-  <div class="card" id="taskDetail" hidden><h3 id="tdTitle"></h3><p id="tdRequest" class="hint"></p><p id="tdResult"></p><table><thead><tr><th>When</th><th>Step</th><th>What</th><th>Came back</th></tr></thead><tbody id="tdSteps"></tbody></table><div class="row" style="margin-top:8px"><button type="button" class="btn" id="tdClose">Close</button></div></div>
-</div></main>
-
-<main id="settings" hidden><div class="panel">
-  <div class="banner" id="paywall" hidden>Your trial or subscription is not active. <button class="primary" id="paywallBtn" style="margin-left:8px">Start subscription</button></div>
-  <div class="card">
-    <h3>Your agent</h3>
-    <p>Email tasks to <code id="agentEmail">…</code>. Auto-forward receipts, bills and confirmations there and it will keep track. Replies to its emails come back to it automatically.</p>
-  </div>
-  <div class="card">
-    <h3>About you</h3>
-    <div class="field"><label>Name (used in emails it sends: "Name (assistant)")</label><input id="s_name"></div>
-    <div class="field"><label>Time zone</label><input id="s_tz" placeholder="America/New_York"></div>
-    <div class="field"><label>Family members who may email requests (comma separated)</label><input id="s_family" placeholder="partner@example.com"></div>
-  </div>
-  <div class="card">
-    <h3>Approvals</h3>
-    <div class="field"><label>Purchases and payments up to this amount run without asking ($, 0 = always ask)</label><input id="s_cap" type="number" min="0" step="1"></div>
-    <div class="field"><label>Action types that never need approval (comma separated: purchase, payment, message, signup, agreement…)</label><input id="s_types" placeholder="message"></div>
-    <div class="field"><label>Copy me on every email it sends to someone else</label><select id="s_cc"><option value="true">Yes</option><option value="false">No</option></select></div>
-  </div>
-  <div class="card">
-    <h3>Rhythm</h3>
-    <div class="field"><label>Morning brief hour (0-23, -1 to disable)</label><input id="s_review" type="number" min="-1" max="23"></div>
-    <div class="field"><label>Check-in times for held heads-ups (e.g. 12:30,18:00; empty = immediately)</label><input id="s_batch"></div>
-    <div class="field"><label>Quiet hours (e.g. 22-7)</label><input id="s_quiet"></div>
-    <div class="field"><label>Weekly review (e.g. Sun 18; empty to disable)</label><input id="s_weekly"></div>
-  </div>
-  <div class="card">
-    <h3>Notifications</h3>
-    <p>Get a push on this device when a code is needed, something needs your ok, or a task finishes, even with the chat closed.</p>
-    <div class="row"><button type="button" class="btnPri" id="pushOn">Enable on this device</button><button type="button" class="btn" id="pushOff" hidden>Turn off</button><span class="hint" id="pushMsg"></span></div>
-  </div>
-  <div class="card">
-    <h3>Standing orders</h3>
-    <p>Things the secretary does on its own, on a schedule or when they happen.</p>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="soWhat" placeholder="Order the groceries from the list" style="flex:2;min-width:220px"><select id="soKind"><option value="weekly">Every week</option><option value="daily">Every day</option><option value="monthly">Every month</option><option value="event">When it happens</option></select><select id="soDay"><option>Sun</option><option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option><option>Fri</option><option>Sat</option></select><input id="soDom" type="number" min="1" max="28" value="1" style="width:64px" hidden><input id="soTime" type="time" value="09:00"><button type="button" class="btnPri" id="soAdd">Add</button></div>
-    <span class="hint" id="soMsg"></span>
-    <table><tbody id="soList"></tbody></table>
-  </div>
-  <div class="card">
-    <h3>Your data</h3>
-    <p>Everything the secretary knows about you is yours: export it as one file, or delete the account and all of it.</p>
-    <div class="row"><a class="btn" href="/api/account?export=1" download>Export everything</a><button type="button" class="btn" id="delAccount" style="color:#B3261E">Delete account…</button><span class="hint" id="delMsg"></span></div>
-  </div>
-  <div class="card">
-    <h3>Google</h3>
-    <p>Connect your own Google account for your real calendar, inbox triage with drafts in your voice, and Drive filing. It can read, label and draft; it can never send as you.</p>
-    <div class="row"><button id="gConnect">Connect Google</button><button id="gDisconnect" hidden>Disconnect</button><span class="hint" id="gState"></span></div>
-  </div>
-  <div class="row"><button class="primary" id="saveSettings">Save</button><span class="hint" id="saveMsg"></span><button id="logout" style="margin-left:auto">Log out</button></div>
-</div></main>
-
-<main id="logins" hidden><div class="panel">
-  <div class="card">
-    <h3>Site logins</h3>
-    <p>Add the accounts the agent may use. Stored encrypted; only the login step ever reads a password, the AI never does. For sites with an authenticator app, paste the setup key so it can enter codes itself.</p>
-    <div class="field"><label>Website</label><input id="v_domain" placeholder="amazon.com"></div>
-    <div class="field"><label>Username or email</label><input id="v_user" autocomplete="off"></div>
-    <div class="field"><label>Password</label><input id="v_pass" type="password" autocomplete="new-password"></div>
-    <div class="field"><label>Authenticator setup key (optional)</label><input id="v_totp" autocomplete="off" placeholder="JBSWY3DPEHPK3PXP"></div>
-    <div class="field"><label>Notes (optional)</label><input id="v_notes"></div>
-    <div class="row"><button class="primary" id="vAdd">Save login</button><span class="hint" id="vMsg"></span></div>
-  </div>
-  <div class="card"><h3>Saved</h3><table><thead><tr><th>Site</th><th>Account</th><th>2FA</th><th></th></tr></thead><tbody id="vList"></tbody></table></div>
-  <div class="card"><h3>Sign in to a site</h3><p>For sites that block automated sign-ins or keep texting codes (utilities, banks, Uber): sign in once yourself in the secretary's own browser. It stays signed in from then on, so no code is ever asked again.</p><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="siDomain" placeholder="e.g. coned.com or uber" style="flex:1;min-width:180px"><button type="button" class="btnPri" id="siOpen">Open sign-in page</button></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"><input id="siUser" placeholder="email or phone (optional)" autocomplete="off" style="flex:1;min-width:150px"><input id="siPass" type="password" placeholder="password (optional)" autocomplete="new-password" style="flex:1;min-width:150px"></div><p class="hint">Sites log you out after a while. With the login saved here too, the secretary signs back in on its own; a site that only texts codes (Uber) will need one code from you each time its session expires. Passwords are encrypted and never shown to the AI.</p><span class="hint" id="siMsg"></span></div>
-  <div class="card"><h3>Browser sessions</h3><p>Every hosted browser the secretary used: watch one live, replay a recording of what it did, or stop one that is still running.</p><table><thead><tr><th>Task</th><th>When</th><th>State</th><th></th></tr></thead><tbody id="bsList"></tbody></table><span class="hint" id="bsMsg"></span></div>
-</div></main>
-
-<main id="billing" hidden><div class="panel">
-  <div class="card">
-    <h3>Subscription</h3>
-    <p id="bStatus">…</p>
-    <p id="bUsage"></p>
-    <div class="row"><button class="primary" id="bCheckout" hidden>Start subscription</button><button id="bPortal" hidden>Manage billing</button></div>
-  </div>
-</div></main>
+  <nav class="tabbar" aria-label="Sections">
+    <button type="button" data-tab="chat" class="on"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/></svg>Chats<span class="railBadge" id="tabBadge" hidden></span></button>
+    <button type="button" data-tab="home"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>Today</button>
+    <button type="button" data-tab="tasks"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>Tasks</button>
+    <button type="button" data-tab="inbox" id="inboxTabM" hidden><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l2.5-7h13L21 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 12h5l1.5 3h5L16 12h5"/></svg>Inbox</button>
+    <button type="button" data-tab="settings"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+  </nav>
+</div>
 
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  let me = null, sessionId = null, streamAbort = null;
-  const rendered = new Map();
+  let me = null, sessionId = null, AGENT = "Pete";
   const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
+  const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc2 = esc;
   const fmtTime = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch { return ""; } };
-  const scroll = () => { const m = $("list"); m.scrollTop = m.scrollHeight; };
-  const setStatus = (s, label) => { const el = $("status"); el.className = s; el.textContent = label || s; };
+  const store = { get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
-  // ---- tabs
-  document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
+  // ---- sound: a short two-note chime, synthesised so there is nothing to download
+  let actx = null, soundOn = store.get("secretary:sound", "on") !== "off";
+  function unlockAudio() { try { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch {} }
+  document.addEventListener("pointerdown", unlockAudio, { passive: true }); document.addEventListener("keydown", unlockAudio);
+  function tone(freq, t0, dur, gain, type = "sine") { const o = actx.createOscillator(), g = actx.createGain(); o.type = type; o.frequency.setValueAtTime(freq, t0); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(gain, t0 + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur); o.connect(g); g.connect(actx.destination); o.start(t0); o.stop(t0 + dur + 0.02); }
+  function ping() { if (!soundOn) return; unlockAudio(); if (!actx || actx.state !== "running") return; const t = actx.currentTime; tone(1046.5, t, 0.22, 0.16); tone(1567.98, t + 0.1, 0.34, 0.14); tone(2093, t + 0.1, 0.2, 0.03, "triangle"); try { navigator.vibrate?.([12, 40, 12]); } catch {} }
+  function swoosh() { if (!soundOn) return; unlockAudio(); if (!actx || actx.state !== "running") return; const t = actx.currentTime; const o = actx.createOscillator(), g = actx.createGain(); o.type = "sine"; o.frequency.setValueAtTime(880, t); o.frequency.exponentialRampToValueAtTime(1320, t + 0.09); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12); o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + 0.14); }
+  function paintSound() { $("soundWave").hidden = !soundOn; $("soundOffX").hidden = soundOn; $("soundChip").classList.toggle("on", soundOn); $("soundChip").title = soundOn ? "Message sounds on" : "Message sounds off"; renderRooms(); }
+  $("soundChip").onclick = () => { soundOn = !soundOn; store.set("secretary:sound", soundOn ? "on" : "off"); paintSound(); if (soundOn) ping(); };
+
+  // ---- tabs (the rail on a desk, the bar on a phone)
+  const TABS = ["home", "chats", "tasks", "inbox", "settings", "logins", "billing"];
+  document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
+  document.querySelectorAll("[data-go]").forEach((b) => b.onclick = () => showTab(b.dataset.go));
+  let currentTab = "chat";
   function showTab(name) {
-    document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-    for (const id of ["home", "chats", "tasks", "inbox", "settings", "logins", "billing"]) $(id).hidden = (id === "chats" ? "chat" : id) !== name;
+    currentTab = name;
+    document.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+    for (const id of TABS) $(id).hidden = (id === "chats" ? "chat" : id) !== name;
     if (name === "logins") loadVault();
     if (name === "tasks") loadTasks();
-    if (name === "settings") { loadOrders(); loadPushState(); }
+    if (name === "settings") { loadOrders(); loadPushState(); loadBank(); loadRelay(); }
     if (name === "home") loadHome();
     if (name === "inbox") loadDrafts();
-    if (name === "chat") { setTimeout(() => $("text").focus(), 50); return loadHistory(); }
+    if (name === "chat") { setTimeout(() => { if (window.matchMedia("(hover:hover)").matches) $("text").focus(); }, 50); markSeen(); return loadHistory(); }
   }
 
   // ---- account
@@ -470,7 +505,6 @@
     const r = await api("/api/me");
     if (r.status === 401) { location.href = "/"; return; }
     me = await r.json();
-    // A new deploy: fetch the fresh page once (the HTML is served uncached, so this is enough).
     try {
       const seen = localStorage.getItem("secretary:ui");
       if (me.ui_version && seen !== me.ui_version) {
@@ -478,20 +512,20 @@
         if (seen && !sessionStorage.getItem("secretary:reloaded")) { sessionStorage.setItem("secretary:reloaded", "1"); location.reload(); return; }
       }
     } catch {}
-    if (me.assistant_name) {
-      AGENT = me.assistant_name;
-      document.title = AGENT;
-      const brand = document.querySelector("h1"); if (brand) brand.textContent = AGENT;
-      $("text").placeholder = `Message ${AGENT}`;
-      if (currentRoom === "secretary") $("roomTitle").textContent = AGENT;
-      renderRooms();
-    }
+    if (me.assistant_name) AGENT = me.assistant_name;
+    baseTitle = AGENT; document.title = AGENT;
+    $("roomTitle").textContent = AGENT; $("headAvatar").textContent = initials(AGENT);
+    $("text").placeholder = `Message ${AGENT}`;
+    $("meAvatar").textContent = initials(me.name || me.email || "You");
+    renderRooms();
     const paid = me.access ?? (me.subscription_status === "active" || me.subscription_status === "trialing");
     $("paywall").hidden = paid;
-    document.querySelector('nav button[data-tab="billing"]').hidden = me.billing_enabled === false;
+    const noBilling = me.billing_enabled === false;
+    document.querySelector('.rail [data-tab="billing"]').hidden = noBilling; $("billingRow").hidden = noBilling;
     $("agentEmail").textContent = me.agent_email || "(email channel not enabled on this test deploy)";
     const s = me.settings || {};
     $("s_name").value = s.owner_name || me.name || "";
+    $("s_nick").value = s.preferred_name || "";
     $("s_tz").value = me.timezone || "";
     $("s_family").value = (s.family_emails || []).join(", ");
     $("s_cap").value = s.auto_approve_max_usd ?? 0;
@@ -502,17 +536,17 @@
     $("s_quiet").value = s.quiet_hours ?? "22-7";
     $("s_weekly").value = s.weekly_review ?? "Sun 18";
     $("gConnect").hidden = me.google_connected; $("gDisconnect").hidden = !me.google_connected;
-    $("inboxTab").hidden = !me.google_connected;
+    $("inboxTab").hidden = $("inboxTabM").hidden = $("inboxRow").hidden = !me.google_connected;
     setupMic();
     $("gState").textContent = me.google_connected ? "Connected" : "Not connected";
-    $("bStatus").textContent = paid ? `Status: ${me.subscription_status}${me.current_period_end ? ", renews " + new Date(me.current_period_end).toLocaleDateString() : ""}` : `Status: ${me.subscription_status}. Start a subscription to use the agent.`;
+    $("bStatus").textContent = paid ? `${me.subscription_status}${me.current_period_end ? ", renews " + new Date(me.current_period_end).toLocaleDateString() : ""}` : `Status: ${me.subscription_status}. Start a subscription to use the agent.`;
     $("bUsage").textContent = `This month's usage: $${(me.usage.month_cents / 100).toFixed(2)} of $${(me.usage.cap_cents / 100).toFixed(0)} included.`;
     $("bCheckout").hidden = paid; $("bPortal").hidden = !me.stripe_customer && !paid;
     if (!paid) showTab("billing"); else if (location.search.includes("google=")) showTab("settings"); else if (location.hash === "#home") showTab("home"); else loadHistory();
   }
   $("saveSettings").onclick = async () => {
     const body = {
-      owner_name: $("s_name").value.trim(), name: $("s_name").value.trim(), timezone: $("s_tz").value.trim(),
+      owner_name: $("s_name").value.trim(), name: $("s_name").value.trim(), preferred_name: $("s_nick").value.trim(), timezone: $("s_tz").value.trim(),
       family_emails: $("s_family").value.split(",").map((s) => s.trim()).filter(Boolean),
       auto_approve_max_usd: Number($("s_cap").value || 0),
       auto_approve_types: $("s_types").value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
@@ -529,22 +563,36 @@
   $("bCheckout").onclick = checkout; $("paywallBtn").onclick = checkout;
   $("bPortal").onclick = async () => { const r = await api("/api/billing/portal", { method: "POST" }); const d = await r.json(); if (d.url) location.href = d.url; };
 
-  // ---- home: what's today, scoreboard, receipts
+  // ---- today: what's on, scoreboard, receipts
   const KIND_ICON = { bill: "💵", package: "📦", appointment: "📅", reservation: "🍽️", school: "🎒", reminder: "⏰", other: "•" };
   const fmtDay = (iso) => { if (!iso) return ""; const d = new Date(iso); const today = new Date(); const diff = Math.round((new Date(d.toDateString()) - new Date(today.toDateString())) / 86400000); const when = diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : diff === -1 ? "Yesterday" : diff < -1 ? `${-diff} days ago` : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); const hasTime = /T\d\d:\d\d/.test(iso) && !/T00:00:00/.test(iso); return hasTime ? `${when} ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : when; };
-  const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   function itemRow(i, kindLabel) {
     const div = document.createElement("div"); div.className = "item" + (i.overdue ? " overdue" : "");
     const d = i.details || {};
     const extra = [i.amount_usd != null ? `$${Number(i.amount_usd).toFixed(2)}` : "", d.carrier ? `${d.carrier}${d.tracking ? " " + d.tracking : ""}` : "", d.location || d.where || "", d.who || "", d.notes || ""].filter(Boolean).join(" · ");
     div.innerHTML = `<div class="k">${KIND_ICON[i.kind] || "•"}</div><div class="t">${esc(i.title)}<small>${esc([kindLabel || i.kind, i.due_at ? (i.overdue ? "overdue, was " : "") + fmtDay(i.due_at) : "", extra].filter(Boolean).join(" · "))}</small></div>`;
-    const ask = document.createElement("button"); ask.textContent = "Ask"; ask.onclick = () => { showTab("chat"); $("text").value = `About "${i.title}": `; $("text").focus(); };
+    const ask = document.createElement("button"); ask.type = "button"; ask.className = "btn"; ask.textContent = "Ask"; ask.onclick = () => { showTab("chat"); $("text").value = `About "${i.title}": `; autosize(); $("text").focus(); };
     div.appendChild(ask);
     return div;
   }
+  // What blocked a task (a missing login, Google not connected) becomes a card with a one-tap route to the fix.
+  async function loadFixes() {
+    try {
+      const r = await fetch("/api/fixes"); if (!r.ok) return;
+      const d = await r.json(); const box = $("fixCards");
+      box.innerHTML = (d.fixes || []).map((f) => `<div class="card" data-fix="${esc(f.id)}" data-kind="${esc(f.kind)}" data-domain="${esc(f.domain || "")}" style="border-left:4px solid var(--danger)"><h3>One thing would unblock this</h3><p style="color:var(--ink);font-size:14.5px">${esc(f.message)}</p><div class="row" style="margin-top:8px"><button type="button" class="btn pri" data-act="go">${f.kind === "add_login" || f.kind === "check_login" ? "Add the login" : f.kind === "connect_google" ? "Connect Google" : f.kind === "enable_relay" ? "Set up local browser" : "Open settings"}</button><button type="button" class="btn" data-act="done">Dismiss</button></div></div>`).join("");
+      box.querySelectorAll("[data-fix]").forEach((card) => {
+        card.querySelector('[data-act="done"]').onclick = async () => { await api("/api/fixes", { method: "POST", body: JSON.stringify({ id: card.dataset.fix }) }); loadFixes(); };
+        card.querySelector('[data-act="go"]').onclick = () => { if (card.dataset.kind === "add_login" || card.dataset.kind === "check_login") { showTab("logins"); $("v_domain").value = card.dataset.domain; $("v_domain").focus(); } else showTab("settings"); };
+      });
+    } catch {}
+  }
   async function loadHome() {
+    loadFixes();
     loadFiles(true);
-    $("homeTitle").textContent = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+    const now = new Date();
+    $("homeTitle").textContent = now.toLocaleDateString([], { weekday: "long" });
+    $("homeSub").textContent = now.toLocaleDateString([], { month: "long", day: "numeric" });
     const [tr, sr, rr] = await Promise.all([api("/api/today?days=3"), api("/api/stats"), api("/api/receipts")]);
     if (tr.ok) {
       const d = await tr.json(); const box = $("todayList"); box.innerHTML = "";
@@ -562,7 +610,7 @@
     }
     if (rr.ok) {
       const { items } = await rr.json(); const box = $("receipts"); box.innerHTML = "";
-      for (const r of items) { const div = document.createElement("div"); div.className = "item"; div.innerHTML = `<div class="k">✅</div><div class="t">${esc(r.title)}<small>${esc([r.confirmation ? "#" + r.confirmation : "", fmtDay(r.created_at), r.details].filter(Boolean).join(" · "))}</small></div>${r.has_image ? `<a href="/api/receipts?image=${r.id}" target="_blank"><button type="button">Proof</button></a>` : ""}`; box.appendChild(div); }
+      for (const r of items) { const div = document.createElement("div"); div.className = "item"; div.innerHTML = `<div class="k">✅</div><div class="t">${esc(r.title)}<small>${esc([r.confirmation ? "#" + r.confirmation : "", fmtDay(r.created_at), r.details].filter(Boolean).join(" · "))}</small></div>${r.has_image ? `<a href="/api/receipts?image=${r.id}" target="_blank"><button type="button" class="btn">Proof</button></a>` : ""}`; box.appendChild(div); }
       if (!items.length) box.innerHTML = `<div class="empty">Nothing yet.</div>`;
     }
   }
@@ -577,9 +625,9 @@
     if (!items.length) { box.innerHTML = `<div class="empty">No replies waiting. When it drafts something in your Gmail, it shows up here.</div>`; return; }
     for (const d of items) {
       const card = document.createElement("div"); card.className = "draft";
-      card.innerHTML = `<h4>${esc(d.subject || "(no subject)")}</h4><div class="to">To: ${esc(d.to)}${d.cc ? " · Cc: " + esc(d.cc) : ""}</div><pre>${esc(d.body || d.snippet)}</pre><div class="row"><button class="primary">Send</button><button>Discard</button><button data-fix>Change…</button></div>`;
+      card.innerHTML = `<h4>${esc(d.subject || "(no subject)")}</h4><div class="to">To: ${esc(d.to)}${d.cc ? " · Cc: " + esc(d.cc) : ""}</div><pre>${esc(d.body || d.snippet)}</pre><div class="row"><button class="btn pri">Send</button><button class="btn">Discard</button><button class="btn" data-fix>Change…</button></div>`;
       const [sendBtn, discardBtn, fixBtn] = card.querySelectorAll("button");
-      const act = async (action, cls) => { sendBtn.disabled = discardBtn.disabled = true; const rr = await api("/api/drafts", { method: "POST", body: JSON.stringify({ id: d.id, action }) }); if (rr.ok) { card.classList.add(cls); setTimeout(() => { card.remove(); if (!box.childElementCount) loadDrafts(); }, 200); } else { sendBtn.disabled = discardBtn.disabled = false; alert((await rr.json()).error || "Failed"); } };
+      const act = async (action, cls) => { sendBtn.disabled = discardBtn.disabled = true; const rr = await api("/api/drafts", { method: "POST", body: JSON.stringify({ id: d.id, action }) }); if (rr.ok) { card.classList.add(cls); if (action === "send") swoosh(); setTimeout(() => { card.remove(); if (!box.childElementCount) loadDrafts(); }, 200); } else { sendBtn.disabled = discardBtn.disabled = false; alert((await rr.json()).error || "Failed"); } };
       sendBtn.onclick = () => act("send", "gone"); discardBtn.onclick = () => act("delete", "gone-left");
       fixBtn.onclick = () => { showTab("chat"); $("text").value = `Change the draft "${d.subject}" to ${d.to}: `; autosize(); $("text").focus(); };
       let x0 = null;
@@ -590,7 +638,7 @@
     }
   }
 
-  // ---- vault
+  // ---- logins: the vault, sign in to a site, browser sessions
   $("siOpen").onclick = async () => {
     const domain = $("siDomain").value.trim(); if (!domain) return;
     $("siMsg").textContent = "Opening the browser…";
@@ -610,6 +658,47 @@
       loadBrowserSessions();
     } catch (e) { if (win) win.close(); $("siMsg").textContent = `Could not open the browser: ${e.message}`; }
   };
+  async function loadBrowserSessions() {
+    const box = $("bsList"); if (!box) return;
+    try {
+      const r = await fetch("/api/browser/sessions"); const d = await r.json();
+      box.innerHTML = "";
+      if (!d.configured) { $("bsMsg").textContent = "The hosted browser is not set up on this server."; return; }
+      if (!d.items.length) { $("bsMsg").textContent = "No browser sessions yet."; return; }
+      $("bsMsg").textContent = "";
+      for (const it of d.items) {
+        const tr = document.createElement("tr");
+        const when = it.started_at ? new Date(it.started_at).toLocaleString() : "";
+        const links = [];
+        if (it.live_view_url) links.push(`<a href="${esc(it.live_view_url)}" target="_blank" rel="noopener">Watch</a>`);
+        links.push(`<a href="${esc(it.recording_url)}" target="_blank" rel="noopener">Recording</a>`);
+        if (it.state === "running") links.push(`<a href="#" data-stop="${esc(it.browser_session_id)}">Stop</a>`);
+        tr.innerHTML = `<td>${esc(it.task || "")}</td><td>${esc(when)}</td><td>${esc(it.state)}</td><td>${links.join(" · ")}</td>`;
+        box.appendChild(tr);
+      }
+      box.querySelectorAll("[data-stop]").forEach((a) => a.addEventListener("click", async (e) => { e.preventDefault(); await fetch(`/api/browser/sessions?id=${encodeURIComponent(a.dataset.stop)}`, { method: "DELETE" }); loadBrowserSessions(); }));
+    } catch (e) { $("bsMsg").textContent = "Could not load browser sessions."; }
+  }
+  async function loadVault() {
+    loadBrowserSessions();
+    const r = await api("/api/vault"); if (!r.ok) return;
+    const { items } = await r.json();
+    $("vList").innerHTML = "";
+    for (const it of items) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${esc(it.domain)}</td><td>${esc(it.username)}</td><td>${it.has_totp ? "app" : ""}</td><td><button type="button" class="btn" data-id="${esc(it.id)}">Remove</button></td>`;
+      tr.querySelector("button").onclick = async () => { await api(`/api/vault?id=${it.id}`, { method: "DELETE" }); loadVault(); };
+      $("vList").appendChild(tr);
+    }
+    if (!items.length) $("vList").innerHTML = `<tr><td colspan="4" class="hint">No logins saved yet.</td></tr>`;
+  }
+  $("vAdd").onclick = async () => {
+    const body = { domain: $("v_domain").value.trim(), username: $("v_user").value.trim(), password: $("v_pass").value, totp_secret: $("v_totp").value.trim(), notes: $("v_notes").value.trim() };
+    const r = await api("/api/vault", { method: "POST", body: JSON.stringify(body) });
+    $("vMsg").textContent = r.ok ? "Saved." : (await r.json()).error || "Could not save";
+    if (r.ok) { for (const id of ["v_domain", "v_user", "v_pass", "v_totp", "v_notes"]) $(id).value = ""; loadVault(); }
+  };
+
   // ---- task board
   async function loadTasks() {
     const r = await api("/api/tasks"); if (!r.ok) return;
@@ -617,10 +706,11 @@
     const box = $("taskList"); box.innerHTML = "";
     const live = tks.filter((x) => x.status === "running" || x.status === "waiting").length;
     $("tasksMeta").textContent = tks.length ? `${live} in progress · ${tks.length - live} finished in the last day` : "Nothing yet today.";
+    if (!tks.length) box.innerHTML = `<div class="empty">Nothing running. Ask for something in the chat and it shows up here with every step.</div>`;
     for (const x of tks) {
       const el = document.createElement("div"); el.className = "item";
       const state = x.status === "waiting" ? "waiting for you" : x.status === "running" ? "running" : x.status === "error" ? "error" : "done";
-      el.innerHTML = `<div class="k">${x.status === "running" ? "⏳" : x.status === "waiting" ? "✋" : x.status === "error" ? "⚠️" : "✅"}</div><div class="t"><b>${esc2(x.request || x.title || x.label)}</b><small>${esc2(x.label)} · ${esc2(state)} · ${esc2(agoText(x.updated_at))} · ${x.turns} steps · $${(x.cost_usd || 0).toFixed(2)}</small>${x.result ? `<div class="hint" style="margin-top:4px">${esc2(x.result)}</div>` : ""}<div class="row" style="margin-top:6px;gap:6px"><button type="button" class="btn" data-open="${esc2(x.id)}">Steps</button>${x.status === "running" || x.status === "waiting" ? `<button type="button" class="btn" data-stop="${esc2(x.id)}">Stop</button>` : ""}</div></div>`;
+      el.innerHTML = `<div class="k">${x.status === "running" ? "⏳" : x.status === "waiting" ? "✋" : x.status === "error" ? "⚠️" : "✅"}</div><div class="t"><b>${esc(x.request || x.title || x.label)}</b><small>${esc(x.label)} · ${esc(state)} · ${esc(agoText(x.updated_at))} · ${x.turns} steps · $${(x.cost_usd || 0).toFixed(2)}</small>${x.result ? `<div class="hint" style="margin-top:4px">${esc(x.result)}</div>` : ""}<div class="row" style="margin-top:8px;gap:6px"><button type="button" class="btn" data-open="${esc(x.id)}">Steps</button>${x.status === "running" || x.status === "waiting" ? `<button type="button" class="btn" data-stop="${esc(x.id)}">Stop</button>` : ""}</div></div>`;
       el.querySelector("[data-open]").onclick = () => openTask(x.id);
       const st = el.querySelector("[data-stop]"); if (st) st.onclick = async () => { await stopSession(x.id); loadTasks(); };
       box.appendChild(el);
@@ -630,7 +720,7 @@
     const r = await api(`/api/tasks?id=${encodeURIComponent(id)}`); if (!r.ok) return;
     const d = await r.json();
     $("tdTitle").textContent = d.request || d.title || d.label; $("tdRequest").textContent = `${d.label} · ${d.status} · ${d.turns} steps · $${(d.cost_usd || 0).toFixed(2)} · ${d.model || ""}`; $("tdResult").textContent = d.result || "";
-    $("tdSteps").innerHTML = d.steps.map((s) => `<tr><td>${esc2(s.at ? fmtTime(s.at) : "")}</td><td>${esc2(s.tool)}</td><td class="hint">${esc2(s.args)}</td><td class="hint">${esc2(s.result)}</td></tr>`).join("") || `<tr><td colspan="4" class="hint">No tool steps; a plain reply.</td></tr>`;
+    $("tdSteps").innerHTML = d.steps.map((s) => `<tr><td>${esc(s.at ? fmtTime(s.at) : "")}</td><td>${esc(s.tool)}</td><td class="hint">${esc(s.args)}</td><td class="hint">${esc(s.result)}</td></tr>`).join("") || `<tr><td colspan="4" class="hint">No tool steps; a plain reply.</td></tr>`;
     $("taskDetail").hidden = false; $("taskDetail").scrollIntoView({ behavior: "smooth" });
   }
   $("tdClose").onclick = () => { $("taskDetail").hidden = true; };
@@ -644,8 +734,8 @@
   async function loadOrders() {
     const r = await api("/api/orders"); if (!r.ok) return;
     const d = await r.json(); const tb = $("soList"); tb.innerHTML = "";
-    for (const o of d.scheduled) { const tr = document.createElement("tr"); tr.innerHTML = `<td>${esc2(o.what)}</td><td class="hint">${esc2(o.schedule)}${o.last_run ? ` · last ${esc2(String(o.last_run).slice(0, 10))}` : ""}</td><td><button type="button" class="btn">Remove</button></td>`; tr.querySelector("button").onclick = async () => { await api(`/api/orders?id=${o.id}`, { method: "DELETE" }); loadOrders(); }; tb.appendChild(tr); }
-    for (const line of d.when_it_happens) { const tr = document.createElement("tr"); tr.innerHTML = `<td>${esc2(line)}</td><td class="hint">when it happens</td><td><button type="button" class="btn">Remove</button></td>`; tr.querySelector("button").onclick = async () => { await api(`/api/orders?line=${encodeURIComponent(line)}`, { method: "DELETE" }); loadOrders(); }; tb.appendChild(tr); }
+    for (const o of d.scheduled) { const tr = document.createElement("tr"); tr.innerHTML = `<td>${esc(o.what)}</td><td class="hint">${esc(o.schedule)}${o.last_run ? ` · last ${esc(String(o.last_run).slice(0, 10))}` : ""}</td><td><button type="button" class="btn">Remove</button></td>`; tr.querySelector("button").onclick = async () => { await api(`/api/orders?id=${o.id}`, { method: "DELETE" }); loadOrders(); }; tb.appendChild(tr); }
+    for (const line of d.when_it_happens) { const tr = document.createElement("tr"); tr.innerHTML = `<td>${esc(line)}</td><td class="hint">when it happens</td><td><button type="button" class="btn">Remove</button></td>`; tr.querySelector("button").onclick = async () => { await api(`/api/orders?line=${encodeURIComponent(line)}`, { method: "DELETE" }); loadOrders(); }; tb.appendChild(tr); }
     if (!tb.childElementCount) tb.innerHTML = `<tr><td class="hint">None yet. Try "Order the groceries from the list" every Sunday, or "Pay the water bill" when it happens.</td></tr>`;
   }
   $("soAdd").onclick = async () => {
@@ -682,6 +772,53 @@
     loadPushState();
   };
 
+  // ---- bank accounts (Plaid Link) and the local browser relay
+  async function loadBank() {
+    try {
+      const r = await fetch("/api/plaid"); if (!r.ok) return;
+      const d = await r.json();
+      $("bankCard").hidden = !d.configured;
+      $("bankList").innerHTML = (d.items || []).map((i) => `<tr><td>${esc(i.institution || "Bank")}</td><td class="hint">since ${new Date(i.created_at).toLocaleDateString()}</td><td><button type="button" class="btn" data-remove="${esc(i.id)}">Remove</button></td></tr>`).join("");
+      $("bankList").querySelectorAll("[data-remove]").forEach((btn) => { btn.onclick = async () => { await api("/api/plaid", { method: "POST", body: JSON.stringify({ action: "remove", id: btn.dataset.remove }) }); loadBank(); }; });
+    } catch {}
+  }
+  function plaidScript() {
+    return new Promise((resolve, reject) => {
+      if (window.Plaid) return resolve();
+      const s = document.createElement("script"); s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js"; s.onload = resolve; s.onerror = () => reject(new Error("could not load Plaid Link")); document.head.appendChild(s);
+    });
+  }
+  $("bankConnect").onclick = async () => {
+    $("bankMsg").textContent = "Opening Plaid…";
+    try {
+      await plaidScript();
+      const r = await api("/api/plaid", { method: "POST", body: JSON.stringify({ action: "link_token" }) });
+      const d = await r.json(); if (!r.ok) throw new Error(d.error || r.status);
+      const handler = window.Plaid.create({
+        token: d.link_token,
+        onSuccess: async (public_token, meta) => {
+          const x = await api("/api/plaid", { method: "POST", body: JSON.stringify({ action: "exchange", public_token, institution: meta && meta.institution ? meta.institution.name : undefined }) });
+          $("bankMsg").textContent = x.ok ? "Connected." : "Could not save the connection."; loadBank();
+        },
+        onExit: () => { $("bankMsg").textContent = ""; },
+      });
+      handler.open();
+    } catch (e) { $("bankMsg").textContent = e.message || "Could not start Plaid"; }
+  };
+  async function loadRelay() {
+    try {
+      const r = await fetch("/api/relay"); if (!r.ok) return;
+      const d = await r.json();
+      $("relayState").textContent = d.devices.length ? (d.online ? "Connected now." : `Extension set up (${d.devices.length} device${d.devices.length === 1 ? "" : "s"}), not connected right now.`) : "No extension connected yet.";
+    } catch {}
+  }
+  $("relayToken").onclick = async () => {
+    const r = await api("/api/relay", { method: "POST", body: JSON.stringify({ action: "token", name: navigator.platform || "My computer" }) });
+    const d = await r.json();
+    if (d.token) { $("relayShown").hidden = false; $("relayShown").innerHTML = `Paste this into the extension's options page (shown once): <code>${esc(d.token)}</code><br>App address: <code>${esc(location.origin)}</code>`; }
+    loadRelay();
+  };
+
   // ---- delete account
   $("delAccount").onclick = async () => {
     const typed = prompt(`This deletes your account, memory, logins, tasks and history. Type your email address to confirm:`);
@@ -690,227 +827,186 @@
     if (r.ok) { location.href = "/"; } else $("delMsg").textContent = (await r.json()).error || "Could not delete";
   };
 
-  async function loadBrowserSessions() {
-    const box = $("bsList"); if (!box) return;
-    try {
-      const r = await fetch("/api/browser/sessions"); const d = await r.json();
-      box.innerHTML = "";
-      if (!d.configured) { $("bsMsg").textContent = "The hosted browser is not set up on this server."; return; }
-      if (!d.items.length) { $("bsMsg").textContent = "No browser sessions yet."; return; }
-      $("bsMsg").textContent = "";
-      for (const it of d.items) {
-        const tr = document.createElement("tr");
-        const when = it.started_at ? new Date(it.started_at).toLocaleString() : "";
-        const links = [];
-        if (it.live_view_url) links.push(`<a href="${it.live_view_url}" target="_blank" rel="noopener">Watch</a>`);
-        links.push(`<a href="${it.recording_url}" target="_blank" rel="noopener">Recording</a>`);
-        if (it.state === "running") links.push(`<a href="#" data-stop="${it.browser_session_id}">Stop</a>`);
-        tr.innerHTML = `<td>${(it.task || "").replace(/[<>&]/g, "")}</td><td>${when}</td><td>${it.state}</td><td>${links.join(" · ")}</td>`;
-        box.appendChild(tr);
-      }
-      box.querySelectorAll("[data-stop]").forEach((a) => a.addEventListener("click", async (e) => { e.preventDefault(); await fetch(`/api/browser/sessions?id=${encodeURIComponent(a.dataset.stop)}`, { method: "DELETE" }); loadBrowserSessions(); }));
-    } catch (e) { $("bsMsg").textContent = "Could not load browser sessions."; }
-  }
-  async function loadVault() {
-    loadBrowserSessions();
-    const r = await api("/api/vault"); if (!r.ok) return;
-    const { items } = await r.json();
-    $("vList").innerHTML = "";
-    for (const it of items) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${it.domain}</td><td>${it.username}</td><td>${it.has_totp ? "app" : ""}</td><td><button data-id="${it.id}">Remove</button></td>`;
-      tr.querySelector("button").onclick = async () => { await api(`/api/vault?id=${it.id}`, { method: "DELETE" }); loadVault(); };
-      $("vList").appendChild(tr);
-    }
-  }
-  $("vAdd").onclick = async () => {
-    const body = { domain: $("v_domain").value.trim(), username: $("v_user").value.trim(), password: $("v_pass").value, totp_secret: $("v_totp").value.trim(), notes: $("v_notes").value.trim() };
-    const r = await api("/api/vault", { method: "POST", body: JSON.stringify(body) });
-    $("vMsg").textContent = r.ok ? "Saved." : (await r.json()).error || "Could not save";
-    if (r.ok) { for (const id of ["v_domain", "v_user", "v_pass", "v_totp", "v_notes"]) $(id).value = ""; loadVault(); }
-  };
-
-  // ---- chats: the room, built the way the office's app draws it
-  let AGENT = "Pete";
-  const QUICK = ["👍", "😊", "🎉"];
-  const SHEET_QUICK = ["👍", "😊", "🙏", "❤️", "😅"];
+  // ===== The chat =====
+  const QUICK = ["👍", "❤️", "😂"];
+  const SHEET_QUICK = ["👍", "❤️", "😂", "😮", "🙏"];
   const DRAWER = ["😀","😂","🙂","😉","😍","🤔","😅","😢","😡","🙏","👍","👎","👏","🙌","🤝","💪","❤️","🔥","✨","🎉","✅","❌","⏰","📅","📦","💵","🛒","✉️","🔐","🔍","📞","🏠","🚗","✈️","☕","🍕"];
-  const SMART = ["Thanks!", "Yes, do it", "What's today?"];
-  let items = [], status = "none", pending = null, tasks = [], currentRoom = "secretary", replyTo = null, findQuery = "", lastSeen = {};
-  try { lastSeen = JSON.parse(localStorage.getItem("secretary:seen") || "{}"); } catch {}
-  const saveSeen = () => { try { localStorage.setItem("secretary:seen", JSON.stringify(lastSeen)); } catch {} };
-  const esc2 = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const DAY_KEY = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
-  // A file the agent made or fetched (a PDF, a filled form, a statement) is a card with a name and a
-  // tap target, not a raw URL in the middle of a sentence.
-  const FILE_RE = /(https?:\/\/[^\s<>"']*\/api\/files\?t=[A-Za-z0-9_-]+)/g;
-  function fileLinksIn(text) {
-    const out = []; const seen = new Set();
-    for (const m of String(text || "").matchAll(FILE_RE)) { if (seen.has(m[1])) continue; seen.add(m[1]); out.push(m[1]); }
+  let items = [], status = "none", pending = null, tasks = [], replyTo = null, findQuery = "", behind = 0, chips = [];
+  // composing: Pete is actually writing the reply now (a draft is streaming), the only time the typing
+  // dots show. tickTimer flips a sent message to the blue read tick 4s after it was posted.
+  let composing = false, tickTimer = null;
+  // Models write **bold** and "# headings" out of habit: render the bold, make a heading a bold line, escape everything else.
+  function lightMarkdown(text) {
+    const safe = esc(String(text || "")).replace(/^#{1,3}\s+(.+)$/gm, "<strong>$1</strong>").replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
+    return fileCards(safe.replace(/^\s*[-•]\s+/gm, "• "));
+  }
+  // A document it made or fetched (a PDF it wrote, a filled form, a statement) is a card with a name
+  // and a tap target, not a raw URL in the middle of a sentence.
+  const FILE_RE = /https?:\/\/[^\s<>"']*\/api\/files\?t=([A-Za-z0-9_-]+)/g;
+  const fileNames = new Map();
+  function fileCards(html) {
+    if (!FILE_RE.test(html)) return html;
+    FILE_RE.lastIndex = 0;
+    let pending = false;
+    const out = html.replace(FILE_RE, (url, token) => {
+      const f = fileNames.get(token);
+      if (!f) pending = true;
+      const kind = ((f?.filename || "pdf").split(".").pop() || "pdf").slice(0, 4).toUpperCase();
+      return `<a class="fileCard" data-file="${esc(token)}" href="${esc(url)}" target="_blank" rel="noopener"><span class="fileIcon">${esc(kind)}</span><span class="fileMeta"><b>${esc(f?.filename || "Document")}</b><i>${f ? esc(f.kb + " kB · tap to open or save") : "tap to open or save"}</i></span></a>`;
+    });
+    if (pending) loadFiles(true);
     return out;
   }
-  function stripFileLinks(text) { return String(text || "").replace(FILE_RE, "").replace(/\(\s*\)/g, "").replace(/[ \t]{2,}/g, " ").trim(); }
-  const fileNames = new Map();
-  let filesLoadedAt = 0;
+  let filesAt = 0;
   async function loadFiles(force) {
-    if (!force && Date.now() - filesLoadedAt < 20_000) return;
-    filesLoadedAt = Date.now();
+    if (!force && Date.now() - filesAt < 20000) return;
+    filesAt = Date.now();
     try {
       const r = await api("/api/files?list=1"); if (!r.ok) return;
       const { files } = await r.json();
-      for (const f of files) fileNames.set(f.token, f);
+      let fresh = false;
+      for (const f of files) { if (!fileNames.has(f.token)) fresh = true; fileNames.set(f.token, f); }
       renderDocs(files);
+      // Names arrived after the bubbles were drawn: fill them in place, no re-render of the list.
+      if (fresh) for (const a of document.querySelectorAll("a.fileCard[data-file]")) {
+        const f = fileNames.get(a.dataset.file); if (!f) continue;
+        a.querySelector("b").textContent = f.filename;
+        a.querySelector("i").textContent = `${f.kb} kB · tap to open or save`;
+        a.querySelector(".fileIcon").textContent = ((f.filename.split(".").pop() || "pdf").slice(0, 4)).toUpperCase();
+      }
     } catch {}
   }
-  function fileCard(url) {
-    const token = (url.match(/[?&]t=([A-Za-z0-9_-]+)/) || [])[1] || "";
-    const known = fileNames.get(token);
-    const a = document.createElement("a");
-    a.className = "fileCard"; a.href = url; a.target = "_blank"; a.rel = "noopener";
-    if (!known) loadFiles(true).then(() => { const f = fileNames.get(token); if (f) a.querySelector("b").textContent = f.filename; });
-    const kind = (known?.filename || "").split(".").pop().slice(0, 4).toUpperCase() || "PDF";
-    a.innerHTML = `<span class="fileIcon" aria-hidden="true">${esc2(kind)}</span><span class="fileMeta"><b>${esc2(known?.filename || "Document")}</b><i>${known ? esc2(known.kb + " kB · tap to open or save") : "tap to open or save"}</i></span>`;
-    return a;
-  }
   function renderDocs(files) {
-    const box = $("docs"); if (!box) return;
-    const card = $("docsCard"); if (card) card.hidden = !files.length;
-    box.innerHTML = files.slice(0, 8).map((f) => `<a class="fileCard" href="${esc2(f.url)}" target="_blank" rel="noopener"><span class="fileIcon" aria-hidden="true">${esc2((f.filename.split(".").pop() || "pdf").slice(0, 4).toUpperCase())}</span><span class="fileMeta"><b>${esc2(f.filename)}</b><i>${esc2(f.kb + " kB · " + agoText(f.at))}</i></span></a>`).join("");
+    const card = $("docsCard"), box = $("docs");
+    if (!card || !box) return;
+    card.hidden = !files.length;
+    box.innerHTML = files.slice(0, 8).map((f) => `<a class="fileCard" href="${esc(f.url)}" target="_blank" rel="noopener"><span class="fileIcon">${esc(((f.filename.split(".").pop() || "pdf").slice(0, 4)).toUpperCase())}</span><span class="fileMeta"><b>${esc(f.filename)}</b><i>${esc(f.kb + " kB · " + agoText(f.at))}</i></span></a>`).join("");
   }
-
+  let lastSeen = Number(store.get("secretary:seen2", "0")) || 0;
+  const DAY_KEY = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   function dayLabel(iso) { const k = DAY_KEY(iso), t = DAY_KEY(new Date()), y = DAY_KEY(new Date(Date.now() - 86400000)); if (k === t) return "Today"; if (k === y) return "Yesterday"; return new Date(iso).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }); }
   function agoText(iso) { const ms = Date.now() - new Date(iso).getTime(); if (ms < 60000) return "now"; if (ms < 3600000) return `${Math.round(ms / 60000)} min`; if (ms < 86400000) return fmtTime(iso); return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" }); }
+  function whenText(iso) { const k = DAY_KEY(iso), t = DAY_KEY(new Date()), y = DAY_KEY(new Date(Date.now() - 86400000)); if (k === t) return fmtTime(iso); if (k === y) return "Yesterday"; const ms = Date.now() - new Date(iso).getTime(); return ms < 6 * 86400000 ? new Date(iso).toLocaleDateString([], { weekday: "short" }) : new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" }); }
   const isEmojiOnly = (t) => /^[\p{Extended_Pictographic}\p{Emoji_Presentation}️‍\s]{1,8}$/u.test((t || "").trim()) && /\p{Extended_Pictographic}/u.test(t || "");
-  const initials = (name) => name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-  function face(name, size, hue) { const el = document.createElement("span"); el.className = "avatarCircle"; el.style.width = el.style.height = size + "px"; el.style.fontSize = Math.round(size * 0.38) + "px"; el.style.background = hue; el.textContent = initials(name); return el; }
-  const AGENT_HUE = "linear-gradient(135deg,#F0A65E,#C26F34)";
-  const NOTICE_HUE = "linear-gradient(135deg,#8AB4F8,#1A56C4)";
-  const rooms = () => ([
-    { id: "secretary", name: AGENT, sub: "Your personal secretary · always on", hue: AGENT_HUE, items: items.filter((i) => i.kind !== "status") },
-    { id: "notices", name: "Reminders & heads-ups", sub: "Timers, the morning brief, things it noticed", hue: NOTICE_HUE, items: items.filter((i) => i.kind === "agent" && i.notice) },
-  ]);
+  const initials = (name) => String(name || "?").split(/[\s@]+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   const textOf = (i) => i.kind === "tool" ? (i.name === "checkpoint" ? "Needs your ok: " + (i.input.summary || "") : i.name === "send_email" ? "Ok to send an email?" : i.name === "request_code" ? (i.input.message || "Send me the code") : "Quick question") : (i.text || "");
+  const nonUser = () => items.filter((i) => i.kind !== "user" && i.id !== "draft").length;
+  const unreadCount = () => Math.max(0, nonUser() - lastSeen);
+  const TICK1 = `<svg width="16" height="11" viewBox="0 0 16 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 6l3 3 6-7"/></svg>`;
+  const TICK2 = `<svg width="18" height="11" viewBox="0 0 18 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 6l3 3 6-7M7.5 8.5l1.5 1.5 6-7"/></svg>`;
+  const ticksFor = (item, read) => item.id.startsWith("tmp-") ? `<span class="ticks">${TICK1}</span>` : `<span class="ticks ${read ? "read" : ""}">${TICK2}</span>`;
 
-  // ---- the left column
-  function renderRooms() {
-    const box = $("roomList"); box.innerHTML = "";
-    const q = ($("roomSearch").value || "").trim().toLowerCase();
-    let total = 0, unreadTotal = 0;
-    for (const r of rooms()) {
-      const last = r.items[r.items.length - 1];
-      if (q && !(r.name.toLowerCase().includes(q) || r.items.some((i) => textOf(i).toLowerCase().includes(q)))) continue;
-      total++;
-      const agentCount = r.items.filter((i) => i.kind !== "user").length;
-      const unread = Math.max(0, agentCount - (lastSeen[r.id] ?? agentCount));
-      unreadTotal += unread;
-      const b = document.createElement("button"); b.type = "button"; b.className = `inboxItem ${r.id === currentRoom ? "inboxItemOn" : ""} ${unread ? "inboxItemUnread" : ""}`;
-      b.appendChild(face(r.name, 34, r.hue));
-      const body = document.createElement("span"); body.className = "inboxBody";
-      body.innerHTML = `<span class="inboxTop"><span class="inboxWho">${esc2(r.name)}</span><span class="inboxWhen">${last ? esc2(agoText(last.at)) : ""}</span></span><span class="inboxSub">${esc2(r.sub)}</span><span class="inboxPreview">${last ? (last.kind === "user" ? "You: " : "") + esc2(textOf(last).slice(0, 90)) : "No messages yet"}</span>`;
-      b.appendChild(body);
-      if (unread) { const badge = document.createElement("span"); badge.className = "inboxBadge"; badge.textContent = unread; b.appendChild(badge); }
-      b.onclick = () => openRoom(r.id);
-      box.appendChild(b);
-    }
-    $("chatsMeta").textContent = `${total} conversation${total === 1 ? "" : "s"}${unreadTotal ? ` · ${unreadTotal} unread` : " · all caught up"}`;
+  // The unread count: the rail and tab-bar badges, the title, the favicon.
+  function renderRooms() { paintUnread(unreadCount()); }
+  function paintUnread(n) {
+    for (const id of ["railBadge", "tabBadge"]) { const el = $(id); el.hidden = !n; el.textContent = n > 99 ? "99+" : n; }
+    document.title = n ? `(${n}) ${baseTitle}` : baseTitle;
+    paintFavicon(n);
   }
-  function openRoom(id) {
-    currentRoom = id;
-    const r = rooms().find((x) => x.id === id);
-    $("roomTitle").textContent = r.name; $("roomSub").textContent = r.sub;
-    $("composer").hidden = id !== "secretary";
-    $("chats").classList.remove("showList");
-    markSeen(); renderRooms(); renderList(true);
+  let favCache = null;
+  function paintFavicon(n) {
+    try {
+      const key = n ? String(Math.min(n, 99)) : "";
+      if (favCache === key) return; favCache = key;
+      const c = document.createElement("canvas"); c.width = c.height = 64; const x = c.getContext("2d");
+      x.fillStyle = "#25d366"; x.beginPath(); x.roundRect(0, 0, 64, 64, 16); x.fill();
+      x.fillStyle = "#fff"; x.beginPath(); x.arc(32, 31, 16, 0, Math.PI * 2); x.fill();
+      x.beginPath(); x.moveTo(18, 40); x.lineTo(14, 52); x.lineTo(28, 46); x.fill();
+      if (n) { x.fillStyle = "#ea4335"; x.beginPath(); x.arc(48, 16, 15, 0, Math.PI * 2); x.fill(); x.fillStyle = "#fff"; x.font = "bold 20px -apple-system, Helvetica, Arial"; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText(key, 48, 17); }
+      $("favicon").href = c.toDataURL("image/png");
+    } catch {}
   }
-  function markSeen() { const r = rooms().find((x) => x.id === currentRoom); if (!r) return; lastSeen[currentRoom] = r.items.filter((i) => i.kind !== "user").length; saveSeen(); }
-  $("roomSearch").addEventListener("input", renderRooms);
-  $("backChip").onclick = () => $("chats").classList.add("showList");
+  function markSeen() { const n = nonUser(); if (n !== lastSeen) { lastSeen = n; store.set("secretary:seen2", String(n)); } renderRooms(); }
 
-  // ---- one row
-  function row(item, grouped) {
+  // ---- one bubble
+  function row(item, tail, read) {
     const mine = item.kind === "user";
     const el = document.createElement("div");
-    el.className = `chatMsg ${mine ? "chatMsgMine" : ""} ${grouped ? "chatMsgGrouped" : ""}`;
+    el.className = `m ${mine ? "out" : "in"} ${tail ? "tail" : ""} ${item.reaction ? "hasReact" : ""}`;
     el.dataset.id = item.id;
-    const mark = document.createElement("span"); mark.className = "chatSwipeMark"; mark.textContent = "↩"; el.appendChild(mark);
-    const gutter = document.createElement("div"); gutter.className = "chatGutter"; if (!grouped && !mine) gutter.appendChild(face(AGENT, 30, AGENT_HUE)); el.appendChild(gutter);
-    const main = document.createElement("div"); main.className = "chatMain"; el.appendChild(main);
-    if (!grouped) {
-      const head = document.createElement("div"); head.className = "chatHead";
-      head.innerHTML = `<span class="chatName">${mine ? "You" : esc2(AGENT)}</span>${item.notice ? `<span class="chatNotice">${esc2(item.notice)}</span>` : ""}${item.task ? `<span class="chatTaskTag" title="A task running alongside the chat">↗ ${esc2(item.task)}</span>` : ""}<span class="chatTime" title="${item.approx ? "Time not recorded" : esc2(fmtTime(item.at))}">${item.approx ? "" : esc2(agoText(item.at))}</span>`;
-      main.appendChild(head);
-    }
-    const stack = document.createElement("div"); stack.className = "chatStack"; main.appendChild(stack);
-    if (item.kind !== "tool") {
-      const bar = document.createElement("div"); bar.className = "gcBar";
-      bar.innerHTML = `${mine ? "" : `<span class="gcQuick">${QUICK.map((q) => `<button type="button" class="gcEm" data-em="${q}" title="React ${q}">${q}</button>`).join("")}</span>`}<span class="gcActs"><button type="button" class="gcIcon" data-act="reply" title="Reply" aria-label="Reply"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8L5 12l5 4"/><path d="M5 12h9a5 5 0 0 1 5 5v1"/></svg></button><button type="button" class="gcIcon" data-act="copy" title="Copy text" aria-label="Copy text"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button></span>`;
-      bar.querySelectorAll(".gcEm").forEach((b) => b.onclick = (e) => { e.stopPropagation(); react(item, b.dataset.em); });
-      bar.querySelector('[data-act="reply"]').onclick = (e) => { e.stopPropagation(); reply(item); };
-      bar.querySelector('[data-act="copy"]').onclick = (e) => { e.stopPropagation(); copyText(item); };
-      stack.appendChild(bar);
-    }
-    const bubble = document.createElement("div");
-    bubble.className = `chatBubble ${mine ? "chatBubbleMine" : ""} ${item.kind !== "tool" && isEmojiOnly(item.text) ? "chatBubbleEmoji" : ""}`;
+    const mark = document.createElement("span"); mark.className = "swipeMark"; mark.textContent = "↩"; el.appendChild(mark);
+    const b = document.createElement("div");
+    b.className = `b ${item.kind !== "tool" && isEmojiOnly(item.text) ? "big" : ""} ${item.id === "draft" ? "streaming" : ""}`;
+    const meta = `<span class="meta">${item.approx ? "" : esc(fmtTime(item.at))}${mine ? ticksFor(item, read) : ""}</span>`;
     if (item.kind === "tool") {
-      bubble.classList.add("chatCard"); if (item.resolved) bubble.classList.add("resolved");
-      const i = item.input; const h = document.createElement("h4"); const body = document.createElement("div"); body.className = "chatBody";
-      if (item.name === "checkpoint") { h.textContent = "Need your ok"; body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}` + (i.recommendation ? `\n\n${i.recommendation}` : "") + ((i.options_considered || []).length ? `\nOther options: ` + i.options_considered.join("; ") : ""); }
+      b.classList.add("card"); if (item.resolved) b.classList.add("resolved");
+      const i = item.input; const h = document.createElement("div"); h.className = "ct"; const body = document.createElement("span"); body.className = "txt";
+      if (item.name === "checkpoint") { h.textContent = "Needs your ok"; body.textContent = `${i.summary}\n${i.merchant ? "Where: " + i.merchant + "\n" : ""}${i.amount_usd != null ? "Amount: $" + Number(i.amount_usd).toFixed(2) + "\n" : ""}\n${i.details || ""}` + (i.recommendation ? `\n\n${i.recommendation}` : "") + ((i.options_considered || []).length ? `\nOther options: ` + i.options_considered.join("; ") : ""); }
       else if (item.name === "send_email") { h.textContent = "Ok to send?"; body.textContent = `${i.purpose ? i.purpose + "\n\n" : ""}To: ${i.to}${i.cc ? "\nCc: " + i.cc : ""}\nSubject: ${i.subject}\n\n${i.body}`; }
       else if (item.name === "request_code") { h.textContent = "Code needed"; body.textContent = i.message || "A verification code was sent to your phone. Send it here."; }
       else { h.textContent = "Quick question"; const qs = i.questions || []; body.textContent = qs.length === 1 ? `${qs[0].question}\n(no answer = ${qs[0].default})` : qs.map((q, n) => `${n + 1}. ${q.question} (default: ${q.default})`).join("\n"); }
-      bubble.append(h, body);
-      const actions = document.createElement("div"); actions.className = "actions";
-      if (item.name === "checkpoint" || item.name === "send_email") { const yes = document.createElement("button"); yes.type = "button"; yes.className = "btnPri"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve"; yes.onclick = () => send("yes"); const no = document.createElement("button"); no.type = "button"; no.className = "btn"; no.textContent = "Change…"; no.onclick = () => $("text").focus(); actions.append(yes, no); }
-      else { const hint = document.createElement("span"); hint.className = "chatTime"; hint.textContent = item.name === "request_code" ? "Send the code in the box below." : "Answer in the box below."; actions.append(hint); }
-      bubble.appendChild(actions);
+      const wrap = document.createElement("div"); wrap.style.position = "relative"; wrap.append(body);
+      // A purchase or payment approval carries a screenshot of the page about to be confirmed.
+      if (item.preview) { const img = document.createElement("img"); img.src = item.preview; img.alt = "What is about to be confirmed"; img.loading = "lazy"; img.style.cssText = "display:block;width:calc(100% - 24px);max-height:260px;object-fit:cover;object-position:top;border-radius:8px;margin:0 12px 8px;cursor:zoom-in"; img.onclick = (e) => { e.stopPropagation(); window.open(item.preview, "_blank"); };
+        // The image lands after layout: if the list was sitting at the bottom, keep it there.
+        img.onload = () => { const l = $("list"); if (l.scrollHeight - l.scrollTop - l.clientHeight - img.offsetHeight < 80) l.scrollTop = l.scrollHeight; };
+        wrap.appendChild(img); }
+      wrap.insertAdjacentHTML("beforeend", meta);
+      b.append(h, wrap);
+      const acts = document.createElement("div"); acts.className = "cbtns";
+      if (item.name === "checkpoint" || item.name === "send_email") {
+        const yes = document.createElement("button"); yes.type = "button"; yes.textContent = item.name === "send_email" ? "Send it" : "Approve"; yes.onclick = () => send("yes");
+        const no = document.createElement("button"); no.type = "button"; no.textContent = "Change…"; no.onclick = () => $("text").focus();
+        acts.append(yes, no);
+      } else { const hint = document.createElement("div"); hint.className = "hint"; hint.textContent = item.name === "request_code" ? "Send the code in the box below." : "Answer in the box below."; acts.append(hint); }
+      b.appendChild(acts);
     } else {
+      if (item.notice) { const l = document.createElement("div"); l.className = "lbl"; l.innerHTML = `<span aria-hidden="true">⏰</span>${esc(item.notice)}`; b.appendChild(l); }
+      if (item.task) { const l = document.createElement("div"); l.className = "lbl task"; l.title = "A task running alongside the chat"; l.innerHTML = `<span aria-hidden="true">↗</span>${esc(item.task)}`; b.appendChild(l); }
       if (item.quote) {
-        const qd = document.createElement("div"); qd.className = "chatQuote"; qd.title = "Go to that message";
-        qd.innerHTML = `<span class="chatQuoteMark" aria-hidden="true">❝</span><span style="min-width:0"><span class="chatQuoteWho">${esc2(item.quote.who === "user" ? "You" : AGENT)}</span><span class="chatQuoteText">${esc2(item.quote.text)}</span></span>`;
+        const qd = document.createElement("div"); qd.className = "quote"; qd.title = "Go to that message";
+        qd.innerHTML = `<i></i><div><span class="who">${esc(item.quote.who === "user" ? "You" : AGENT)}</span><span class="qt">${esc(item.quote.text)}</span></div>`;
         qd.onclick = (e) => { e.stopPropagation(); jumpTo(item.quote.id); };
-        bubble.appendChild(qd);
+        b.appendChild(qd);
       }
-      const body = document.createElement("span"); body.className = "chatBody"; body.textContent = stripFileLinks(item.text); bubble.appendChild(body);
-      for (const f of fileLinksIn(item.text)) bubble.appendChild(fileCard(f));
+      const body = document.createElement("span"); body.className = "txt"; if (mine) body.textContent = item.text; else body.innerHTML = lightMarkdown(item.text); b.appendChild(body);
+      b.insertAdjacentHTML("beforeend", meta);
     }
-    stack.appendChild(bubble);
+    el.appendChild(b);
     if (item.reaction) {
-      const reacts = document.createElement("div"); reacts.className = "chatReacts";
-      const chip = document.createElement("button"); chip.type = "button"; chip.className = `chatReact ${mine ? "" : "chatReactMine"}`; chip.textContent = item.reaction; chip.title = mine ? "Secretary reacted" : "Your reaction · tap to remove";
+      const chip = document.createElement("button"); chip.type = "button"; chip.className = "react"; chip.textContent = item.reaction; chip.title = mine ? `${AGENT} reacted` : "Your reaction · tap to remove";
       if (!mine) chip.onclick = (e) => { e.stopPropagation(); react(item, item.reaction); };
-      reacts.appendChild(chip); main.appendChild(reacts);
+      el.appendChild(chip);
     }
-    if (item.kind !== "tool") gestures(el, bubble, item);
+    if (item.kind !== "tool" && item.id !== "draft") {
+      const bar = document.createElement("div"); bar.className = "hbar";
+      bar.innerHTML = `${mine ? "" : QUICK.map((q) => `<button type="button" data-em="${q}" title="React ${q}">${q}</button>`).join("")}<button type="button" data-act="reply" title="Reply" aria-label="Reply"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 8L5 12l5 4"/><path d="M5 12h9a5 5 0 0 1 5 5v1"/></svg></button><button type="button" data-act="copy" title="Copy text" aria-label="Copy text"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button>`;
+      bar.querySelectorAll("[data-em]").forEach((x) => x.onclick = (e) => { e.stopPropagation(); react(item, x.dataset.em); });
+      bar.querySelector('[data-act="reply"]').onclick = (e) => { e.stopPropagation(); reply(item); };
+      bar.querySelector('[data-act="copy"]').onclick = (e) => { e.stopPropagation(); copyText(item); };
+      el.appendChild(bar);
+      gestures(el, b, item);
+    }
     return el;
   }
-  // Scroll to an earlier bubble (the one a reply quotes) and flash it.
   function jumpTo(id) {
-    const el = document.querySelector(`.chatMsg[data-id="${CSS.escape(id)}"]`);
+    const el = document.querySelector(`.m[data-id="${CSS.escape(id)}"]`);
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.remove("chatMsgFlash"); void el.offsetWidth; el.classList.add("chatMsgFlash");
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
   }
 
-  // ---- gestures: double-tap 👍, long press for the sheet, swipe right to reply
+  // ---- gestures: double-tap 👍, long press for the sheet, swipe to reply
   function gestures(el, bubble, item) {
     let taps = 0, tapTimer = null, holdTimer = null, held = false, drag = null;
-    const paint = (dx) => { el.style.transform = dx ? `translate3d(${dx}px,0,0)` : ""; const mk = el.querySelector(".chatSwipeMark"); mk.style.opacity = String(Math.min(1, dx / 56)); mk.style.transform = `translateY(-50%) scale(${0.7 + 0.45 * Math.min(1, dx / 56)})`; mk.classList.toggle("chatSwipeArmed", dx >= 56); };
-    el.addEventListener("pointerdown", (e) => { if (e.target.closest("button, a")) return; drag = { x: e.clientX, y: e.clientY, live: false, dx: 0 }; held = false; clearTimeout(holdTimer); holdTimer = setTimeout(() => { if (drag && !drag.live) { held = true; openSheet(item, bubble); } }, 480); });
-    el.addEventListener("pointermove", (e) => { const d = drag; if (!d) return; const rx = e.clientX - d.x, ry = e.clientY - d.y; if (!d.live) { if (Math.abs(rx) > 5 || Math.abs(ry) > 5) clearTimeout(holdTimer); if (Math.abs(ry) > 6 && Math.abs(ry) > Math.abs(rx)) { drag = null; return; } if (rx > 5) { d.live = true; try { el.setPointerCapture(e.pointerId); } catch {} } else return; } e.preventDefault(); d.dx = rx <= 36 ? Math.max(0, rx) : 36 + 60 * (1 - Math.exp(-(rx - 36) / 60)); paint(d.dx); });
-    const up = () => { clearTimeout(holdTimer); const d = drag; drag = null; el.style.transition = "transform 320ms cubic-bezier(0.2,0.9,0.25,1.15)"; paint(0); setTimeout(() => { el.style.transition = ""; }, 340); if (d?.live && d.dx >= 56) reply(item); };
+    const mine = item.kind === "user";
+    const paint = (dx) => { el.style.transform = dx ? `translate3d(${mine ? -dx : dx}px,0,0)` : ""; const mk = el.querySelector(".swipeMark"); mk.style.opacity = String(Math.min(1, dx / 56)); mk.style.transform = `translateY(-50%) scale(${0.7 + 0.45 * Math.min(1, dx / 56)})`; mk.classList.toggle("armed", dx >= 56); };
+    el.addEventListener("pointerdown", (e) => { if (e.target.closest("button, a")) return; drag = { x: e.clientX, y: e.clientY, live: false, dx: 0 }; held = false; clearTimeout(holdTimer); holdTimer = setTimeout(() => { if (drag && !drag.live) { held = true; try { navigator.vibrate?.(8); } catch {} openSheet(item, bubble); } }, 460); });
+    el.addEventListener("pointermove", (e) => { const d = drag; if (!d) return; let rx = e.clientX - d.x; const ry = e.clientY - d.y; if (mine) rx = -rx; if (!d.live) { if (Math.abs(rx) > 5 || Math.abs(ry) > 5) clearTimeout(holdTimer); if (Math.abs(ry) > 6 && Math.abs(ry) > Math.abs(rx)) { drag = null; return; } if (rx > 5) { d.live = true; try { el.setPointerCapture(e.pointerId); } catch {} } else return; } e.preventDefault(); d.dx = rx <= 36 ? Math.max(0, rx) : 36 + 60 * (1 - Math.exp(-(rx - 36) / 60)); paint(d.dx); });
+    const up = () => { clearTimeout(holdTimer); const d = drag; drag = null; el.style.transition = "transform 320ms cubic-bezier(0.2,0.9,0.25,1.15)"; paint(0); setTimeout(() => { el.style.transition = ""; }, 340); if (d?.live && d.dx >= 56) { try { navigator.vibrate?.(10); } catch {} reply(item); } };
     el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
-    bubble.addEventListener("click", (e) => { if (held) { held = false; return; } if (e.target.closest("button, a")) return; taps++; if (taps === 2) { clearTimeout(tapTimer); taps = 0; if (item.kind === "agent") { react(item, "👍"); try { navigator.vibrate?.(10); } catch {} } else reply(item); return; } clearTimeout(tapTimer); tapTimer = setTimeout(() => { const hover = window.matchMedia?.("(hover: hover)").matches; if (taps === 1 && !hover) openSheet(item, bubble); taps = 0; }, 280); });
+    bubble.addEventListener("click", (e) => { if (held) { held = false; return; } if (e.target.closest("button, a")) return; taps++; if (taps === 2) { clearTimeout(tapTimer); taps = 0; if (item.kind === "agent") { react(item, "❤️"); try { navigator.vibrate?.(10); } catch {} } else reply(item); return; } clearTimeout(tapTimer); tapTimer = setTimeout(() => { const hover = window.matchMedia?.("(hover: hover)").matches; if (taps === 1 && !hover) openSheet(item, bubble); taps = 0; }, 280); });
   }
   function openSheet(item, bubble) {
     closeSheet();
     const r = bubble.getBoundingClientRect();
-    const sheet = document.createElement("div"); sheet.className = "chatSheet"; sheet.id = "sheet";
-    sheet.innerHTML = `${item.kind === "agent" ? `<div class="chatSheetReacts">${SHEET_QUICK.map((em) => `<button type="button" class="chatSheetEm" data-em="${em}">${em}</button>`).join("")}</div>` : ""}<div class="chatSheetMenu"><button type="button" class="chatSheetItem" data-act="reply"><span>Quote in reply</span>↩</button><button type="button" class="chatSheetItem" data-act="copy"><span>Copy text</span>⧉</button></div>`;
+    const sheet = document.createElement("div"); sheet.className = "sheet"; sheet.id = "sheet";
+    sheet.innerHTML = `${item.kind === "agent" ? `<div class="sheetReacts">${SHEET_QUICK.map((em) => `<button type="button" class="sheetEm" data-em="${em}">${em}</button>`).join("")}</div>` : ""}<div class="sheetMenu"><button type="button" class="sheetItem" data-act="reply"><span>Reply</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 8L5 12l5 4"/><path d="M5 12h9a5 5 0 0 1 5 5v1"/></svg></button><button type="button" class="sheetItem" data-act="copy"><span>Copy</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button></div>`;
     document.body.appendChild(sheet);
     const h = sheet.offsetHeight, w = sheet.offsetWidth;
     const top = r.top - 8 - h >= 8 ? r.top - 8 - h : Math.min(window.innerHeight - h - 8, r.bottom + 8);
-    sheet.style.top = top + "px"; sheet.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
-    sheet.querySelectorAll(".chatSheetEm").forEach((b) => b.onclick = () => { closeSheet(); react(item, b.dataset.em); });
+    sheet.style.top = top + "px"; sheet.style.left = Math.max(8, Math.min(item.kind === "user" ? r.right - w : r.left, window.innerWidth - w - 8)) + "px";
+    sheet.querySelectorAll(".sheetEm").forEach((b) => b.onclick = () => { closeSheet(); react(item, b.dataset.em); });
     sheet.querySelector('[data-act="reply"]').onclick = () => { closeSheet(); reply(item); };
     sheet.querySelector('[data-act="copy"]').onclick = () => { closeSheet(); copyText(item); };
     setTimeout(() => document.addEventListener("pointerdown", onAway, true), 0);
@@ -921,53 +1017,66 @@
     const before = item.reaction; item.reaction = item.reaction === emoji ? undefined : emoji; renderList(false);
     try { const r = await api("/api/chat/react", { method: "POST", body: JSON.stringify({ id: item.id, emoji }) }); if (!r.ok) throw new Error(); } catch { item.reaction = before; renderList(false); }
   }
-  function reply(item) { replyTo = item; $("replyWho").textContent = item.kind === "user" ? "You" : AGENT; $("replyText").textContent = textOf(item).slice(0, 140); $("replyCard").hidden = false; $("text").focus(); }
+  function reply(item) { replyTo = item; $("replyWho").textContent = item.kind === "user" ? "You" : AGENT; $("replyText").textContent = textOf(item).replace(/\*\*|__|`/g, "").slice(0, 140); $("replyCard").hidden = false; $("text").focus(); }
   $("replyClose").onclick = () => { replyTo = null; $("replyCard").hidden = true; };
   function copyText(item) { try { navigator.clipboard?.writeText(textOf(item)); } catch {} }
 
   // ---- the list
-  let behind = 0;
   const nearBottom = () => { const el = $("list"); return el.scrollHeight - el.scrollTop - el.clientHeight < 80; };
   function renderList(jump) {
     const list = $("list");
     const wasNear = nearBottom();
     const prevTop = list.scrollTop;
-    const r = rooms().find((x) => x.id === currentRoom) || rooms()[0];
     const q = findQuery.trim().toLowerCase();
-    const shown = q ? r.items.filter((i) => textOf(i).toLowerCase().includes(q)) : r.items;
+    const shown = q ? items.filter((i) => textOf(i).toLowerCase().includes(q)) : items;
     const frag = document.createDocumentFragment();
-    if (!shown.length) { const e = document.createElement("div"); e.className = "chatEmpty"; e.innerHTML = `<div class="chatEmptyMark">💬</div><div>${q ? "Nothing matches." : "Say hello. It remembers everything from here on."}</div>`; frag.appendChild(e); }
+    if (!shown.length) { const e = document.createElement("div"); e.className = "chatEmpty"; e.innerHTML = q ? `<div>Nothing matches.</div>` : `<div class="mark"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/></svg></div><b>Say hello to ${esc(AGENT)}</b><div>Ask for anything: a refund, a booking, a bill paid, a reminder. It remembers everything from here on.</div>`; frag.appendChild(e); }
     let lastDay = null, lastAuthor = null, lastAt = 0;
-    for (const item of shown) {
+    const lastReplyIdx = (() => { for (let k = shown.length - 1; k >= 0; k--) if (shown[k].kind !== "user" && shown[k].id !== "draft") return k; return -1; })();
+    shown.forEach((item, idx) => {
       const day = DAY_KEY(item.at);
-      if (day !== lastDay) { const d = document.createElement("div"); d.className = "chatDay"; d.innerHTML = `<span>${esc2(dayLabel(item.at))}</span>`; frag.appendChild(d); lastDay = day; lastAuthor = null; }
-      const author = item.kind === "user" ? "me" : (item.notice ? "notice:" + item.notice : "agent");
+      if (day !== lastDay) { const d = document.createElement("div"); d.className = "day"; d.innerHTML = `<span>${esc(dayLabel(item.at))}</span>`; frag.appendChild(d); lastDay = day; lastAuthor = null; }
+      const author = item.kind === "user" ? "me" : "agent";
       const at = new Date(item.at).getTime();
-      const grouped = author === lastAuthor && at - lastAt < 5 * 60 * 1000 && item.kind !== "tool";
-      frag.appendChild(row(item, grouped));
+      const tail = !(author === lastAuthor && at - lastAt < 5 * 60 * 1000) || item.kind === "tool";
+      const read = item.kind === "user" && (idx < lastReplyIdx || (!item.id.startsWith("tmp-") && Date.now() - at >= 4000));
+      frag.appendChild(row(item, tail, read));
       lastAuthor = author; lastAt = at;
+    });
+    // A sent message turns blue (read) 4s after it was posted, even before Pete replies: schedule the
+    // one re-render that flips the soonest pending message.
+    if (tickTimer) { clearTimeout(tickTimer); tickTimer = null; }
+    let nextTick = Infinity;
+    shown.forEach((item, idx) => {
+      if (item.kind !== "user" || item.id.startsWith("tmp-") || idx < lastReplyIdx) return;
+      const rem = 4000 - (Date.now() - new Date(item.at).getTime());
+      if (rem > 0) nextTick = Math.min(nextTick, rem);
+    });
+    if (nextTick !== Infinity && nextTick < 60000) tickTimer = setTimeout(() => renderList(false), nextTick + 50);
+    if (status === "running" && composing && !q) {
+      const t = document.createElement("div"); t.className = "m in tail typing"; t.innerHTML = `<div class="b"><span class="dots"><i></i><i></i><i></i></span></div><button type="button" class="stopLink" id="stopMain">stop</button>`;
+      t.querySelector("#stopMain").onclick = () => stopSession(sessionId);
+      frag.appendChild(t);
     }
     list.innerHTML = ""; list.appendChild(frag);
     if (jump || wasNear) { list.scrollTop = list.scrollHeight; behind = 0; } else list.scrollTop = prevTop;
     updateDown();
     renderSmart();
   }
-  function updateDown() { const near = nearBottom(); $("down").hidden = near && !behind; $("downBadge").hidden = !behind; $("downBadge").textContent = behind > 99 ? "99+" : behind; if (near) { behind = 0; $("downBadge").hidden = true; } }
+  function updateDown() { const near = nearBottom(); $("down").hidden = near && !behind; $("downBadge").hidden = !behind; $("downBadge").textContent = behind > 99 ? "99+" : behind; if (near) { behind = 0; $("downBadge").hidden = true; if (currentTab === "chat" && !document.hidden) markSeen(); } }
   $("list").addEventListener("scroll", updateDown, { passive: true });
-  $("down").onclick = () => { $("list").scrollTop = $("list").scrollHeight; behind = 0; updateDown(); };
+  $("down").onclick = () => { $("list").scrollTo({ top: $("list").scrollHeight, behavior: "smooth" }); behind = 0; updateDown(); };
   function renderSmart() {
     const box = $("smart"); const last = items[items.length - 1];
-    const offer = currentRoom === "secretary" && last && last.kind === "agent" && status !== "running" && !pending && !$("text").value.trim();
+    const offer = last && last.kind === "agent" && status !== "running" && !pending && !$("text").value.trim() && chips.length;
     box.hidden = !offer; if (!offer) return;
-    box.innerHTML = SMART.map((t) => `<button type="button" class="gcSmartChip">${esc2(t)}</button>`).join("");
+    box.innerHTML = chips.map((t) => `<button type="button" class="chip">${esc(t)}</button>`).join("");
     box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
   }
-  let liveViewUrl = null, activity = null;
-  // Tasks running alongside the chat (their own sessions): one chip each with what it is doing.
   function renderTasks() {
     const box = $("taskStrip");
     box.hidden = !tasks.length; if (!tasks.length) { box.innerHTML = ""; return; }
-    box.innerHTML = tasks.map((t) => `<span class="taskChip ${t.status === "waiting" ? "waiting" : ""}" title="${esc2(t.title)}"><span class="dot"></span><b>${esc2(t.title)}</b><i>${esc2(t.status === "waiting" ? "waiting for you" : t.activity || "working")}</i><button type="button" class="taskStop" data-id="${esc2(t.id)}" title="Stop this task" aria-label="Stop this task">×</button></span>`).join("");
+    box.innerHTML = tasks.map((t) => `<span class="taskChip ${t.status === "waiting" ? "waiting" : ""}" title="${esc(t.title)}"><span class="dot"></span><b>${esc(t.title)}</b>${t.status === "waiting" ? "<span>waiting for you</span>" : ""}<button type="button" class="taskStop" data-id="${esc(t.id)}" title="Stop this task" aria-label="Stop this task">×</button></span>`).join("");
     box.querySelectorAll(".taskStop").forEach((b) => b.onclick = () => stopSession(b.dataset.id));
   }
   async function stopSession(id) {
@@ -975,54 +1084,45 @@
     try { await api("/api/chat/cancel", { method: "POST", body: JSON.stringify({ id }) }); } catch {}
     loadHistory().catch(() => {});
   }
-  // Never reveal the site or a link to the browser: a calm status line during tool work, and the
-  // bouncing "typing" dots only while composing a reply (a post is imminent).
-  // While the agent works: the three dots and a small stop link. No status text, no browser links.
-  // What it is doing right now, how long it has been at it, and a live window into the browser: the
-  // three things a person wants while they wait, instead of three dots and no idea.
-  let runningSince = 0;
-  function elapsedText(ms) { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`; }
-  function setTyping(on) {
-    const box = $("typing");
-    if (!on) { runningSince = 0; box.innerHTML = ""; return; }
-    if (!runningSince) runningSince = Date.now();
-    const what = activity || (pending ? "waiting for you" : "");
-    box.innerHTML = `<span class="chatDots"><i></i><i></i><i></i></span>`
-      + (what ? `<span class="chatDoing">${esc2(what)}</span>` : "")
-      + `<span class="chatElapsed">${esc2(elapsedText(Date.now() - runningSince))}</span>`
-      + (liveViewUrl ? `<a class="chatWatch" href="${esc2(liveViewUrl)}" target="_blank" rel="noopener" title="Watch the browser it is using">watch</a>` : "")
-      + `<button type="button" class="chatStop" id="stopMain">stop</button>`;
-    const b = $("stopMain"); if (b) b.onclick = () => stopSession(sessionId);
+  function updateSub() {
+    const el = $("roomSub");
+    const running = tasks.filter((t) => t.status === "running").length;
+    let text = "online", live = false;
+    if (status === "running") { text = composing ? "typing…" : "working…"; live = true; }
+    else if (pending) { text = "waiting for you"; live = true; }
+    else if (status === "none") text = "online";
+    if (running) text += ` · ${running} task${running === 1 ? "" : "s"} running`;
+    el.textContent = text; el.classList.toggle("live", live);
   }
-  // The elapsed counter ticks on its own so a long task never looks frozen between polls.
-  setInterval(() => { if (runningSince && status === "running") setTyping(true); }, 1000);
-  $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
+  $("findChip").onclick = () => { const bar = $("findBar"); bar.hidden = !bar.hidden; $("findChip").classList.toggle("on", !bar.hidden); if (!bar.hidden) $("findBox").focus(); else { findQuery = ""; $("findBox").value = ""; renderList(true); } };
+  $("findClose").onclick = () => $("findChip").onclick();
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
-  $("notifyChip").onclick = async () => { try { if (window.Notification) { const p = await Notification.requestPermission(); $("notifyChip").classList.toggle("toolChipOn", p === "granted"); } } catch {} };
-  try { if (window.Notification && Notification.permission === "granted") $("notifyChip").classList.add("toolChipOn"); } catch {}
+  $("notifyChip").onclick = async () => { try { if (window.Notification) { const p = await Notification.requestPermission(); $("notifyChip").classList.toggle("on", p === "granted"); } } catch {} };
+  try { if (window.Notification && Notification.permission === "granted") $("notifyChip").classList.add("on"); } catch {}
 
   // ---- data
   let historyVersion = "";
   function applyHistory(data) {
     if (data.unchanged) return;
     historyVersion = data.version || "";
-    const prevAgent = items.filter((i) => i.kind !== "user").length;
+    const prevAgent = nonUser();
     items = data.items.filter((i) => i.kind !== "status" && i.kind !== "tool_resolved");
-    // Belt and braces: the same agent line twice in a row within a minute is one line.
     items = items.filter((it, i) => !(i > 0 && it.kind === "agent" && items[i - 1].kind === "agent" && items[i - 1].text === it.text && Math.abs(new Date(it.at) - new Date(items[i - 1].at)) < 60_000));
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
-    sessionId = data.session_id; status = data.status; pending = data.pending; liveViewUrl = data.live_view_url || null; activity = data.activity || null; tasks = data.tasks || [];
-    if (status !== "running") runningSince = 0;
-    // The reply being written: shown as a live bubble at the end until the real one lands.
-    if (data.draft && status === "running") items.push({ kind: "agent", id: "draft", text: data.draft, at: new Date().toISOString() });
+    const wasRunning = status === "running";
+    sessionId = data.session_id; status = data.status; pending = data.pending; tasks = data.tasks || [];
+    if (Array.isArray(data.chips)) chips = data.chips;
+    composing = !!(data.draft && data.status === "running");
+    // The chips for a fresh reply are written just after it lands: one more look a moment later.
+    if (wasRunning && status !== "running") setTimeout(() => refresh().catch(() => {}), 2500);
     renderTasks();
-    const nowAgent = items.filter((i) => i.kind !== "user").length;
+    const nowAgent = nonUser();
     const wasNear = nearBottom();
     if (nowAgent > prevAgent && !wasNear) behind += nowAgent - prevAgent;
-    if (!$("chats").hidden && document.visibilityState === "visible" && wasNear) markSeen();
+    if (currentTab === "chat" && document.visibilityState === "visible" && document.hasFocus() && wasNear) { lastSeen = Math.max(lastSeen, nowAgent); store.set("secretary:seen2", String(lastSeen)); }
+    if (lastSeen > nowAgent) { lastSeen = nowAgent; store.set("secretary:seen2", String(lastSeen)); }
     renderRooms(); renderList(false); announce(data.items);
-    setTyping(status === "running");
-    setStatus(status === "running" ? "running" : "idle", status === "none" ? "ready" : pending ? "waiting for you" : status === "running" ? "busy" : "ready");
+    updateSub();
   }
   async function loadHistory() {
     const r = await api("/api/chat/history");
@@ -1032,30 +1132,50 @@
     applyHistory(await r.json());
     if ((sessionId && status === "running") || tasks.some((t) => t.status === "running")) openStream();
   }
-  // Polling that follows the work: fast while a reply is being written (so it reads as typing), slower
-  // when only a background task is running, and paused entirely when the tab is hidden. A fixed
-  // 1.2 s poll was both too slow to feel live and too fast when nothing was happening.
-  let pollTimer = null, pollEvery = 0, streaming = false;
-  function pollDelay() {
-    if (pending) return 2500;
-    if (streaming || status === "running") return 600;
-    return 2500;
+  // Cheap poll: the server answers "unchanged" in a few bytes when nothing moved, so the tab keeps
+  // listening in the background too (slower), which is what lets a message ping while you are away.
+  async function refresh() {
+    const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion));
+    if (r.status === 401) { location.href = "/"; return; }
+    if (!r.ok) return;
+    applyHistory(await r.json());
+    if (!pollTimer && ((sessionId && status === "running") || tasks.some((t) => t.status === "running"))) openStream();
   }
+  let pollTimer = null, pollTick = 0, es = null, esFailed = false;
+  const busy = () => (sessionId && status === "running") || tasks.some((t) => t.status === "running") || composing;
+  // While a reply is due, the server pushes every change over a stream (a token of the reply as it is
+  // written, a progress line, a card) the moment it happens. Polling remains the fallback when the
+  // browser or the network cannot hold a stream.
   function openStream() {
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    const tick = async () => {
-      pollTimer = null;
-      if (document.hidden || $("chats").hidden) { pollTimer = setTimeout(tick, 2000); return; }
-      try {
-        const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion));
-        if (r.ok) { const data = await r.json(); streaming = !!data.draft; applyHistory(data); }
-      } catch { /* offline for a moment; try again */ }
-      if (status !== "running" && !tasks.some((t) => t.status === "running")) { pollEvery = 0; return; }
-      pollEvery = pollDelay();
-      pollTimer = setTimeout(tick, pollEvery);
-    };
-    pollTimer = setTimeout(tick, 250);
+    if (window.EventSource && !esFailed) { openEvents(); return; }
+    openPoll();
   }
+  function openEvents() {
+    if (es) return;
+    es = new EventSource("/api/chat/stream?v=" + encodeURIComponent(historyVersion));
+    let got = false;
+    es.addEventListener("history", (e) => { got = true; try { applyHistory(JSON.parse(e.data)); } catch {} });
+    es.addEventListener("end", () => { closeEvents(); if (busy()) openEvents(); });
+    es.onerror = () => { closeEvents(); if (!got) { esFailed = true; openPoll(); } else if (busy()) setTimeout(() => openEvents(), 800); };
+  }
+  function closeEvents() { if (es) { es.close(); es = null; } }
+  function openPoll() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+      pollTick++; if (document.hidden && pollTick % 3) return;
+      const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion)); if (!r.ok) return;
+      applyHistory(await r.json());
+      if (!busy()) { clearInterval(pollTimer); pollTimer = null; }
+    }, 1200);
+  }
+  // While the user is still typing, the server prepares the context for that request (a one-second pause, once per text).
+  let prefetchTimer = null, prefetched = "";
+  $("text").addEventListener("input", () => {
+    clearTimeout(prefetchTimer);
+    const v = $("text").value.trim();
+    if (v.length < 12 || v === prefetched) return;
+    prefetchTimer = setTimeout(() => { prefetched = v; api("/api/chat/prefetch", { method: "POST", body: JSON.stringify({ text: v }) }).catch(() => {}); }, 900);
+  });
   function optimistic(text, reaction, quote) {
     const it = { kind: "user", id: "tmp-" + Date.now(), text, at: new Date().toISOString(), reaction, ...(quote ? { quote } : {}) };
     items.push(it); renderRooms(); renderList(true); return it;
@@ -1063,23 +1183,32 @@
   async function send(text) {
     text = (text || $("text").value).trim(); if (!text) return;
     let quote = null;
-    if (replyTo) { quote = { id: replyTo.id, who: replyTo.kind === "user" ? "user" : "agent", text: textOf(replyTo).slice(0, 160) }; replyTo = null; $("replyCard").hidden = true; }
-    $("send").disabled = true;
+    if (replyTo) { quote = { id: replyTo.id, who: replyTo.kind === "user" ? "user" : "agent", text: textOf(replyTo).replace(/\*\*|__|`/g, "").slice(0, 160) }; replyTo = null; $("replyCard").hidden = true; }
     try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch {}
     const it = optimistic(text, undefined, quote);
-    $("text").value = ""; autosize(); $("emojiDrawer").hidden = true;
+    swoosh();
+    $("text").value = ""; autosize(); $("emojiDrawer").hidden = true; $("emojiBtn").classList.remove("on");
+    // A quick question is answered inside the send request itself and streams while it is written:
+    // the stream opens now, the composer stays free, and the reply shows before the request returns.
+    status = "running"; updateSub(); openStream();
     try {
       const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text, ...(quote ? { reply_to: quote } : {}) }) });
       const data = await r.json();
       if (!r.ok) { it.text += `\n(${data.error || "failed"})`; renderList(false); if (r.status === 402) showTab("billing"); return; }
-      if (data.reaction) { it.reaction = data.reaction; renderList(false); }
-      // The server already stored the "on it" line; refresh rather than add a local copy that a poll
-      // racing this request would leave next to the server's, showing it twice.
-      sessionId = data.session_id; status = "running"; setTyping(true); setStatus("running", "busy");
-      if (data.ack) loadHistory().catch(() => {});
-      openStream();
+      if (data.reaction) it.reaction = data.reaction;
+      sessionId = data.session_id;
+      if (data.action === "reacted") {
+        // Pete just reacted with an emoji; no typed reply is coming. Reconcile with the server so the
+        // stored message, its reaction and the 4s read tick show, without a typing indicator.
+        status = data.status || "idle"; composing = false; renderList(false); renderRooms(); updateSub();
+        loadHistory().catch(() => {});
+      } else {
+        status = "running"; updateSub(); renderList(false); renderRooms();
+        if (data.ack) loadHistory().catch(() => {});
+        openStream();
+      }
     } catch (e) { it.text += "\n(failed to send)"; renderList(false); }
-    finally { $("send").disabled = false; $("text").focus(); }
+    finally { if (window.matchMedia("(hover:hover)").matches) $("text").focus(); }
   }
   $("attach").onclick = () => $("file").click();
   $("file").addEventListener("change", async () => {
@@ -1091,16 +1220,16 @@
       try {
         const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: f.name, mimeType: f.type || "application/octet-stream", data }) });
         const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
-        note.text = `Attached ${f.name}`; renderList(false);
+        note.text = `📎 ${f.name}`; renderList(false);
         if (out.session_id) { sessionId = out.session_id; openStream(); }
       } catch (e) { note.text = `Could not attach ${f.name}: ${e.message}`; renderList(false); }
     }
   });
-  function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; $("send").hidden = !t.value.trim(); $("mic").hidden = !!t.value.trim(); renderSmart(); }
+  function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; const has = !!t.value.trim(); $("send").hidden = !has; $("mic").hidden = has || $("mic").dataset.gone === "1"; renderSmart(); }
   $("text").addEventListener("input", autosize);
-  $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } if (e.key === "Escape") { replyTo = null; $("replyCard").hidden = true; $("emojiDrawer").hidden = true; } });
+  $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } if (e.key === "Escape") { replyTo = null; $("replyCard").hidden = true; $("emojiDrawer").hidden = true; $("emojiBtn").classList.remove("on"); } });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
-  $("emojiBtn").onclick = () => { const d = $("emojiDrawer"); if (d.hidden && !d.childElementCount) d.innerHTML = DRAWER.map((em) => `<button type="button" class="chatDrawerEm">${em}</button>`).join(""); d.hidden = !d.hidden; $("emojiBtn").classList.toggle("chatIconOn", !d.hidden); d.querySelectorAll("button").forEach((b) => b.onclick = () => { const t = $("text"); const s0 = t.selectionStart ?? t.value.length; t.value = t.value.slice(0, s0) + b.textContent + t.value.slice(s0); t.focus(); t.selectionStart = t.selectionEnd = s0 + b.textContent.length; autosize(); }); };
+  $("emojiBtn").onclick = () => { const d = $("emojiDrawer"); if (d.hidden && !d.childElementCount) d.innerHTML = DRAWER.map((em) => `<button type="button" class="drawerEm">${em}</button>`).join(""); d.hidden = !d.hidden; $("emojiBtn").classList.toggle("on", !d.hidden); d.querySelectorAll("button").forEach((b) => b.onclick = () => { const t = $("text"); const s0 = t.selectionStart ?? t.value.length; t.value = t.value.slice(0, s0) + b.textContent + t.value.slice(s0); t.focus(); t.selectionStart = t.selectionEnd = s0 + b.textContent.length; autosize(); }); };
   // Voice: hold the mic to record a voice note (server transcribes) when enabled; otherwise browser dictation.
   let micReady = false;
   function setupMic() {
@@ -1109,14 +1238,14 @@
     if (me.voice_notes && navigator.mediaDevices && window.MediaRecorder) {
       mic.title = "Hold to record a voice note";
       let rec = null, chunks = [], startedAt = 0;
-      const start = async (e) => { e.preventDefault(); if (rec) return; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : ""; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); chunks = []; rec.ondataavailable = (ev) => chunks.push(ev.data); rec.onstop = async () => { stream.getTracks().forEach((t) => t.stop()); const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" }); rec = null; mic.classList.remove("rec"); if (Date.now() - startedAt < 600 || blob.size < 1000) return; await sendVoice(blob); }; rec.start(); startedAt = Date.now(); mic.classList.add("rec"); } catch { alert("Microphone not available."); rec = null; } };
+      const start = async (e) => { e.preventDefault(); if (rec) return; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : ""; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); chunks = []; rec.ondataavailable = (ev) => chunks.push(ev.data); rec.onstop = async () => { stream.getTracks().forEach((t) => t.stop()); const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" }); rec = null; mic.classList.remove("rec"); if (Date.now() - startedAt < 600 || blob.size < 1000) return; await sendVoice(blob); }; rec.start(); startedAt = Date.now(); mic.classList.add("rec"); try { navigator.vibrate?.(15); } catch {} } catch { alert("Microphone not available."); rec = null; } };
       const stop = (e) => { if (e) e.preventDefault(); if (rec && rec.state === "recording") rec.stop(); };
       mic.addEventListener("pointerdown", start); mic.addEventListener("pointerup", stop); mic.addEventListener("pointerleave", stop); mic.addEventListener("pointercancel", stop);
       mic.addEventListener("contextmenu", (e) => e.preventDefault());
       return;
     }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { mic.hidden = true; return; }
+    if (!SR) { mic.hidden = true; mic.dataset.gone = "1"; return; }
     mic.title = "Dictate";
     mic.onclick = () => { const r = new SR(); r.lang = navigator.language || "en-US"; mic.classList.add("rec"); r.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); }; r.onend = () => { mic.classList.remove("rec"); }; r.start(); };
   }
@@ -1127,28 +1256,30 @@
       const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
       const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: `voice.${ext}`, mimeType: blob.type || "audio/webm", data, voice: true }) });
       const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
-      note.text = `🎤 ${out.text}`; renderList(false);
-      sessionId = out.session_id; status = "running"; setTyping(true); setStatus("running", "busy"); openStream();
+      note.text = `🎤 ${out.text}`; renderList(false); swoosh();
+      sessionId = out.session_id; status = "running"; updateSub(); renderList(false); openStream();
     } catch (e) { note.text = `Voice note failed: ${e.message}`; renderList(false); }
   }
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && me) loadHistory(); });
-  setInterval(() => { if (me && !$("chats").hidden && status !== "running" && !pollTimer) loadHistory(); }, 10_000);
-  // A reminder or heads-up that arrives while the tab is idle: flash the title and, if allowed, a system notification.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && me) { loadHistory(); if (currentTab === "chat" && nearBottom()) markSeen(); } });
+  window.addEventListener("focus", () => { if (me && currentTab === "chat" && nearBottom()) markSeen(); });
+  setInterval(() => { if (me && !pollTimer) refresh().catch(() => {}); }, 10_000);
+
+  // A new message from the secretary: the chime, a buzz, the title badge, and a system notification when the tab is away.
   let lastAgentKey = null, baseTitle = document.title;
   function announce(all) {
-    const last = [...all].reverse().find((i) => i.kind === "agent");
+    const last = [...all].reverse().find((i) => i.kind === "agent" || i.kind === "tool");
     if (!last) return;
-    const key = last.id + ":" + (last.text || "").length;
+    const key = last.id;
     if (lastAgentKey === null) { lastAgentKey = key; return; }
     if (key === lastAgentKey) return;
     lastAgentKey = key;
-    if (document.hidden) {
-      document.title = "● " + baseTitle;
-      const restore = () => { document.title = baseTitle; document.removeEventListener("visibilitychange", restore); };
-      document.addEventListener("visibilitychange", restore);
-      try { if (window.Notification && Notification.permission === "granted") new Notification(AGENT, { body: (last.text || "").slice(0, 140) }); } catch {}
+    ping();
+    const away = document.hidden || currentTab !== "chat" || !document.hasFocus();
+    if (away) {
+      try { if (window.Notification && Notification.permission === "granted") { const n = new Notification(AGENT, { body: textOf(last).slice(0, 140), tag: "secretary-chat", renotify: true, icon: $("favicon").href }); n.onclick = () => { window.focus(); showTab("chat"); n.close(); }; } } catch {}
     }
   }
+  paintSound();
   renderRooms();
   loadMe();
 })();

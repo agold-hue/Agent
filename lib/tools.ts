@@ -3,7 +3,7 @@ import { fileContent, listFiles, saveFile } from "./files.js";
 import { upsertLesson } from "./learning.js";
 import { fillPdfForm, makePdf, pdfFormFields, pdfInfo } from "./pdf.js";
 import { liveViewUrl, reuseBrowser } from "./browser.js";
-import { registrableDomain, saveCredential } from "./credentials.js";
+import { recordLoginOutcome, registrableDomain, saveCredential } from "./credentials.js";
 import { addFollowUp, cancelFollowUp, durationMs, parseWhen } from "./followups.js";
 import { driveList, driveRead, driveSaveText, runCalendar, runOwnerInbox, type CalendarInput, type DriveInput, type OwnerInboxInput } from "./google.js";
 import { addReceipt, listItems, recordWin, upsertItem, type ItemKind } from "./daily.js";
@@ -13,8 +13,18 @@ import { sendAgentMail } from "./mail.js";
 import { appendMemory, deleteMemory, grepMemory, listMemory, readMemory, writeMemory } from "./memory.js";
 import { notifyOwner } from "./notify.js";
 import { autoApprove, codeHint, codeIn, formatCheckpointEmail, formatEmailApproval, formatQuestionsEmail, type CheckpointInput } from "./policy.js";
+import { runDocumentTool } from "./docstore.js";
+import { approvalProposal, logApproval, resolveFixesFor } from "./proactive.js";
+import { updateSettings } from "./tenant.js";
+import { runBankTool } from "./plaid.js";
+import { runLocalBrowserTool } from "./relay.js";
+import { runResearchTool } from "./research.js";
+import { runTrackTool } from "./tracking.js";
+import { runWatchTool } from "./watches.js";
+import { auditMoneyMove, HOLD_PREFIX } from "./audit.js";
+import { tooDearForValue } from "./tactics.js";
 import { modelFor, nextTier, tierOfModel } from "./router.js";
-import { appendAssistantMessage, appendToolResult, taskStart, updateSession, type SessionRow } from "./sessions.js";
+import { appendAssistantMessage, appendHostNote, appendToolResult, taskStart, taskUserText, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
 export interface SendEmailInput {
@@ -48,7 +58,38 @@ async function deliverEmail(t: Tenant, row: SessionRow, input: SendEmailInput): 
 export async function executeTool(t: Tenant, row: SessionRow, name: string, args: Record<string, unknown>, callId: string): Promise<ToolOutcome> {
   const s = (k: string) => String(args[k] ?? "");
   try {
-    if (name.startsWith("browser_") || name === "web_search") return await runBrowserTool(t, row, name, args);
+    // Search and reading run over HTTPS from this process, never through the browser; the browser's
+    // own DuckDuckGo page is the last fallback and only when this session already has one open.
+    if (name === "web_search" || name === "fetch_page") return await runResearchTool(t, row, name, args, (query) => runBrowserTool(t, row, "web_search_browser", { query }));
+    if (name.startsWith("browser_") || name === "solve_captcha") return await runBrowserTool(t, row, name, args);
+    if (name === "watch_page") return { text: await runWatchTool(t, row, args) };
+    if (name === "local_browser") return { text: await runLocalBrowserTool(t, row, args) };
+    if (name === "document") return { text: await runDocumentTool(t, row, args) };
+    if (name === "set_preferred_name") {
+      const preferred = s("name").replace(/\s+/g, " ").trim().slice(0, 60);
+      if (!preferred) return { text: "Nothing saved; pass the name they asked for." };
+      await updateSettings(t, { preferred_name: preferred });
+      t.settings.preferred_name = preferred;
+      return { text: `Saved: the user goes by "${preferred}" from now on (shown under Settings). Use it in this reply and every one after; never the old name.` };
+    }
+    if (name === "approval_rule") {
+      const rules = [...(t.settings.auto_approve_rules ?? [])];
+      const action = s("action") || "list";
+      if (action === "add") {
+        const rule = { action_type: s("action_type").toLowerCase() || "purchase", ...(s("merchant") ? { merchant: s("merchant").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "") } : {}), ...(args.max_usd != null ? { max_usd: Number(args.max_usd) } : {}) };
+        if (!rules.some((r) => JSON.stringify(r) === JSON.stringify(rule))) rules.push(rule);
+        await updateSettings(t, { auto_approve_rules: rules });
+        return { text: `Rule saved: ${rule.action_type}${rule.merchant ? ` at ${rule.merchant}` : ""}${rule.max_usd != null ? ` under $${rule.max_usd}` : ""} no longer needs approval. Tell the user in one line; they can change it under Settings.` };
+      }
+      if (action === "remove") {
+        const keep = rules.filter((r) => !(r.action_type === s("action_type").toLowerCase() && (r.merchant ?? "") === (s("merchant").toLowerCase() || "")));
+        await updateSettings(t, { auto_approve_rules: keep });
+        return { text: `Removed ${rules.length - keep.length} rule(s).` };
+      }
+      return { text: rules.length ? rules.map((r) => `- ${r.action_type}${r.merchant ? ` at ${r.merchant}` : ""}${r.max_usd != null ? ` under $${r.max_usd}` : ""}`).join("\n") : "No learned approval rules." };
+    }
+    if (name === "bank") return { text: await runBankTool(t, args) };
+    if (name === "track_package") return { text: await runTrackTool(args) };
 
     switch (name) {
       case "memory_read": {
@@ -74,16 +115,19 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         if (!browser) return { text: "No active browser. Call browser_open first." };
         const result = await loginToSite(t, { connectUrl: browser.connectUrl, domain: s("domain"), accountHint: args.account_hint ? s("account_hint") : undefined, username: args.username ? s("username") : undefined, code: args.code ? s("code") : undefined, targetId: row.browser_target_id });
         console.log(`[login] ${row.id} ${s("domain")}: ${result.status}${"reason" in result ? ` (${result.reason})` : ""}`);
+        if (result.status !== "no_credentials" && result.status !== "needs_code") await recordLoginOutcome(t, s("domain"), result.status === "logged_in" || result.status === "already_logged_in", "reason" in result ? result.reason : undefined).catch(() => {});
         const payload: Record<string, unknown> = { ...result };
         if (result.status === "needs_user") payload.live_view_url = browser.liveViewUrl;
         if (result.status === "needs_user" && /code/i.test(result.reason)) payload.hint = "If the site offers to text or email a code, click that, then request_code.";
         if (result.status === "no_credentials") payload.note = "Nothing saved for this site. If the user gave you their phone or email for it in chat, call login again with `username` set to it (most apps then text a code: request_code, then login with the code). Otherwise ask them in one line for the login, or to add it under Settings > Logins.";
         if (result.status === "logged_in" && args.username && !args.code) payload.note = "Signed in with the identifier from chat. Call save_login with this username and no password so next time it is known, and note it in facts.md.";
+        if ("remembered" in result && result.remembered) payload.note = `${payload.note ? `${payload.note} ` : ""}The host will do this on its own next time: ${result.remembered}. Keep the ## Sign-in section of sites/${registrableDomain(s("domain"))}.md to what it does not know (a second code, a security question, a device prompt).`;
         return { text: JSON.stringify(payload) };
       }
       case "save_login": {
         // Phone-and-code accounts (Uber, Lyft, many apps) have no password: the username alone is saved.
         const id = await saveCredential(t, { domain: registrableDomain(s("domain")), username: s("username"), password: args.password ? s("password") : "", notes: args.notes ? s("notes") : undefined });
+        await resolveFixesFor(t, "add_login", registrableDomain(s("domain"))).catch(() => {});
         return { text: JSON.stringify({ saved: true, id }) };
       }
       case "get_email_code": {
@@ -132,7 +176,26 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const cp = args as unknown as CheckpointInput;
         const verdict = autoApprove(t, cp);
         if (verdict.ok) return { text: `APPROVED (${verdict.reason}). Proceed exactly as described.` };
+        // A second reading before money moves: a cheap model checks the amount, the payee and the card on
+        // the page against the claim, the request and the facts. A discrepancy goes back to the working
+        // model as a HOLD with the specifics, before the user is ever asked.
+        if (row.browserbase_session_id && /^(purchase|payment)$/.test(String(cp.action_type))) {
+          const page = await runBrowserTool(t, row, "browser_text", {}).catch(() => undefined);
+          if (page?.text) {
+            const audit = await auditMoneyMove(t, row, cp, page.text).catch(() => ({ ok: true as const }));
+            if (!audit.ok) return { text: `${HOLD_PREFIX} ${audit.problem} Fix it on the page (the right amount, account or card), or if the page is right and the checkpoint was wrong, call checkpoint again with the correct figures and say what differs from the request in details.` };
+          }
+        }
         const live = row.browserbase_session_id ? await liveViewUrl(row.browserbase_session_id).catch(() => undefined) : undefined;
+        // A dry-run preview: the page as it stands (cart, payment form, confirmation) rides with the approval card.
+        if (row.browserbase_session_id && /^(purchase|payment|agreement|cancellation|dispute|account_change|signup)$/.test(String(cp.action_type))) {
+          const shot = await runBrowserTool(t, row, "browser_screenshot", {}).catch(() => undefined);
+          if (shot?.imageBase64) {
+            const id = await addReceipt(t, { sessionId: row.id, title: `Preview: ${String(cp.summary ?? "").slice(0, 120)}`, details: String(cp.details ?? "").slice(0, 2000), image: Buffer.from(shot.imageBase64, "base64") }).catch(() => undefined);
+            const owner = row.messages.find((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === callId));
+            if (id && owner) owner.previews = { ...(owner.previews ?? {}), [callId]: id };
+          }
+        }
         await notifyOwner(t, row, formatCheckpointEmail(cp, live), `Approval needed: ${cp.summary}`);
         return { text: "", pending: "checkpoint" };
       }
@@ -252,9 +315,24 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         await upsertLesson(t, { scope: args.scope ? s("scope") : "general", topic: s("topic"), lesson: s("lesson"), keywords: args.keywords ? s("keywords") : undefined, sessionId: row.id });
         return { text: "Kept. It will be in the prompt of later tasks that match." };
       }
+      case "spending_report": {
+        const { spendingReport, periodAsked } = await import("./ledger.js");
+        // The inbox first: receipt emails cover the period with no sign-in and no page reading.
+        if (t.googleRefreshToken && args.period) {
+          const { spendingFromInbox, spendingQuestion } = await import("./receipts.js");
+          const period = periodAsked(s("period"));
+          const merchant = spendingQuestion(`spent on ${s("site") || ""} in ${s("period")}`)?.merchant;
+          if (period) {
+            const fromInbox = await spendingFromInbox(t, { period, merchant }).catch(() => undefined);
+            if (fromInbox) return { text: `SPENDING REPORT for ${period.label} (${period.from.toISOString().slice(0, 10)} to ${period.to.toISOString().slice(0, 10)}) from the user's receipt emails, computed by the host. COVERS ${period.from.toISOString().slice(0, 10)}..${period.to.toISOString().slice(0, 10)}.\n${fromInbox}\n(Report these figures as they are; say they come from the receipts in their inbox.)` };
+          }
+        }
+        return { text: await spendingReport(t, row, { period: args.period ? s("period") : undefined, site: args.site ? s("site") : undefined, next_label: args.next_label ? s("next_label") : undefined }) };
+      }
       case "escalate_model": {
         const next = nextTier(tierOfModel(row.model ?? "", t));
         if (!next) return { text: "You are already on the most capable model. Keep going with what you have, or tell the user where you are stuck." };
+        if (tooDearForValue(taskUserText(row.messages), next)) return { text: "Not escalating: the amount at stake in this request is small, and a dearer model would cost more than it is worth. Finish with what you have, or report in one line exactly what blocks and what the user can do." };
         return { text: `Escalating to the ${next} tier: ${s("reason")}`, escalateTo: modelFor(next, t) };
       }
       default:
@@ -263,7 +341,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
   } catch (err) {
     return { text: `Tool ${name} failed: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
-    void callId;
+    /* nothing to release */
   }
 }
 
@@ -273,6 +351,12 @@ export async function resolvePending(t: Tenant, row: SessionRow, userText: strin
   let text: string;
   if (row.pending_kind === "checkpoint") {
     text = approved ? "APPROVED by the user. Proceed exactly as described in the checkpoint." : `DENIED. The user replied:\n\n${userText}\n\nTreat this as new instructions. Do not perform the checkpointed action as described. Answer briefly.`;
+    // The decision goes in the approval history; three approvals of the same kind become an offer to stop asking.
+    const logged = await logApproval(t, row, approved ? "approved" : "denied").catch(() => undefined);
+    if (approved && logged) {
+      const proposal = await approvalProposal(t, logged).catch(() => undefined);
+      if (proposal) await appendHostNote(row, proposal).catch(() => {});
+    }
   } else if (row.pending_kind === "send_email") {
     if (approved) {
       const call = [...row.messages].reverse().find((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === row.pending_event_id));

@@ -9,6 +9,8 @@ import checkout from "../server/routes/billing/checkout.js";
 import portal from "../server/routes/billing/portal.js";
 import history from "../server/routes/chat/history.js";
 import send from "../server/routes/chat/send.js";
+import stream from "../server/routes/chat/stream.js";
+import prefetch from "../server/routes/chat/prefetch.js";
 import react from "../server/routes/chat/react.js";
 import account from "../server/routes/account.js";
 import cancel from "../server/routes/chat/cancel.js";
@@ -25,7 +27,10 @@ import googleDisconnect from "../server/routes/google/disconnect.js";
 import mailInbound from "../server/routes/mail-inbound.js";
 import me from "../server/routes/me.js";
 import models from "../server/routes/models.js";
+import fixes from "../server/routes/fixes.js";
+import plaid from "../server/routes/plaid.js";
 import receipts from "../server/routes/receipts.js";
+import relay from "../server/routes/relay.js";
 import run from "../server/routes/run.js";
 import stats from "../server/routes/stats.js";
 import stripeWebhook from "../server/routes/stripe-webhook.js";
@@ -50,6 +55,8 @@ const routes: Record<string, Handler> = {
   "billing/portal": portal,
   "chat/history": history,
   "chat/send": send,
+  "chat/stream": stream,
+  "chat/prefetch": prefetch,
   "chat/upload": upload,
   "chat/cancel": cancel,
   account,
@@ -59,6 +66,9 @@ const routes: Record<string, Handler> = {
   "chat/react": react,
   cron,
   drafts,
+  fixes,
+  plaid,
+  relay,
   files,
   "google/callback": googleCallback,
   "google/connect": googleConnect,

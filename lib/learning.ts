@@ -256,7 +256,7 @@ export function guessOutcome(report: string): Outcome {
 async function recordOutcome(t: Tenant, r: { sessionId: string; kind: string; request: string; outcome: Outcome; blocker?: string; steps: number; seconds: number; costCents: number }): Promise<void> {
   const domains = domainsIn(r.request);
   await q(
-    "insert into task_outcomes (user_id, session_id, kind, request, outcome, blocker, steps, seconds, cost_cents, domains) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    "insert into task_reflections (user_id, session_id, kind, request, outcome, blocker, steps, seconds, cost_cents, domains) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
     [t.id, r.sessionId, r.kind, r.request.slice(0, 1000), r.outcome, r.blocker?.slice(0, 300) ?? null, r.steps, Math.round(r.seconds), Number(r.costCents).toFixed(3), domains],
   ).catch(() => {});
   for (const d of domains) await noteSiteVisit(t, d, { ok: r.outcome === "success" });
@@ -288,7 +288,7 @@ export async function mergeSiteNote(t: Tenant, domain: string, n: { fastPath?: s
 export async function learningReport(t: Tenant, days = 7): Promise<string> {
   const rows = await q<{ outcome: string; n: string; secs: string; cost: string }>(
     `select outcome, count(*)::text as n, coalesce(avg(seconds),0)::text as secs, coalesce(sum(cost_cents),0)::text as cost
-       from task_outcomes where user_id = $1 and created_at > now() - ($2 || ' days')::interval group by outcome`,
+       from task_reflections where user_id = $1 and created_at > now() - ($2 || ' days')::interval group by outcome`,
     [t.id, String(days)],
   ).catch(() => [] as Array<{ outcome: string; n: string; secs: string; cost: string }>);
   if (!rows.length) return "";

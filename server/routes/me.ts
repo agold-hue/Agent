@@ -8,18 +8,22 @@ import { agentAddress, hasAccess, updateSettings, type TenantSettings } from "..
 
 const SETTABLE: Array<keyof TenantSettings> = [
   "owner_name",
+  "preferred_name",
   "quiet_hours",
   "batch_times",
   "weekly_review",
   "daily_review_hour",
   "auto_approve_max_usd",
   "auto_approve_types",
+  "auto_approve_rules",
   "family_emails",
   "cc_owner_on_outbound",
   "observe_forwarded_mail",
   "chat_session_max_age_hours",
   "ask_user_deadline_hours",
   "task_passphrase",
+  "country",
+  "city",
 ];
 
 /** GET -> the account, its settings and usage. POST { ...settings, name?, timezone? } -> update. */

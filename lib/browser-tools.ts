@@ -1,4 +1,5 @@
 import { chromium, type Browser, type Page } from "playwright-core";
+import { extractRows, fillForm, findTool, maybeAutoLogin, replayPath, resolveTarget, type FormField } from "./browser-extras.js";
 import { createBrowser, pageByTarget, reuseBrowser, targetIdOf, type BrowserHandle } from "./browser.js";
 import { detectCaptcha, handoverLine, solveCaptcha } from "./captcha.js";
 import { env } from "./env.js";
@@ -24,7 +25,7 @@ const ACTION_ELEMENTS = Number(process.env.ACTION_SNAPSHOT_ELEMENTS ?? 140);
  * site never sees a "new device"), and only opens a fresh one when none is running.
  */
 async function handleFor(t: Tenant, row: SessionRow): Promise<BrowserHandle> {
-  if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, memory, calendar and email, and tell the user browsing is not enabled.");
+  if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, fetch_page, memory, calendar and email, and tell the user browsing is not enabled.");
   const own = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
   if (own) return own;
   for (const id of await otherActiveBrowsers(row.user_id, row.id).catch(() => [] as string[])) {
@@ -199,7 +200,7 @@ export async function disconnectBrowser(sessionId: string): Promise<void> {
   await b?.close().catch(() => {});
 }
 
-async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser: Browser, handle: BrowserHandle) => Promise<T>): Promise<T> {
+export async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser: Browser, handle: BrowserHandle) => Promise<T>): Promise<T> {
   const handle = await handleFor(t, row);
   const run = async () => {
     const browser = await connect(handle);
@@ -223,7 +224,7 @@ async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser:
  * some sign-in dialogs render inside iframes; refs are numbered across every frame, so the agent
  * clicks them like anything else.
  */
-async function ref(page: Page, r: string) {
+export async function ref(page: Page, r: string) {
   const sel = `[data-agent-ref="${String(r).replace(/[^0-9]/g, "")}"]`;
   for (const frame of page.frames()) {
     const loc = frame.locator(sel).first();
@@ -307,7 +308,7 @@ function frameHost(url: string): string {
     return "embedded";
   }
 }
-const settle = async (page: Page, ms = 1000) => {
+export const settle = async (page: Page, ms = 1000) => {
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await page.waitForTimeout(ms);
 };
@@ -323,16 +324,54 @@ const COUNT_CONTROLS = `(() => { const v = (el) => { const r = el.getBoundingCli
  */
 export async function waitInteractive(page: Page, maxMs = Number(process.env.PAGE_SETTLE_MS ?? 8000)): Promise<void> {
   const start = Date.now();
-  await page.waitForLoadState("load", { timeout: Math.min(4000, maxMs) }).catch(() => {});
-  await page.waitForLoadState("networkidle", { timeout: Math.max(0, Math.min(2500, maxMs - (Date.now() - start))) }).catch(() => {});
+  await page.waitForLoadState("domcontentloaded", { timeout: Math.min(4000, maxMs) }).catch(() => {});
+  // Readiness, not a timer: the page is usable once its visible controls have appeared and stopped
+  // changing across two quick looks. A static page returns in a few hundred milliseconds; a
+  // single-page app that draws its form late is polled until it settles; the network-idle wait is
+  // only taken when nothing has appeared at all after a moment.
   let last = -1;
+  let stable = 0;
+  let idleWaited = false;
   while (Date.now() - start < maxMs) {
     const n = Number(await page.evaluate(COUNT_CONTROLS).catch(() => 0));
-    if (n > 0 && n === last) return;
+    if (n > 0 && n === last && ++stable >= 2) return;
+    if (n !== last) stable = 0;
     last = n;
-    await page.waitForTimeout(600);
+    if (n === 0 && !idleWaited && Date.now() - start > 1200) {
+      idleWaited = true;
+      await page.waitForLoadState("networkidle", { timeout: Math.max(0, Math.min(2500, maxMs - (Date.now() - start))) }).catch(() => {});
+      continue;
+    }
+    await page.waitForTimeout(150);
   }
 }
+
+/** How many messages the session had when a wait began; a longer list means the user sent something. */
+async function messageCount(sessionId: string): Promise<number> {
+  const { one } = await import("./db.js");
+  const r = await one<{ n: number }>("select jsonb_array_length(messages) as n from agent_sessions where id = $1", [sessionId]).catch(() => undefined);
+  return Number(r?.n ?? 0);
+}
+
+/**
+ * A wait that stops when the user sends something: a steer typed mid-task ("no, the Amex") used to
+ * sit behind a half-minute page wait. Polls the session's message count every couple of seconds.
+ */
+export async function interruptibleWait(row: SessionRow, limitMs: number, check: () => Promise<boolean>, stepMs = 700): Promise<"done" | "timeout" | "interrupted"> {
+  const start = Date.now();
+  const baseline = await messageCount(row.id);
+  let lastPoll = Date.now();
+  while (Date.now() - start < limitMs) {
+    if (await check()) return "done";
+    if (Date.now() - lastPoll > 2000) {
+      lastPoll = Date.now();
+      if ((await messageCount(row.id)) > baseline) return "interrupted";
+    }
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return "timeout";
+}
+export const INTERRUPTED = "(stopped waiting: the user just sent a message; read it above and continue)";
 
 /** Text of every frame, lowercased, for "wait until the page says X". */
 const lowerText = async (page: Page) => (await pageText(page).catch(() => "")).toLowerCase();
@@ -346,25 +385,44 @@ const SNAPSHOT_FN = `(max, offset) => {
   const sel = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="combobox"], [role="option"], [role="listbox"] li, [contenteditable="true"], summary, [onclick]';
   const els = Array.from(document.querySelectorAll(sel)).filter(isVisible);
   const lines = [];
+  const seen = new Map();
+  const busy = els.length > 60;
   let n = 0;
   for (const el of els) {
     if (n >= max) break;
-    n++;
-    const id = offset + n;
-    el.setAttribute("data-agent-ref", String(id));
     const e = el;
     const tag = el.tagName.toLowerCase();
     const role = el.getAttribute("role") || (tag === "a" ? "link" : tag === "input" ? "input:" + (e.type || "text") : tag);
+    const rawLabel = el.getAttribute("aria-label") || (e.labels && e.labels[0] && e.labels[0].innerText) || el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || (el.innerText || e.value || "");
+    const key = role + "|" + String(rawLabel).replace(/\s+/g, " ").trim().toLowerCase().slice(0, 60);
+    const count = (seen.get(key) || 0) + 1;
+    seen.set(key, count);
+    // Menu-heavy pages repeat the same control dozens of times (one "Add" per row, one icon link per
+    // card): the first three of a kind are listed, the rest counted. Unlabeled links on a busy page are noise.
+    if (count > 3) continue;
+    if (busy && role === "link" && !String(rawLabel).trim()) continue;
+    n++;
+    const id = offset + n;
+    el.setAttribute("data-agent-ref", String(id));
     const label = el.getAttribute("aria-label") || (e.labels && e.labels[0] && e.labels[0].innerText) || el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || (el.innerText || e.value || "").trim();
     const extra = [];
     if (tag === "input" && e.value && String(e.type) !== "password") extra.push('value="' + e.value.slice(0, 40) + '"');
     if (tag === "select") extra.push('selected="' + ((e.options && e.options[e.selectedIndex] && e.options[e.selectedIndex].text) || "") + '"');
     if (e.checked) extra.push("checked");
+    const ac = el.getAttribute("aria-checked"); if (ac && !e.checked) extra.push("checked=" + ac);
+    if (el.getAttribute("aria-selected") === "true" || el.getAttribute("aria-current")) extra.push("selected");
+    const ae = el.getAttribute("aria-expanded"); if (ae) extra.push("expanded=" + ae);
+    if (el.getAttribute("aria-pressed") === "true") extra.push("pressed");
+    if (e.required) extra.push("required");
     if (e.disabled) extra.push("disabled");
-    if (tag === "a" && e.href && !e.href.startsWith("javascript:")) extra.push(e.href.slice(0, 100));
-    lines.push(("[" + id + "] " + role + ' "' + String(label).replace(/\\s+/g, " ").slice(0, 80) + '" ' + extra.join(" ")).trim());
+    if (tag === "a" && e.href && !e.href.startsWith("javascript:")) { try { const u = new URL(e.href); extra.push((u.origin === location.origin ? u.pathname + u.search : e.href).slice(0, 60)); } catch { extra.push(e.href.slice(0, 60)); } }
+    lines.push(("[" + id + "] " + role + ' "' + String(label).replace(/\\s+/g, " ").slice(0, 60) + '" ' + extra.join(" ")).trim());
   }
+  for (const [k, c] of seen) if (c > 3) lines.push("(+" + (c - 3) + ' more ' + k.split("|")[0] + ' "' + k.split("|")[1] + '" like the ones above)');
   const headings = Array.from(document.querySelectorAll("h1, h2")).filter(isVisible).slice(0, 12).map((h) => "# " + h.innerText.trim().replace(/\\s+/g, " ").slice(0, 100));
+  // An open dialog blocks the page behind it; the model must deal with it first.
+  const dlg = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]')).filter(isVisible)[0];
+  if (dlg) { const name = dlg.getAttribute("aria-label") || (dlg.querySelector("h1, h2, h3") && dlg.querySelector("h1, h2, h3").innerText) || ""; headings.unshift("(a dialog is open" + (name ? ': "' + String(name).trim().slice(0, 80) + '"' : "") + "; controls behind it will not respond until it is closed)"); }
   return { title: document.title, url: location.href, headings, lines, total: els.length };
 }`;
 
@@ -398,19 +456,19 @@ export async function snapshot(page: Page, max = MAX_ELEMENTS): Promise<string> 
   if (total > max) out.push(`... ${total - max} more elements not shown; browser_snapshot lists up to ${MAX_ELEMENTS}, or scroll, or browser_text`);
   return out.join("\n");
 }
-/** Search results kept briefly per worker: the same query inside one task, or across parallel tasks, is free. */
-const searchCache = new Map<string, { at: number; text: string }>();
-const SEARCH_TTL_MS = Number(process.env.SEARCH_CACHE_MS ?? 5 * 60_000);
-
 /** The last full snapshot each session saw, so an action can return only what changed. */
 const lastSnapshots = new Map<string, { url: string; lines: string[] }>();
+/** Record the snapshot a session just saw, so the next action can return only what changed. */
+export function rememberSnapshot(sessionId: string, url: string, snap: string): void {
+  lastSnapshots.set(sessionId, { url, lines: snap.split("\n") });
+}
 
 /**
  * The snapshot that comes back with an action. Same page, mostly the same elements: only the lines
  * that changed or appeared are listed (refs are part of each line, so an unchanged line is still
  * clickable by the same number); a new page comes back whole. Halves tokens on long forms.
  */
-async function after(page: Page, sessionId: string): Promise<string> {
+export async function after(page: Page, sessionId: string): Promise<string> {
   const full = await snapshot(page, ACTION_ELEMENTS);
   const lines = full.split("\n");
   const url = page.url();
@@ -435,20 +493,27 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
   switch (name) {
     case "browser_open":
       return withPage(t, row, async (page, _b, h) => {
-        let note = "";
+        let extra = "";
         if (str("url")) {
           await page.goto(normalizeUrl(str("url")), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
-          note = await arrive(t, page);
+          extra = await arrive(t, page);
+          // A sign-in wall on a site whose login is in the vault: sign in now, in this same call.
+          const auto = await maybeAutoLogin(t, row, page, h);
+          if (auto) extra += `\n${auto.line}`;
+          const snap = await snapshot(page);
+          lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
+          extra += `\n\n${snap}`;
         }
-        return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}${note}` };
+        return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}${extra}` };
       });
     case "browser_goto":
-      return withPage(t, row, async (page) => {
+      return withPage(t, row, async (page, _b, h) => {
         await page.goto(normalizeUrl(str("url")), { waitUntil: "domcontentloaded", timeout: 45_000 });
         const note = await arrive(t, page);
+        const auto = await maybeAutoLogin(t, row, page, h);
         const snap = await snapshot(page);
         lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
-        return { text: `${await page.title()}\n${page.url()}${note}\n\n${snap}` };
+        return { text: `${await page.title()}\n${page.url()}${note}${auto ? `\n${auto.line}` : ""}\n\n${snap}` };
       });
     case "browser_snapshot":
       return withPage(t, row, async (page) => {
@@ -470,21 +535,30 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
           await waitInteractive(page, limit);
           return { text: `page settled after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
         }
-        while (Date.now() - start < limit) {
-          if ((await lowerText(page)).includes(want)) return { text: `"${str("text")}" is on the page after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
-          await page.waitForTimeout(700);
-        }
+        const outcome = await interruptibleWait(row, limit, async () => (await lowerText(page)).includes(want));
+        if (outcome === "done") return { text: `"${str("text")}" is on the page after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
+        if (outcome === "interrupted") return { text: `${INTERRUPTED}\n\n${await snapshot(page)}` };
         return { text: `"${str("text")}" did not appear within ${Math.round(limit / 1000)}s\n\n${await snapshot(page)}` };
       });
     case "browser_click":
-      return withPage(t, row, async (page) => {
-        await (await ref(page, str("ref"))).click({ timeout: 10_000 });
+      return withPage(t, row, async (page, _b, h) => {
+        const { loc, how } = await resolveTarget(page, a);
+        await loc.click({ timeout: 10_000 });
         await settle(page);
-        return { text: `clicked [${str("ref")}] -> ${page.url()}\n\n${await after(page, row.id)}` };
+        const auto = await maybeAutoLogin(t, row, page, h);
+        return { text: `clicked ${how} -> ${page.url()}${auto ? `\n${auto.line}` : ""}\n\n${await after(page, row.id)}` };
       });
+    case "browser_find":
+      return { text: await findTool(t, row, str("text")) };
+    case "browser_fill_form":
+      return { text: await fillForm(t, row, (Array.isArray(a.fields) ? a.fields : []) as FormField[], a.submit as string | boolean | undefined) };
+    case "browser_extract":
+      return { text: await extractRows(t, row, { scroll: !!a.scroll, maxRows: a.max_rows != null ? Number(a.max_rows) : undefined, ledgerDays: a.ledger_days != null ? Number(a.ledger_days) : undefined }) };
+    case "browser_run_path":
+      return { text: await replayPath(t, row, str("domain"), a.path ? str("path") : undefined) };
     case "browser_type":
       return withPage(t, row, async (page) => {
-        const loc = await ref(page, str("ref"));
+        const { loc, how } = await resolveTarget(page, a);
         await loc.click({ timeout: 10_000 });
         await loc.fill("").catch(() => {});
         await loc.type(str("text"), { delay: 15 });
@@ -495,15 +569,15 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         }
         // Address and search boxes answer typing with a suggestion list that must be clicked; show it.
         await page.waitForTimeout(800);
-        return { text: `typed into [${str("ref")}]\n\n${await after(page, row.id)}` };
+        return { text: `typed into ${how}\n\n${await after(page, row.id)}` };
       });
     case "browser_select":
       return withPage(t, row, async (page) => {
-        const loc = await ref(page, str("ref"));
+        const { loc, how } = await resolveTarget(page, a);
         await loc.selectOption({ label: str("value") }).catch(async () => {
           await loc.selectOption(str("value"));
         });
-        return { text: `selected "${str("value")}" in [${str("ref")}]` };
+        return { text: `selected "${str("value")}" in ${how}` };
       });
     case "browser_press":
       return withPage(t, row, async (page) => {
@@ -534,15 +608,21 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         const before = await grab();
         const start = Date.now();
         let after = before;
-        while (Date.now() - start < limit) {
-          await page.waitForTimeout(2000);
-          after = await grab();
-          if (after !== before) {
-            await page.waitForTimeout(1500);
+        const outcome = await interruptibleWait(
+          row,
+          limit,
+          async () => {
             after = await grab();
-            break;
-          }
+            return after !== before;
+          },
+          2000,
+        );
+        if (outcome === "done") {
+          await page.waitForTimeout(1500);
+          after = await grab();
         }
+        void start;
+        if (outcome === "interrupted") return { text: INTERRUPTED };
         if (after === before) return { text: `no change after ${Math.round(limit / 1000)}s` };
         const oldLines = new Set(before.split("\n"));
         const fresh = after.split("\n").filter((l) => l.trim() && !oldLines.has(l));
@@ -567,12 +647,8 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         await settle(page);
         return { text: `${page.url()}\n\n${await snapshot(page)}` };
       });
-    case "web_search": {
-      // The same question comes up across parallel tasks and across the steps of one task ("uber jfk
-      // fare", then "uber jfk fare estimate"). A short per-worker cache turns the repeat into a free,
-      // instant answer and leaves the tab where it was.
-      const cached = searchCache.get(str("query").trim().toLowerCase());
-      if (cached && Date.now() - cached.at < SEARCH_TTL_MS) return { text: cached.text };
+    case "web_search_browser":
+      // Last resort behind lib/search.ts, and only when this session already has a browser.
       return withPage(t, row, async (page) => {
         await page.goto(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(str("query"))}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
         await settle(page, 1000);
@@ -585,50 +661,8 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
               return `- ${(a as HTMLElement).innerText.trim()} | ${(a as HTMLAnchorElement).href}\n  ${snippet.slice(0, 200)}`;
             }),
         );
-        const text = results.length ? results.join("\n") : (await page.evaluate(() => document.body.innerText)).slice(0, 3000);
-        searchCache.set(str("query").trim().toLowerCase(), { at: Date.now(), text });
-        if (searchCache.size > 200) searchCache.delete(searchCache.keys().next().value!);
-        return { text };
-      });
-    }
-    case "browser_fill_form":
-      return withPage(t, row, async (page) => {
-        const fields = (a.fields as Array<{ ref?: string | number; label?: string; value?: string; check?: boolean; select?: string }>) ?? [];
-        if (!fields.length) return { text: "Pass fields: [{ref or label, value}]." };
-        const done: string[] = [];
-        const failed: string[] = [];
-        for (const f of fields) {
-          const where = f.ref != null ? String(f.ref) : (f.label ?? "");
-          try {
-            const loc = f.ref != null ? await ref(page, String(f.ref)) : await byLabel(page, String(f.label ?? ""));
-            if (!loc) {
-              failed.push(`${where}: not found`);
-              continue;
-            }
-            await loc.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => {});
-            if (f.select != null) await loc.selectOption({ label: f.select }).catch(async () => await loc.selectOption(f.select!));
-            else if (f.check != null) await (f.check ? loc.check({ timeout: 6000 }) : loc.uncheck({ timeout: 6000 }));
-            else {
-              await loc.click({ timeout: 6000 }).catch(() => {});
-              await loc.fill("").catch(() => {});
-              await loc.type(String(f.value ?? ""), { delay: 12 });
-            }
-            done.push(where);
-          } catch (err) {
-            failed.push(`${where}: ${(err instanceof Error ? err.message : String(err)).split("\n")[0].slice(0, 80)}`);
-          }
-        }
-        let submitted = "";
-        if (a.submit) {
-          const loc = typeof a.submit === "string" || typeof a.submit === "number" ? await ref(page, String(a.submit)) : await submitButton(page);
-          if (loc) {
-            await loc.click({ timeout: 10_000 }).catch(() => {});
-            await settle(page, 1500);
-            submitted = `\nsubmitted -> ${page.url()}`;
-          } else submitted = "\n(no submit button found; click it yourself)";
-        }
-        const wall = a.submit ? await arrive(t, page, { maxMs: 6000 }) : "";
-        return { text: `filled ${done.length}/${fields.length}${failed.length ? `; failed: ${failed.join("; ")}` : ""}${submitted}${wall}\n\n${await after(page, row.id)}` };
+        if (!results.length) throw new Error("the browser search page showed no result links (blocked or empty)");
+        return { text: results.join("\n") };
       });
     case "browser_click_text":
       return withPage(t, row, async (page) => {
@@ -638,16 +672,6 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         await loc.click({ timeout: 10_000 });
         await settle(page);
         return { text: `clicked "${str("text")}" -> ${page.url()}\n\n${await after(page, row.id)}` };
-      });
-    case "browser_find":
-      return withPage(t, row, async (page) => {
-        const needle = str("what").toLowerCase().trim();
-        const snap = await snapshot(page);
-        const hits = snap.split("\n").filter((l) => /^\[\d+\]/.test(l) && l.toLowerCase().includes(needle));
-        lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
-        if (hits.length) return { text: hits.slice(0, 25).join("\n") };
-        const text = (await pageText(page)).toLowerCase();
-        return { text: text.includes(needle) ? `No control says "${str("what")}", but the page text mentions it. Read it with browser_text.` : `Nothing on this page matches "${str("what")}". Scroll, or check you are on the right page.` };
       });
     case "browser_upload":
       return withPage(t, row, async (page) => {

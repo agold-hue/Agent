@@ -3,6 +3,7 @@
  * providers), DeepSeek, Google's Gemini OpenAI endpoint, OpenAI, or Anthropic through OpenRouter.
  * No SDK; plain fetch.
  */
+import { isPoor } from "./model-history.js";
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
@@ -13,7 +14,7 @@ export interface ToolCall {
 }
 
 export type CacheControl = { type: "ephemeral" };
-export type ContentPart = { type: "text"; text: string; cache_control?: CacheControl } | { type: "image_url"; image_url: { url: string } };
+export type ContentPart = { type: "text"; text: string; cache_control?: CacheControl } | { type: "image_url"; image_url: { url: string } } | { type: "file"; file: { filename: string; file_data: string } };
 
 export interface ChatMessage {
   role: Role;
@@ -29,6 +30,14 @@ export interface ChatMessage {
   at?: string;
   /** The earlier bubble this message replies to (UI-only; the model gets the quote as a "Re:" line in the text). */
   quote?: MessageQuote;
+  /** What the model call that produced this assistant message cost, in cents (fractional). Never sent to the provider. */
+  cost?: number;
+  /** A draft reply the host sent back to the model (an offer, an unverified figure, a missing site note): the model still sees it, the chat page never shows it. */
+  superseded?: boolean;
+  /** A stable per-customer context block (facts, notes) that gets its own prompt-cache breakpoint. Working-copy only. */
+  cacheBoundary?: boolean;
+  /** Screenshot previews attached to this message's tool calls (checkpoint approvals), by call id -> receipt id. */
+  previews?: Record<string, string>;
 }
 
 export interface MessageQuote {
@@ -63,6 +72,36 @@ export interface Completion {
   usage: Usage;
   model: string;
   finish_reason: string;
+  /** The upstream provider that served the call (OpenRouter reports it). */
+  provider?: string;
+  /** Milliseconds to the first streamed token. */
+  ttft_ms?: number;
+}
+
+// ---------------- provider pinning: the provider with the best first-token time for each model, from our own telemetry
+let ranking = new Map<string, string[]>();
+let rankingAt = 0;
+const RANKING_TTL = 10 * 60_000;
+/** Refresh the per-model provider order from usage_events (p50 first-token time over 7 days, 10+ calls); never blocks a call. */
+export async function refreshProviderRanking(): Promise<void> {
+  if ((process.env.LLM_PROVIDER_PINNING ?? "on") === "off") return;
+  rankingAt = Date.now();
+  try {
+    const { q } = await import("./db.js");
+    const rows = await q<{ model: string; provider: string; p50: string }>(
+      "select model, provider, percentile_cont(0.5) within group (order by ttft_ms)::text as p50 from usage_events where created_at > now() - interval '7 days' and ttft_ms is not null and provider is not null group by model, provider having count(*) >= 10 order by model, 3",
+    );
+    const next = new Map<string, string[]>();
+    for (const r of rows) next.set(r.model, [...(next.get(r.model) ?? []), r.provider]);
+    ranking = next;
+  } catch {
+    /* telemetry is optional */
+  }
+}
+export function providerOrderFor(model: string): string[] | undefined {
+  if (Date.now() - rankingAt > RANKING_TTL) void refreshProviderRanking();
+  const order = ranking.get(model);
+  return order && order.length > 1 ? order.slice(0, 3) : undefined;
 }
 
 /**
@@ -94,6 +133,15 @@ export const GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1be
  * LLM_API_KEY, or an LLM_BASE_URL pointing at Google. With both keys set, OpenRouter is the default
  * because it fronts every model and normalizes tool schemas.
  */
+/** Whether this model id is served through OpenRouter (whose PDF parser plugin the OCR path uses). */
+export function providerIsOpenRouter(model: string): boolean {
+  try {
+    return resolveModel(modelList(model)[0] ?? model).provider.baseUrl.includes("openrouter.ai");
+  } catch {
+    return false;
+  }
+}
+
 export function geminiDirect(): boolean {
   if (process.env.LLM_PROVIDER === "gemini") return !!process.env.GEMINI_API_KEY;
   if (process.env.LLM_PROVIDER === "openrouter") return false;
@@ -162,6 +210,9 @@ export function withCacheMarkers(messages: ChatMessage[], level: "full" | "syste
     }
   };
   if (out[0]?.role === "system") mark(out[0]);
+  // The per-customer context block sits right after the shared prompt: its own breakpoint means a
+  // customer's facts changing never invalidates the prompt every customer shares.
+  if (out[1]?.cacheBoundary && out[1].content) mark(out[1]);
   if (level === "full") {
     for (let i = out.length - 1; i > 0; i--) {
       if ((out[i].role === "user" || out[i].role === "tool") && out[i].content) {
@@ -211,9 +262,15 @@ export async function complete(opts: {
   toolChoice?: "auto" | "none";
   /** Called with the reply text so far as it streams, so the page can show it before the completion ends. */
   onText?: (text: string) => void;
+  /** Called with each tool call as soon as its JSON is complete in the stream (the next call has started, or the stream ended), so read-only work can begin before the completion returns. */
+  onToolCall?: (call: ToolCall) => void;
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  /** Provider plugins (OpenRouter's file-parser for PDFs); passed through as-is. */
+  plugins?: unknown[];
+  /** Reasoning effort for thinking models (OpenRouter's unified parameter): "none" turns it off. Omitted = the model's default. */
+  reasoning?: "none" | "low" | "medium" | "high";
 }): Promise<Completion> {
   let ids = modelList(opts.model);
   let { provider, model } = resolveModel(ids[0] ?? opts.model);
@@ -246,6 +303,9 @@ export async function complete(opts: {
     temperature: opts.temperature ?? 0.2,
     max_tokens: opts.maxTokens ?? 4000,
   };
+  if (opts.plugins?.length) body.plugins = opts.plugins;
+  // Thinking tokens are billed as output at the top rate: the caller says how much thinking a turn deserves.
+  if (opts.reasoning && isOpenRouter()) body.reasoning = opts.reasoning === "none" ? { enabled: false } : { effort: opts.reasoning };
   if (opts.tools?.length) {
     body.tools = provider.baseUrl.includes("generativelanguage.googleapis.com") ? (geminiSafeSchema(opts.tools) as ToolDef[]) : opts.tools;
     body.tool_choice = opts.toolChoice ?? "auto";
@@ -255,6 +315,9 @@ export async function complete(opts: {
   if (isOpenRouter()) {
     // Cheapest (or fastest, LLM_SORT) healthy provider for the chosen model; fall back to others if it fails.
     body.provider = { sort: providerSort(), allow_fallbacks: true };
+    // Our own measurements beat the platform's sort: the providers that answered this model fastest, first.
+    const order = providerOrderFor(model);
+    if (order) (body.provider as Record<string, unknown>).order = order;
     body.usage = { include: true };
     // The model list is OpenRouter's fallback chain: the next model answers when the first is down,
     // rate-limited, or rejects the request. OpenRouter caps this array at OPENROUTER_MODELS_CAP, so
@@ -337,6 +400,13 @@ export async function complete(opts: {
         attempt--;
         continue;
       }
+      // A model or provider that rejects the reasoning setting gets the same request without it.
+      if (res.status === 400 && body.reasoning && /reasoning|thinking/i.test(text)) {
+        console.error(`[llm] ${model}: reasoning setting rejected, retrying without it`);
+        delete body.reasoning;
+        attempt--;
+        continue;
+      }
       // A provider that rejects cache markers gets the same request with fewer of them, then none.
       if (res.status === 400 && cacheLevel !== "none" && /cache_control|content|invalid/i.test(text)) {
         cacheLevel = cacheLevel === "full" ? "system" : "none";
@@ -347,16 +417,36 @@ export async function complete(opts: {
       console.error(`[llm] ${model}: ${res.status} ${text.slice(0, 300)}`);
       throw new LLMError(`${res.status} ${text}`.slice(0, 1000), res.status, false);
     }
-    const data = opts.onText
-      ? await readStream(res, opts.onText).catch((e: unknown) => {
-          throw new LLMError(`stream failed: ${e instanceof Error ? e.message : String(e)}`, 200, true);
-        })
-      : ((await res.json()) as StreamedResult);
+    let data: StreamedResult;
+    if (opts.onText) {
+      try {
+        data = await readStream(res, opts.onText, { onToolCall: opts.onToolCall, firstTokenMs: Number(process.env.LLM_FIRST_TOKEN_MS ?? 10_000) });
+      } catch (e) {
+        if (e instanceof FirstTokenTimeout) {
+          // The provider accepted the request but has not started answering: a slow or wedged upstream.
+          // Move to the next model in the chain (or retry this one) instead of waiting out the full timeout.
+          console.error(`[llm] ${model}: no first token within ${e.ms}ms${ids.length > 1 ? `; moving to ${resolveModel(ids[1]).model}` : ""}`);
+          if (ids.length > 1) {
+            ids = ids.slice(1);
+            model = resolveModel(ids[0]).model;
+            body.model = model;
+            if (isOpenRouter()) {
+              if (ids.length > 1) body.models = capModels(ids.map((id) => resolveModel(id).model));
+              else delete body.models;
+            }
+            attempt--;
+          }
+          lastErr = new LLMError(`no first token within ${e.ms}ms`, undefined, true);
+          continue;
+        }
+        throw new LLMError(`stream failed: ${e instanceof Error ? e.message : String(e)}`, 200, true);
+      }
+    } else data = (await res.json()) as StreamedResult;
     if (data.error) throw new LLMError(data.error.message ?? "provider error", 200, false);
     const choice = data.choices?.[0];
     if (!choice) throw new LLMError("empty completion", 200, true);
     const msg = choice.message;
-    console.log(`[llm] ${data.model ?? model}: ${((Date.now() - started) / 1000).toFixed(1)}s in=${data.usage?.prompt_tokens ?? "?"} cached=${data.usage?.prompt_tokens_details?.cached_tokens ?? 0} out=${data.usage?.completion_tokens ?? "?"}${typeof data.usage?.cost === "number" ? ` $${data.usage.cost.toFixed(4)}` : ""}`);
+    console.log(`[llm] ${data.model ?? model}: ${((Date.now() - started) / 1000).toFixed(1)}s${data.ttft_ms != null ? ` ttft=${(data.ttft_ms / 1000).toFixed(1)}s` : ""}${data.provider ? ` via ${data.provider}` : ""}${data.model && data.model !== model ? ` (fallback from ${model})` : ""} in=${data.usage?.prompt_tokens ?? "?"} cached=${data.usage?.prompt_tokens_details?.cached_tokens ?? 0} out=${data.usage?.completion_tokens ?? "?"}${typeof data.usage?.cost === "number" ? ` $${data.usage.cost.toFixed(4)}` : ""}`);
     // Some providers return tool_calls with arguments as objects; normalize to strings.
     for (const tc of msg.tool_calls ?? []) {
       if (typeof (tc.function as { arguments: unknown }).arguments !== "string") tc.function.arguments = JSON.stringify(tc.function.arguments);
@@ -364,6 +454,8 @@ export async function complete(opts: {
       tc.type = "function";
     }
     return {
+      provider: data.provider,
+      ttft_ms: data.ttft_ms,
       message: { role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls?.length ? msg.tool_calls : undefined },
       usage: {
         prompt_tokens: data.usage?.prompt_tokens ?? 0,
@@ -380,30 +472,67 @@ export async function complete(opts: {
 
 type StreamedResult = {
   model?: string;
+  provider?: string;
+  ttft_ms?: number;
   choices?: Array<{ message: ChatMessage; finish_reason?: string }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number; prompt_tokens_details?: { cached_tokens?: number }; cache_read_input_tokens?: number };
   error?: { message?: string };
 };
 
+/** The provider accepted the request but sent nothing within the first-token window. */
+export class FirstTokenTimeout extends Error {
+  constructor(public ms: number) {
+    super(`no first token within ${ms}ms`);
+  }
+}
+
 /**
  * Assemble a streamed chat completion (SSE "data:" chunks) into the same shape as a plain one,
- * calling `onText` with the reply so far as text arrives. Tool-call fragments are merged by index.
+ * calling `onText` with the reply so far as text arrives. Tool-call fragments are merged by index;
+ * a call is handed to `onToolCall` the moment it is complete (the next call starts, the choice
+ * finishes, or the stream ends), so the loop can start read-only work while the model is still talking.
  */
-export async function readStream(res: Response, onText: (text: string) => void): Promise<StreamedResult> {
+export async function readStream(res: Response, onText: (text: string) => void, opts: { onToolCall?: (call: ToolCall) => void; firstTokenMs?: number } = {}): Promise<StreamedResult> {
   const reader = res.body?.getReader();
   if (!reader) throw new Error("no body");
+  const emitted = new Set<number>();
+  const emitReady = (upTo: number) => {
+    if (!opts.onToolCall) return;
+    for (let i = 0; i < upTo && i < calls.length; i++) {
+      const c = calls[i];
+      if (!c || emitted.has(i) || !c.function.name) continue;
+      try {
+        JSON.parse(c.function.arguments || "{}");
+      } catch {
+        continue;
+      }
+      emitted.add(i);
+      try {
+        opts.onToolCall({ id: c.id, type: "function", function: { name: c.function.name, arguments: c.function.arguments } });
+      } catch {
+        /* the caller's problem */
+      }
+    }
+  };
   const decoder = new TextDecoder();
   let buf = "";
   let text = "";
   let model: string | undefined;
+  let provider: string | undefined;
+  let ttft: number | undefined;
+  const started = Date.now();
   let finish: string | undefined;
+  let sawDone = false;
   let usage: StreamedResult["usage"];
   let error: string | undefined;
   const calls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
   let lastEmit = 0;
+  /** Something real has arrived (a token, a finish, an error): the upstream is answering. */
+  let begun = false;
   const handle = (line: string) => {
     if (!line.startsWith("data:")) return;
     const payload = line.slice(5).trim();
+    if (payload === "[DONE]") sawDone = true;
     if (!payload || payload === "[DONE]") return;
     let j: { model?: string; choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>; usage?: StreamedResult["usage"]; error?: { message?: string } };
     try {
@@ -413,10 +542,20 @@ export async function readStream(res: Response, onText: (text: string) => void):
     }
     if (j.error?.message) error = j.error.message;
     if (j.model) model = j.model;
+    if ((j as { provider?: string }).provider) provider = (j as { provider?: string }).provider;
+    // The first token: content, reasoning (a thinking model starts there) or a tool call. A role-only
+    // opening delta is not one, and neither is OpenRouter's ": OPENROUTER PROCESSING" keepalive,
+    // which arrives at once while the upstream may still be wedged.
+    const d = j.choices?.[0]?.delta as { content?: string | null; reasoning?: string | null; reasoning_details?: unknown[]; tool_calls?: unknown[] } | undefined;
+    if (ttft === undefined && (d?.content || d?.reasoning || d?.reasoning_details?.length || d?.tool_calls?.length)) ttft = Date.now() - started;
+    if (ttft !== undefined || j.choices?.[0]?.finish_reason || j.error || j.usage) begun = true;
     if (j.usage) usage = j.usage;
     const c = j.choices?.[0];
     if (!c) return;
-    if (c.finish_reason) finish = c.finish_reason;
+    if (c.finish_reason) {
+      finish = c.finish_reason;
+      emitReady(calls.length);
+    }
     if (typeof c.delta?.content === "string" && c.delta.content) {
       text += c.delta.content;
       if (Date.now() - lastEmit > 400) {
@@ -426,14 +565,35 @@ export async function readStream(res: Response, onText: (text: string) => void):
     }
     for (const tc of c.delta?.tool_calls ?? []) {
       const i = tc.index ?? calls.length;
+      if (!calls[i]) emitReady(i); // a new call begins: every earlier one is complete
       calls[i] ??= { id: tc.id ?? `call_${Math.random().toString(36).slice(2, 10)}`, type: "function", function: { name: "", arguments: "" } };
       if (tc.id) calls[i].id = tc.id;
       if (tc.function?.name) calls[i].function.name += tc.function.name;
       if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
     }
   };
+  // No token within the window, counted from the start of the stream: the upstream is wedged (it
+  // accepted the request, OpenRouter is sending keepalives, nothing is being generated) and the
+  // caller fails over to the next model. Before, only the first chunk was timed, and the keepalive
+  // that arrives at once satisfied it, so a hung provider ran to the provider's own timeout.
+  const deadline = opts.firstTokenMs && opts.firstTokenMs > 0 ? started + opts.firstTokenMs : undefined;
   for (;;) {
-    const { value, done } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    if (deadline && !begun) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new FirstTokenTimeout(opts.firstTokenMs!)), Math.max(0, deadline - Date.now()));
+      });
+      try {
+        chunk = await Promise.race([reader.read(), timeout]);
+      } catch (e) {
+        await reader.cancel().catch(() => {});
+        throw e;
+      } finally {
+        clearTimeout(timer);
+      }
+    } else chunk = await reader.read();
+    const { value, done } = chunk;
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     let nl: number;
@@ -445,8 +605,10 @@ export async function readStream(res: Response, onText: (text: string) => void):
   if (buf.trim()) handle(buf.trim());
   if (error) return { error: { message: error } };
   if (text) onText(text);
+  emitReady(calls.length);
   const tool_calls = calls.filter(Boolean);
-  return { model, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? "stop" }] };
+  // No finish reason and no [DONE]: the provider dropped the stream mid-reply. The loop asks for the reply again.
+  return { model, provider, ttft_ms: ttft, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? (sawDone ? "stop" : "cut") }] };
 }
 
 // ---------------------------------------------------------------- Model catalog
@@ -522,6 +684,7 @@ export function withFallbacks(configured: string[], models: CatalogModel[], max 
   const candidates = models.filter(
     (m) =>
       !configured.includes(m.id) &&
+      !isPoor(m.id) &&
       m.tools &&
       (!vision || m.vision) &&
       FALLBACK_VENDORS.includes(vendorOf(m.id)) &&
@@ -561,11 +724,22 @@ const DEFAULT_PRICES: Record<string, { in: number; out: number }> = {
   "deepseek/deepseek-chat": { in: 0.3, out: 1.2 },
   "deepseek/deepseek-flash": { in: 0.3, out: 1.2 },
   "deepseek/deepseek-v4-pro": { in: 1.32, out: 3.96 },
+  "deepseek/deepseek-v4-flash": { in: 0.09, out: 0.18 },
+  "deepseek/deepseek-v4.1-flash": { in: 0.3, out: 1.2 },
   "google/gemini-2.5-flash-lite": { in: 0.1, out: 0.4 },
   "google/gemini-2.5-flash": { in: 0.3, out: 2.5 },
   "google/gemini-2.5-pro": { in: 1.25, out: 10 },
   "google/gemini-3.1-flash-lite": { in: 0.25, out: 1.5 },
+  "google/gemini-3.5-flash-lite": { in: 0.3, out: 2.5 },
   "google/gemini-3.8-flash": { in: 0.75, out: 3.75 },
+  "openai/gpt-5.6-luna": { in: 0.2, out: 1.2 },
+  "qwen/qwen3.7-flash": { in: 0.03, out: 0.13 },
+  "qwen/qwen3.8-flash": { in: 0.15, out: 0.47 },
+  "z-ai/glm-5.3-flash": { in: 0.09, out: 0.3 },
+  "x-ai/grok-4.3": { in: 1.25, out: 2.5 },
+  "minimax/minimax-m3": { in: 0.3, out: 1.2 },
+  "moonshotai/kimi-k2.6": { in: 0.95, out: 4 },
+  "mistralai/mistral-small-2603": { in: 0.15, out: 0.6 },
   "anthropic/claude-haiku-4.5": { in: 1, out: 5 },
   "anthropic/claude-sonnet-5": { in: 2, out: 10 },
   "anthropic/claude-opus-5": { in: 5, out: 25 },
@@ -592,7 +766,8 @@ export function priceFor(modelId: string): { in: number; out: number } {
 function cacheDiscount(model: string): number {
   const m = model.toLowerCase();
   if (/claude|anthropic|deepseek/.test(m)) return 0.1;
-  if (/gemini|google/.test(m)) return 0.25;
+  if (/gemini-2\./.test(m)) return 0.25;
+  if (/gemini|google/.test(m)) return 0.1; // Gemini 3.x bills cached input at a tenth, like Claude
   if (/gpt|openai/.test(m)) return 0.5;
   return 1;
 }
@@ -615,7 +790,7 @@ function resolveModelName(modelId: string): string {
 export function supportsVision(model: string): boolean {
   const primary = modelList(model)[0] ?? model;
   if (liveVision.has(primary) || liveVision.has(resolveModelName(primary))) return true;
-  const list = (process.env.VISION_MODELS ?? "gemini,gpt-4o,gpt-5,claude,qwen-vl,pixtral,llama-4").split(",").map((s) => s.trim().toLowerCase());
+  const list = (process.env.VISION_MODELS ?? "gemini,gpt-4o,gpt-5,claude,qwen-vl,qwen3.,pixtral,llama-4,deepseek-v4.1,glm-5.3-flash,glm-5v,minimax-m3,kimi-k2.,grok-4.").split(",").map((s) => s.trim().toLowerCase());
   return list.some((s) => s && primary.toLowerCase().includes(s));
 }
 

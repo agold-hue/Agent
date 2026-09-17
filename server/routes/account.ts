@@ -22,12 +22,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       q("select domain, username, notes, updated_at from credentials where user_id = $1 order by domain", [t.id]),
       q("select id, filename, mime_type, bytes, created_at from agent_files where user_id = $1 order by created_at", [t.id]),
       q("select scope, topic, lesson, keywords, uses, wins, losses, confidence, created_at from lessons where user_id = $1 order by updated_at desc", [t.id]),
-      q("select kind, request, outcome, blocker, steps, seconds, cost_cents, domains, created_at from task_outcomes where user_id = $1 order by created_at", [t.id]),
+      q("select kind, request, outcome, blocker, steps, seconds, cost_cents, domains, created_at from task_reflections where user_id = $1 order by created_at", [t.id]),
     ]);
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", `attachment; filename="secretary-export-${new Date().toISOString().slice(0, 10)}.json"`);
     res.setHeader("Cache-Control", "no-store");
-    return res.status(200).send(JSON.stringify({ exported_at: new Date().toISOString(), account: { email: t.email, name: t.name, timezone: t.timezone, settings: t.settings }, memories, sessions, items, receipts, wins, followups, standing_orders: orders, logins, files, lessons, task_outcomes: outcomes }, null, 2));
+    return res.status(200).send(JSON.stringify({ exported_at: new Date().toISOString(), account: { email: t.email, name: t.name, timezone: t.timezone, settings: t.settings }, memories, sessions, items, receipts, wins, followups, standing_orders: orders, logins, files, lessons, task_reflections: outcomes }, null, 2));
   }
   if (req.method === "POST") {
     const confirm = String((req.body as { confirm?: unknown })?.confirm ?? "").trim().toLowerCase();

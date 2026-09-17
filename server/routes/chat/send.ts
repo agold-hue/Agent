@@ -1,14 +1,31 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
-import { currentChatSession, isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, PARALLEL_TASKS, startChatSession, startTaskSession, withQuote } from "../../../lib/chat.js";
+import { ASIDE_LIMIT, currentChatSession, isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, PARALLEL_TASKS, startAsideSession, startChatSession, startTaskSession, STATUS_PING, statusLine, wantsSideReply, withQuote } from "../../../lib/chat.js";
 import type { MessageQuote } from "../../../lib/llm.js";
 import { appendTranscript } from "../../../lib/memory.js";
+import { loadModelHistory } from "../../../lib/model-history.js";
 import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
-import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
-import { reactionFor } from "../../../lib/reaction.js";
+import { chatSessionExhausted, kick, runSession } from "../../../lib/runtime.js";
+import { isPleasantryCloser, reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
-import { isQuickQuestion, modelFor, tierFor, tierOfModel, upgradedModel } from "../../../lib/router.js";
-import { activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
+import { isLookupQuestion, isQuickQuestion, reroutedModel, tierFor } from "../../../lib/router.js";
+import { trackedAnswer } from "../../../lib/quick-answers.js";
+import { activeAsideSessions, activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
+
+/** How long a quick question or side reply may run inside the send request before a worker takes over. */
+const INLINE_MS = Number(process.env.INLINE_REPLY_MS ?? 25_000);
+
+/** A worker that just finished a reply on this thread is still there, holding the lease, and picks the new message up itself. */
+async function warmWorkerHolds(sessionId: string): Promise<boolean> {
+  const { one } = await import("../../../lib/db.js");
+  const r = await one<{ warm: boolean }>("select (lease_until is not null and lease_until > now() + interval '3 seconds') as warm from agent_sessions where id = $1", [sessionId]).catch(() => undefined);
+  return !!r?.warm;
+}
+
+/** "Completely off", "not true", "that's wrong", "way more than that": the user disputes the last figure. */
+const DISPUTES = /\b(completely off|way off|not true|that'?s (wrong|not right|way off)|wrong|no way|doesn'?t sound right|can'?t be right|that can'?t be|impossible|nonsense|come on|are you (sure|serious|crazy)|i spent (way |a lot |much )?(more|over)|(more|over) than that|much (more|higher|lower))\b/i;
+/** The host's note behind a disputed figure: never repeat it; go to the full source. */
+const DISPUTE_NOTE = "(The user says your last figure is wrong. Do not repeat it and do not defend it. First say in one line exactly what you read and where (which page, which date range), then read the full source before answering again: every page of the whole period, not a summary or a recent-activity view (for Amazon, the year's order history page by page with browser_extract, adding gift-card and refund lines). If the full read is long, say so in one line with tell_user and do it. Reply only with the new figure and how you got it.)";
 
 /** The host's note behind a message that lands while the session is mid-task. */
 const MID_TASK_NOTE = "(That message arrived while you are mid-task. If it changes the task, apply it. If it needs an answer, answer it with tell_user in one line. Then continue the task; a text reply now would end it.)";
@@ -22,7 +39,7 @@ import type { Tenant } from "../../../lib/tenant.js";
  * tool result), and anything else they say while a code is pending ("didn't get one, resend it")
  * shows as is.
  */
-async function echoAnswer(session: SessionRow, text: string, reaction: string, quote?: MessageQuote): Promise<void> {
+async function echoAnswer(session: SessionRow, text: string, reaction: string | undefined, quote?: MessageQuote): Promise<void> {
   const awaitingCode = session.messages.some((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === session.pending_event_id && c.function.name === "request_code"));
   const shown = awaitingCode && codeIn(text) ? text.replace(/\d(?:[\d\s-]*\d)?/g, (d) => "•".repeat(d.replace(/\D/g, "").length)) : text;
   await appendUserEcho(session, shown, reaction, quote);
@@ -37,31 +54,40 @@ function quoteOf(body: unknown): MessageQuote | undefined {
 
 /**
  * Where a message goes. In order: the session whose bubble it replies to; the one session waiting on
- * the user, when the message reads like an answer; a task of its own when the thread is busy and the
- * message is a fresh request (or says so); otherwise the chat thread.
+ * the user, when the message reads like an answer; a side reply when the thread is busy and the
+ * message is a question or a greeting (answered alongside, at once, as a plain reply); a task of its
+ * own when the thread is busy and the message is a fresh request (or says so); otherwise the chat
+ * thread, where a steer sent mid-task is applied to the running work.
  */
-async function route(t: Tenant, main: SessionRow | undefined, text: string, quote: MessageQuote | undefined): Promise<{ target: SessionRow | undefined; spawn: boolean; text: string }> {
+async function route(t: Tenant, main: SessionRow | undefined, text: string, quote: MessageQuote | undefined): Promise<{ target: SessionRow | undefined; spawn: "task" | "aside" | "status" | null; text: string }> {
   const tasks = await activeTaskSessions(t.id);
   if (quote) {
     // Bubble ids are "<session>-<index>", cards "<session>-<index>t<call>".
     const id = quote.id.replace(/-\d+(t[\w-]*)?$/, "");
     const quoted = id === main?.id ? main : (tasks.find((s) => s.id === id) ?? (await ownSession(t.id, id)));
     // A reply to a task's bubble, or to any session's waiting card, goes to that session and never spawns.
-    if (quoted && quoted.status !== "terminated" && (quoted.kind === "task" || quoted.pending_kind)) return { target: quoted, spawn: false, text };
+    if (quoted && quoted.status !== "terminated" && (quoted.kind === "task" || quoted.pending_kind)) return { target: quoted, spawn: null, text };
   }
   const waiting = [main, ...tasks].filter((s): s is SessionRow => !!s?.pending_kind);
-  if (waiting.length === 1 && looksLikeAnswer(text)) return { target: waiting[0], spawn: false, text };
+  if (waiting.length === 1 && looksLikeAnswer(text)) return { target: waiting[0], spawn: null, text };
   // A code never starts a task: it belongs to whatever is signing in (the thread, when nothing waits).
-  if (codeIn(text)) return { target: main, spawn: false, text };
+  if (codeIn(text)) return { target: main, spawn: null, text };
   const explicit = PARALLEL_PREFIX.test(text);
   const busy = !!main && (main.status === "running" || !!main.pending_kind);
-  // While the thread works, a greeting or status question is answered alongside at once (its own
-  // small session on the fast model) instead of waiting for the task to reach it.
-  if (main && busy && !quote && isQuickQuestion(text) && tasks.length < PARALLEL_TASKS) return { target: main, spawn: true, text };
-  if (main && (explicit || (busy && isSeparateTask(text, quote))) && tasks.length < PARALLEL_TASKS) {
-    return { target: main, spawn: true, text: text.replace(PARALLEL_PREFIX, "") };
+  // A reply to one of the agent's own bubbles ("Are you crazy?", "tell me more about that") is a
+  // question about it, answered as a reply; a reply to the user's own earlier message is a steer of
+  // the work it started. Only the steer is handed to the running task.
+  const steer = quote?.who === "user" ? quote : undefined;
+  // A bare "?" or "status" while the thread works: the host answers from the thread's progress, no model.
+  if (main && busy && !quote && STATUS_PING.test(text.trim())) return { target: main, spawn: "status", text };
+  // While the thread works, a greeting, a thank-you or a question ("any luck?", "did you use the
+  // Amex?", "do you have my address?") is answered alongside at once, as a plain reply in the chat,
+  // from the thread's own progress; the running task is never interrupted and never has to notice.
+  if (main && busy && !explicit && wantsSideReply(text, steer) && (await activeAsideSessions(t.id).catch(() => [])).length < ASIDE_LIMIT) return { target: main, spawn: "aside", text };
+  if (main && (explicit || (busy && isSeparateTask(text, steer))) && tasks.length < PARALLEL_TASKS) {
+    return { target: main, spawn: "task", text: text.replace(PARALLEL_PREFIX, "") };
   }
-  return { target: main, spawn: false, text: text.replace(PARALLEL_PREFIX, "") };
+  return { target: main, spawn: null, text: text.replace(PARALLEL_PREFIX, "") };
 }
 
 /** POST { text, reply_to? } -> { session_id, action }. Sends into the right session (or starts one) and kicks the worker. */
@@ -87,6 +113,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .slice(-9)
       .map((m) => m.reaction!);
     const reaction = reactionFor(text, recentReactions);
+    // "What's due", "where's my package", "when is the Con Ed bill due": answered from what the host
+    // tracks, when it has it, in one line and no model call. The user can ask for a live check.
+    if (!routed.spawn && !quote && !session?.pending_kind) {
+      const tracked = await trackedAnswer(t, text).catch(() => undefined);
+      if (tracked) {
+        if (!session) {
+          session = await startChatSession(t, forModel, undefined, reaction, quote);
+          await updateSession(session.id, { status: "idle", draft: null });
+          await appendAssistantMessage(session, tracked, false);
+        } else if (session.status === "running") {
+          await appendUserEcho(session, text, reaction, quote);
+          await appendAssistantMessage(session, tracked, true);
+        } else {
+          await appendUserMessage(session, stampMessage(t, forModel, "chat"), undefined, reaction, quote);
+          await appendAssistantMessage(session, tracked, false);
+          await updateSession(session.id, { status: "idle", draft: null });
+        }
+        await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
+        await appendTranscript(t, { channel: "chat", role: "agent", text: tracked }).catch(() => {});
+        return res.status(200).json({ session_id: session.id, action: "tracked", reaction, status: session.status === "running" ? "running" : "idle" });
+      }
+    }
+    // A pure "thanks"/"perfect"/"got it" closing the exchange: react with an emoji and say nothing
+    // back, the way a person taps a heart instead of typing "you're welcome". Only when nothing is
+    // running or waiting (mid-task or a pending approval still gets the normal path) and it is not a
+    // reply to a specific bubble. The message and its reaction are stored so the chat shows them; the
+    // worker is never kicked, so no typed reply and no typing indicator.
+    const idleThread = !session || (session.status !== "running" && !session.pending_kind);
+    if (!routed.spawn && !quote && idleThread && isPleasantryCloser(text)) {
+      const react = reaction ?? "\ud83d\udc4d";
+      if (!session) {
+        session = await startChatSession(t, forModel, undefined, react, quote);
+      } else {
+        await appendUserMessage(session, stampMessage(t, forModel, "chat"), undefined, react, quote);
+      }
+      await updateSession(session.id, { status: "idle", draft: null });
+      await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
+      return res.status(200).json({ session_id: session.id, action: "reacted", reaction: react, status: "idle" });
+    }
     // A task that will take real work (a price to look up, a booking, a refund, research) gets an
     // instant "on it" bubble so the chat is never silent while the agent works. Quick chat-tier
     // messages (acks, a calendar note, recall) do not. Wording never repeats what was just said.
@@ -94,7 +159,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const recentSaid = (session?.messages ?? []).filter((m) => m.role === "assistant" && typeof m.content === "string").slice(-6).map((m) => m.content as string);
     let ack: string | undefined;
     let action: string;
-    if (routed.spawn) {
+    if (routed.spawn === "status") {
+      // The host answers a status ping itself: the ping and one line on where things stand, both shown, no model run.
+      await appendUserEcho(session!, text, reaction, quote);
+      const line = statusLine(session!, await activeTaskSessions(t.id).catch(() => []));
+      await appendAssistantMessage(session!, line, true);
+      await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
+      return res.status(200).json({ session_id: session!.id, action: "status", reaction, status: session!.status });
+    }
+    if (routed.spawn === "aside") {
+      // The thread is busy: this question is answered alongside it, at once, as a normal reply.
+      session = await startAsideSession(t, forModel, main!, quote, reaction);
+      action = "aside";
+    } else if (routed.spawn === "task") {
       // The thread is busy: this request runs as its own task alongside it.
       session = await startTaskSession(t, forModel, main, quote, reaction);
       action = "task_started";
@@ -110,11 +187,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await resolvePending(t, session, forModel, null);
       action = "question_answered";
     } else {
-      // Up to the tier the message needs; and back down to the fast chat model for a quick question
-      // on an idle thread ("what's up" after a bill was handled on the strong model), so a greeting
-      // answers in seconds. A thread mid-task keeps its model.
+      // Every request is tiered on its own: up to the tier the message needs at any time, and back
+      // down on an idle thread ("check my balance" after a refund ran on the judgment model runs on
+      // the task model; "thanks" on the chat model). A thread mid-task keeps its model for a steer.
       const idle = session.status !== "running" && !session.pending_kind;
-      const model = upgradedModel(session.model ?? "", text, t) ?? (idle && isQuickQuestion(text) && tierOfModel(session.model ?? "", t) !== "chat" ? modelFor("chat", t) : undefined);
+      await loadModelHistory(); // the tier's chain is ordered by the record across customers
+      const model = reroutedModel(session.model ?? "", text, idle, t);
       if (model) {
         console.log(`[route] ${session.id}: ${session.model} -> ${model} for "${text.slice(0, 60)}"`);
         await updateSession(session.id, { model });
@@ -125,16 +203,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // sure it gets typed into the site rather than read as chat.
       const code = codeIn(text);
       if (code) await appendHostNote(session, codeHint(code));
+      else if (DISPUTES.test(text) && /\$\s?\d/.test(recentSaid[recentSaid.length - 1] ?? "")) await appendHostNote(session, DISPUTE_NOTE);
       else if (midTask) await appendHostNote(session, MID_TASK_NOTE);
       action = "sent";
     }
-    if (willResearch && (action === "started" || action === "sent" || action === "task_started")) {
+    // The page shows typing dots and "typing…" the moment a task starts, so the "on it" bubble is off
+    // by default (CHAT_ACKS=on brings it back); anything over a minute still gets its tell_user line.
+    if (process.env.CHAT_ACKS === "on" && willResearch && (action === "started" || action === "sent" || action === "task_started")) {
       ack = researchAck(recentSaid);
       await appendAssistantMessage(session, ack, true);
     }
     await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
-    await kick(session.id);
-    return res.status(200).json({ session_id: session.id, action, reaction, ack, task: routed.spawn ? session.title : undefined });
+    // A greeting, a quick question, a fact lookup or a side reply is answered inside this request:
+    // no kick, no worker cold start; the page shows the reply as it streams. The composer is free
+    // meanwhile. A run that needs more than the inline budget is handed to a worker as usual.
+    const inline = INLINE_MS > 0 && (action === "aside" || ((action === "started" || action === "sent") && (isQuickQuestion(text) || isLookupQuestion(text))));
+    if (inline) {
+      const outcome = await runSession(session.id, { budgetMs: INLINE_MS, noSiblingWait: true }).catch((err: unknown) => {
+        console.error(`[inline] ${session!.id}: ${err instanceof Error ? err.message : String(err)}`);
+        return "error" as const;
+      });
+      if (outcome === "continue" || outcome === "error") await kick(session.id);
+    } else if (!(await warmWorkerHolds(session.id))) {
+      await kick(session.id);
+    }
+    return res.status(200).json({ session_id: session.id, action, reaction, ack, task: routed.spawn === "task" ? session.title : undefined });
   } catch (err) {
     if (err instanceof UsageCapError) return res.status(402).json({ error: err.message });
     throw err;

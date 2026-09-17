@@ -53,15 +53,24 @@ export async function listFollowUps(userId: string): Promise<FollowUp[]> {
  * re-armed for their next slot (or dropped once past until_at).
  */
 export async function takeDueFollowUps(limit = 200): Promise<FollowUp[]> {
-  const due = await q<FollowUp>("select * from followups where due <= now() order by due limit $1", [limit]);
-  for (const f of due) {
-    const step = f.repeat_ms ? Number(f.repeat_ms) : 0;
-    const next = step > 0 ? new Date(Math.max(Date.now(), new Date(f.due).getTime()) + step) : null;
-    if (next && (!f.until_at || next.getTime() <= new Date(f.until_at).getTime())) {
-      await q("update followups set due = $2, fired = fired + 1 where id = $1", [f.id, next]);
-    } else {
-      await q("delete from followups where id = $1", [f.id]);
-    }
-  }
-  return due;
+  // One statement claims, re-arms and deletes: two cron runs that overlap (a run takes longer than
+  // the minute between them) cannot both take the same timer, which fired a watch twice before.
+  // The rows locked in `due` are skipped by the other run; the final select reads the pre-update
+  // snapshot, so the caller sees each timer as it was when it fired.
+  return q<FollowUp>(
+    `with due as (
+       select id, until_at, case when coalesce(repeat_ms, 0) > 0 then greatest(now(), due) + (repeat_ms::text || ' milliseconds')::interval end as next
+         from followups where due <= now() order by due limit $1 for update skip locked
+     ),
+     armed as (
+       update followups f set due = d.next, fired = f.fired + 1 from due d
+        where f.id = d.id and d.next is not null and (d.until_at is null or d.next <= d.until_at) returning f.id
+     ),
+     gone as (
+       delete from followups f using due d
+        where f.id = d.id and (d.next is null or (d.until_at is not null and d.next > d.until_at)) returning f.id
+     )
+     select f.* from followups f join due d on d.id = f.id order by f.due`,
+    [limit],
+  );
 }

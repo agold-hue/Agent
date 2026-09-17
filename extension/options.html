@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Secretary relay</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; max-width: 520px; color: #1b1b1f; }
+      label { display: block; font-weight: 600; margin-top: 14px; }
+      input { width: 100%; padding: 8px; border: 1px solid #c8c8d0; border-radius: 8px; font: inherit; }
+      button { margin-top: 16px; padding: 8px 14px; border-radius: 8px; border: 0; background: #1d4ed8; color: #fff; font: inherit; cursor: pointer; }
+      .hint { color: #5b5b66; }
+      .ok { color: #166534; }
+    </style>
+  </head>
+  <body>
+    <h2>Secretary local browser relay</h2>
+    <p class="hint">Your secretary can drive one tab in this browser for sites that block hosted browsers. It only acts when it sends a command, and everything it does shows in that tab. Paste the token from Settings › Local browser in the app.</p>
+    <label for="server">App address</label>
+    <input id="server" placeholder="https://your-app.vercel.app" />
+    <label for="token">Relay token</label>
+    <input id="token" placeholder="rl_…" autocomplete="off" />
+    <button id="save">Save</button>
+    <p id="msg" class="hint"></p>
+    <script src="options.js"></script>
+  </body>
+</html>

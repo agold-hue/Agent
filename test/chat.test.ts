@@ -129,3 +129,29 @@ test("a PDF bill is read as text for the model", async () => {
   const other = await describeFile(Buffer.from("x"), "application/octet-stream", "old.docx");
   assert.ok(!other.readable && /cannot be read/.test(other.text));
 });
+
+import { toChatItems as toChatItems2 } from "../lib/chat.js";
+import { supersedeLastReply } from "../lib/runtime.js";
+import type { SessionRow as SessionRow2 } from "../lib/sessions.js";
+test("a draft the host sent back to the model is not a chat bubble; the final reply is", () => {
+  const messages = [
+    { role: "system", content: "" },
+    { role: "user", content: "[2026-09-16 Wed 10:00 America/New_York via chat]\nallentown market?", at: "2026-09-16T14:00:00Z" },
+    { role: "assistant", content: "Market's hot. Want me to pull what I know?", at: "2026-09-16T14:00:05Z" },
+  ] as SessionRow2["messages"];
+  supersedeLastReply(messages);
+  messages.push({ role: "user", content: "(Not done yet: you offered...)" }, { role: "assistant", content: "Market's hot: $284K median [1]. No holdings on file.", at: "2026-09-16T14:00:20Z" });
+  const row = { id: "s1", kind: "chat", status: "idle", created_at: new Date("2026-09-16T14:00:00Z"), messages } as unknown as SessionRow2;
+  const agent = toChatItems2(row).filter((i) => i.kind === "agent");
+  assert.equal(agent.length, 1);
+  assert.match((agent[0] as { text: string }).text, /^Market's hot: \$284K/);
+});
+
+import { researchAck } from "../lib/acks.js";
+test("acknowledgements are terse and carry no cheer", () => {
+  for (let i = 0; i < 40; i++) {
+    const a = researchAck([]);
+    assert.ok(a.length <= 24, a);
+    assert.ok(!/!|boss|hang tight|sure thing|you got it/i.test(a), a);
+  }
+});

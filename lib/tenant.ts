@@ -5,18 +5,26 @@ import { decrypt, encrypt, randomToken } from "./crypto.js";
 
 export interface TenantSettings {
   owner_name?: string;
+  /** What the user wants to be called in chat ("call me Mendy"); owner_name stays the name on outgoing email. Set from Settings or by the set_preferred_name tool. */
+  preferred_name?: string;
   quiet_hours?: string; // "22-7"
   batch_times?: string; // "12:30,18:00"
   weekly_review?: string; // "Sun 18"
   daily_review_hour?: number; // -1 disables
   auto_approve_max_usd?: number;
   auto_approve_types?: string[];
+  /** Learned rules: "purchase at amazon.com under $40 needs no approval". Set by the approval_rule tool after the user says yes. */
+  auto_approve_rules?: Array<{ action_type: string; merchant?: string; max_usd?: number }>;
   family_emails?: string[];
   cc_owner_on_outbound?: boolean;
   observe_forwarded_mail?: boolean;
   chat_session_max_age_hours?: number;
   ask_user_deadline_hours?: number;
   task_passphrase?: string;
+  /** ISO country (US, GB, CA) for web search results; defaults from the time zone. */
+  country?: string;
+  /** "Brooklyn, NY" or a zip: appended to local searches (hours, stores, services). */
+  city?: string;
 }
 
 export interface Tenant {
