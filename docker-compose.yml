@@ -1,0 +1,24 @@
+# Local or single-server deployment: the service plus Postgres. `docker compose up -d`, then open http://localhost:3000
+services:
+  app:
+    build: .
+    ports: ["3000:3000"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://workmate:workmate@db:5432/workmate
+      DATA_DIR: /data
+    volumes: ["workmate-data:/data"]
+    depends_on: [db]
+    restart: unless-stopped
+    shm_size: "1gb"
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: workmate
+      POSTGRES_PASSWORD: workmate
+      POSTGRES_DB: workmate
+    volumes: ["workmate-db:/var/lib/postgresql/data"]
+    restart: unless-stopped
+volumes:
+  workmate-data:
+  workmate-db:

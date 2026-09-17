@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><title>Vendor Portal</title></head>
+<body>
+<h1>Vendor Portal</h1>
+<nav><a href="#orders" id="orders-link">Orders</a> <a href="#support">Support</a></nav>
+<form id="signup" onsubmit="event.preventDefault(); document.getElementById('out').textContent='Submitted: '+document.getElementById('email').value+' / '+document.getElementById('country').value+' / '+(document.getElementById('terms').checked?'terms':'no-terms')+' / '+document.getElementById('note').value;">
+  <label>Company <input id="company" name="company" type="text"></label>
+  <label>Email <input id="email" name="email" type="email"></label>
+  <label>Password <input id="pw" name="pw" type="password"></label>
+  <label>Country <select id="country" name="country"><option>United States</option><option value="CA">Canada</option><option>Mexico</option></select></label>
+  <label><input id="terms" name="terms" type="checkbox"> I accept the terms</label>
+  <label>Note <textarea id="note" name="note"></textarea></label>
+  <button type="submit">Create account</button>
+</form>
+<p id="out"></p>
+<div id="chat" style="display:none"><p>Agent: How can I help?</p></div>
+<button id="open-chat" onclick="document.getElementById('chat').style.display='block'; setTimeout(()=>{ const p=document.createElement('p'); p.textContent='Agent: Your refund has been approved, reference RF-7781'; document.getElementById('chat').appendChild(p); }, 1200)">Open chat</button>
+<a id="dl" href="data:text/plain;base64,aGVsbG8gd29ybGQ=" download="statement.txt">Download statement</a>
+<iframe id="pay" srcdoc="<label>Card number <input id='card' type='text'></label><button onclick='document.body.insertAdjacentHTML(&quot;beforeend&quot;,&quot;<p>Card saved</p>&quot;)'>Save card</button>"></iframe>
+<div style="height:2000px"></div>
+<button id="bottom">Bottom button</button>
+</body></html>

@@ -1,8 +1,7 @@
 node_modules/
+dist/
+data/
 .env
 .env.*
 !.env.example
-.vercel/
-dist/
 *.log
-provision-output.json

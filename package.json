@@ -1,36 +1,39 @@
 {
-  "name": "secretary-service",
-  "version": "0.1.0",
+  "name": "workmate",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Multi-tenant personal secretary agent service on any OpenAI-compatible model provider (OpenRouter, DeepSeek, Gemini...): email-code login, Stripe subscriptions, per-customer memory, hosted browser, encrypted logins, proactive follow-ups.",
+  "description": "A 24/7 AI worker for businesses: monitors mail, browses and fills out sites, chats with support, buys and returns, follows up, generates PDFs. One long-running service on Claude + Playwright.",
+  "engines": { "node": ">=22" },
   "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json && cp -r src/web dist/web && cp -r db dist/db && cp src/agent/prompt.md dist/agent/prompt.md",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "tsx scripts/migrate.ts",
-    "dev": "vercel dev",
     "test": "tsx --test test/*.test.ts",
-    "db:backfill-times": "tsx scripts/backfill-times.ts"
+    "db:migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {
-    "@browserbasehq/sdk": "^2.20.0",
-    "@vercel/functions": "^3.9.7",
-    "googleapis": "^180.0.0",
-    "pdfjs-dist": "^5.7.284",
+    "@anthropic-ai/sdk": "^0.126.0",
+    "croner": "^10.0.1",
+    "imapflow": "^1.0.200",
+    "mailparser": "^3.9.0",
+    "marked": "^18.0.0",
+    "nodemailer": "^7.0.0",
+    "pdfjs-dist": "^5.7.0",
     "pg": "^8.23.0",
-    "playwright-core": "^1.58.0",
-    "stripe": "^22.6.2",
+    "playwright": "1.56.1",
+    "stripe": "^22.6.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^22.0.0",
+    "@types/nodemailer": "^7.0.0",
     "@types/pg": "^8.23.1",
     "@types/web-push": "^3.6.4",
-    "@vercel/node": "^5.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
-  },
-  "engines": {
-    "node": ">=22"
   }
 }
