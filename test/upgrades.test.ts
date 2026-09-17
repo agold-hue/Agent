@@ -122,3 +122,28 @@ test("the hold lasts a human few seconds and always fits inside the budget", asy
   // And never goes below something a hand could do.
   assert.equal(holdPlan(1000, () => 0).holdMs, 2500);
 });
+
+test("asking for a document routes to a model that can write one", async () => {
+  const { tierFor } = await import("../lib/router.js");
+  // The real failure: this ran on the chat tier and never reached for make_pdf.
+  assert.equal(tierFor("Give me now the operating agreement pdf we spoke about", "chat"), "hard");
+  assert.equal(tierFor("write me a letter to my landlord about the radiator", "chat"), "task");
+  assert.equal(tierFor("draft a memo summarising the month's bills", "chat"), "task");
+  assert.equal(tierFor("fill out the school form they sent", "chat"), "task");
+  assert.equal(tierFor("put together the LLC bylaws", "chat"), "hard");
+  // Small talk and notes are untouched.
+  assert.equal(tierFor("hey how's it going", "chat"), "chat");
+  assert.equal(tierFor("add milk to the list", "chat"), "chat");
+  assert.equal(tierFor("remind me the lease is up in March", "chat"), "chat");
+});
+
+test("a progress line that says nothing, or says it twice, is refused", async () => {
+  const { emptyProgress, sameProgress } = await import("../lib/tools.js");
+  for (const noise of ["Still working...", "still working…", "Working on it", "one moment", "On it", "almost there"]) {
+    assert.notEqual(emptyProgress(noise), "", `"${noise}" should be refused`);
+  }
+  assert.equal(emptyProgress("Signed in, pulling the bill up now"), "");
+  assert.equal(emptyProgress("Drafting the North 15 PA LLC operating agreement now"), "");
+  assert.ok(sameProgress("Still working...", "still working…"));
+  assert.ok(!sameProgress("Signed in", "Bill is $142"));
+});

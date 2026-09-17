@@ -131,6 +131,19 @@ const HARD = /\b(refund|dispute|chargeback|negotiat\w*|escalat\w*|complain\w*|co
 // strong enough for logins, second factors and portals, at a fraction of the judgment model's price.
 const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|cancellation|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|con ?ed(ison)?|utility|bill|balance|statement|due date|account|autopay|bank|card|sign ?in|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current|compare|research|options|recommend|offer|hire|realtor|broker|plan (a|my) trip|find (me )?the best)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
 /**
+ * Writing something: a document the user will print, sign, send or file. None of these words were in
+ * either list, so "give me the operating agreement pdf" scored as small talk and ran on the cheapest
+ * chat model, which does not reach for make_pdf at all — it searched the web and narrated for eight
+ * minutes. Drafting needs the task model at least.
+ */
+const DOCUMENT = /\b(pdf|document|letter|memo|agreement|contract|invoice|receipt letter|affidavit|addendum|amendment|resolution|bylaws|deed|waiver|nda|disclosure|notice|form|application|report|summary|write (me )?(a|an|the)|draft (me )?(a|an|the)|type up|put (it|that) in writing|generate|produce)\b/i;
+/**
+ * A document with legal or financial consequence: worth the judgment model. Getting an operating
+ * agreement's clauses wrong costs more than every model call the customer makes in a month.
+ */
+const LEGAL_DOCUMENT = /\b(operating agreement|llc|partnership|shareholder|bylaws|articles of (organization|incorporation)|deed|promissory|lease|nda|non-?disclosure|affidavit|power of attorney|settlement|indemnit\w*|covenant|easement|will and testament|trust agreement|employment agreement|severance)\b/i;
+
+/**
  * A note, a list item or a reminder: memory and the calendar, never the browser. These match task
  * words ("add", "pay", "bill") but are one memory call on the chat model, answered in seconds with
  * no "on it" line. Anything that names a cart, an account, a card or a site is real work and stays out.
@@ -164,8 +177,9 @@ export function tierFor(text: string, kind: string): Tier {
   // A note is a note even when it mentions a refund or a lease: "remind me the lease is up in March".
   if (LIGHT.test(t.trim())) return "chat";
   if (HARD.test(t)) return "hard";
+  if (DOCUMENT.test(t) && LEGAL_DOCUMENT.test(t)) return "hard";
   if (TASK.test(t) && HARD_SITES.test(t)) return "hard";
-  if (TASK.test(t)) return "task";
+  if (TASK.test(t) || DOCUMENT.test(t)) return "task";
   return "chat";
 }
 

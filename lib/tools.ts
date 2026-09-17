@@ -252,6 +252,18 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const text = s("text").trim();
         if (!text) return { text: "Nothing to show; pass text." };
         if (row.channel !== "chat") return { text: "The user is on email, where only your final report is delivered. Noted; continue and put it in the report." };
+        // A line that says nothing, or the same line again, is worse than silence: the user watched
+        // "Still working…" arrive four times in eight minutes while nothing happened. Refused, with
+        // the reason, so the step is spent on the task instead of on narrating it.
+        const empty = emptyProgress(text);
+        if (empty) return { text: empty };
+        const said = progressLinesSince(row);
+        if (said.some((prior) => sameProgress(prior, text))) {
+          return { text: "You have already told the user that, in those words. Do not repeat yourself: either take the next step of the task now, or, if you are stuck, stop and say exactly what is blocking you." };
+        }
+        if (said.length >= Number(process.env.MAX_PROGRESS_LINES ?? 3)) {
+          return { text: `You have sent ${said.length} progress lines on this task already. No more: finish it, or stop and tell the user what you need.` };
+        }
         await appendAssistantMessage(row, text.slice(0, 500), true);
         return { text: "Shown to the user. Continue the task; your final reply is still needed when it is done." };
       }
@@ -383,4 +395,38 @@ export async function resolvePending(t: Tenant, row: SessionRow, userText: strin
 export async function expirePending(row: SessionRow): Promise<void> {
   if (!row.pending_event_id) return;
   await appendToolResult(row, row.pending_event_id, "NO_REPLY: the user did not answer before the deadline. Proceed with the defaults you stated.");
+}
+
+/** Progress lines with no information in them: the ones a stuck model emits instead of working. */
+const EMPTY_PROGRESS = /^(ok(ay)?[.!]?|go|sure|still (working|on it|going)|working( on it)?|one (moment|sec(ond)?)|just a (moment|sec(ond)?)|hang on|almost (there|done)|in progress|processing|continuing|on it|let me (check|see|look)|thinking)\b[\s.!…]*$/i;
+
+/** The refusal text for a contentless progress line, or "" when the line actually says something. */
+export function emptyProgress(text: string): string {
+  if (!EMPTY_PROGRESS.test(text.trim())) return "";
+  return "That line tells the user nothing, so it was not shown. A progress line names what you just did or what you are doing now (\"Signed in, pulling the bill up now\"). Take the next step of the task instead, and only call tell_user when you have something to report.";
+}
+
+/** Two progress lines that say the same thing, allowing for punctuation and an ellipsis. */
+export function sameProgress(a: string, b: string): boolean {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  return norm(a) === norm(b);
+}
+
+/** What this task has already shown the user through tell_user. */
+function progressLinesSince(row: SessionRow): string[] {
+  const out: string[] = [];
+  for (let i = taskStart(row.messages); i < row.messages.length; i++) {
+    const m = row.messages[i];
+    if (m.role !== "assistant") continue;
+    for (const c of m.tool_calls ?? []) {
+      if (c.function.name !== "tell_user") continue;
+      try {
+        const line = String((JSON.parse(c.function.arguments || "{}") as { text?: unknown }).text ?? "").trim();
+        if (line) out.push(line);
+      } catch {
+        /* unparsable call; it showed nothing */
+      }
+    }
+  }
+  return out;
 }
