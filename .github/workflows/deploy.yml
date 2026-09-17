@@ -1,0 +1,30 @@
+# Deploys to Fly.io on every push to main, once the FLY_API_TOKEN repository secret is set:
+#   fly tokens create deploy -x 999999h      -> paste the token as FLY_API_TOKEN under GitHub Settings > Secrets and variables > Actions
+# Until that secret exists, the workflow skips itself.
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency: deploy
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run typecheck
+      - run: npm test
+  deploy:
+    needs: test
+    if: ${{ vars.FLY_DEPLOY == 'on' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
