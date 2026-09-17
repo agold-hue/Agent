@@ -16,7 +16,7 @@ const CODE = /^\s*(code[:\s]*)?\d{4,8}\s*$/i;
 const QUESTION = /\?\s*$/;
 
 /** How often an ordinary request gets a "seen" thumbs up: deterministic per message so a reload shows the same thing. */
-const SEEN_RATE = Number(process.env.REACTION_SEEN_RATE ?? 0.35);
+const SEEN_RATE = Number(process.env.REACTION_SEEN_RATE ?? 0.2);
 
 function hash(s: string): number {
   let h = 2166136261;
@@ -50,10 +50,11 @@ export function reactionFor(text: string, recent: string[] = []): string | undef
   if (FUNNY.test(t)) return "😂";
   if (HEAVY.test(t)) return "❤️";
   if (YES.test(t)) return "👍";
-  if (NO.test(t)) return "👍"; // "got it, stopping"
+  if (NO.test(t)) return undefined; // "cancel", "stop", "no": the reply is the acknowledgement, a thumbs up reads wrong
   if (QUESTION.test(t)) return undefined; // the answer is the reaction
-  // An ordinary request: "seen", some of the time, never three in a row.
-  const lastTwo = recent.slice(-2);
-  if (lastTwo.length === 2 && lastTwo.every((r) => r === "👍")) return undefined;
+  // A real request (a verb, some length) is answered by doing it; the typing dots are the "seen".
+  if (t.split(/\s+/).length > 9) return undefined;
+  // A short ordinary line: "seen", some of the time, never two in a row.
+  if (recent[recent.length - 1] === "👍") return undefined;
   return hash(t) < SEEN_RATE * 100 ? "👍" : undefined;
 }

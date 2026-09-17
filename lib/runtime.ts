@@ -299,7 +299,7 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
           reasoning: reasoningFor(tierOfModel(turnModel, t)),
           messages: context,
           tools: toolsFor(quick ? "quick" : "all"),
-          maxTokens: midTask && TOOL_TURN_MAX_TOKENS > 0 ? TOOL_TURN_MAX_TOKENS : undefined,
+          maxTokens: midTask && TOOL_TURN_MAX_TOKENS > 0 && !hasHostNotePrefix(row.messages, CUT_PREFIX) ? TOOL_TURN_MAX_TOKENS : undefined,
           onText: (text) => {
             if (Date.now() - lastDraft < 700) return;
             lastDraft = Date.now();
@@ -319,7 +319,22 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
         // The reply is what the user reads: drop the closing filler chat models add, and the links and
         // reference markers a search-shaped answer drags along (unless the user asked for links).
         if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(calm(stripCitations(completion.message.content, taskUserText(row.messages))));
-        const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
+        let text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
+        // "NO_REPORT" belongs on its own, never on the end of a report: the token goes, the words stay.
+        if (/NO_REPORT/.test(text)) {
+          text = stripNoReport(text);
+          row.messages[row.messages.length - 1].content = text || "NO_REPORT";
+          if (!text) text = "NO_REPORT";
+        }
+        // A reply the provider cut mid-sentence ("bought for $3") never reaches the user: once, the model
+        // is asked for the whole reply again, with room to write it.
+        if (text && !/^NO_REPORT\b/.test(text) && (completion.finish_reason === "length" || completion.finish_reason === "cut" || looksCut(text)) && !hasHostNotePrefix(row.messages, CUT_PREFIX)) {
+          supersedeLastReply(row.messages);
+          row.messages.push({ role: "user", content: `${CUT_PREFIX} your reply stopped mid-sentence after "${text.slice(-60).replace(/\s+/g, " ")}". Send the whole reply again, complete, as if for the first time.)` });
+          await save();
+          console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} cut (${completion.finish_reason})`);
+          continue;
+        }
         if (text && turnModel !== row.model && tierOfModel(turnModel, t) === "task" && RANK[tierOfModel(row.model ?? "", t)] >= RANK.hard) {
           // The clicking model wrote the report: the judgment model checks it and sends its own.
           supersedeLastReply(row.messages);
@@ -367,10 +382,28 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
           // Still nothing after a nudge: the user must not be left with a blank. Get a summary.
           return await finish(t, row, persisted, await wrapUp(t, row, "Your last reply was empty.", "I stopped without a result."), "idle");
         }
+        // The reply answered a message that landed mid-task, and the task it interrupted never got its
+        // report: the reply stands, and the task continues from where it was instead of being dropped.
+        if (arrivedMidTask(row.messages) && !hasHostNotePrefix(row.messages, RESUME_TASK_PREFIX)) {
+          const earlier = unfinishedEarlierTask(row.messages);
+          if (earlier) {
+            await save();
+            row.messages.push({ role: "user", content: `${RESUME_TASK_PREFIX} that answered the user's last message. The task before it is still unfinished: "${earlier.slice(0, 300)}". Continue it now from where you were (the browser is where you left it); do not start over and do not repeat the answer you just gave. When it is done, reply with the result.)` });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} reply+resume`);
+            continue;
+          }
+        }
         // The task looks done. If the user sent something while we were finishing, handle it too
         // instead of ending: persist this reply and loop, where the top picks the new message up.
         const pending = await getMessages(sessionId).catch(() => null);
         if (pending && pending.length > persisted) {
+          await save();
+          // A refinement typed right after ("last 2 hours only") is answered as a delta, not the whole thing again.
+          row.messages = (await getMessages(sessionId).catch(() => row.messages)) ?? row.messages;
+          if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: sharedSystem() };
+          persisted = row.messages.length;
+          row.messages.push({ role: "user", content: SECOND_MESSAGE_NOTE });
           await save();
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} reply+more`);
           continue;
@@ -531,7 +564,7 @@ function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number; cen
   // (the session budget by default). 0 disables a cap. A request that names an amount caps its own spend
   // at a share of that amount: a $9 subscription never buys a dollar of model time.
   const taskCents = Number(process.env.TASK_BUDGET_USD ?? env.plans.sessionBudgetUsd()) * 100;
-  const lookupCents = Number(process.env.LOOKUP_BUDGET_USD ?? 0.5) * 100;
+  const lookupCents = Number(process.env.LOOKUP_BUDGET_USD ?? 1) * 100;
   let cls: { steps: number; ms: number; cents: number; valueUsd?: number } = { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS, cents: taskCents };
   if ((row.kind === "chat" || row.kind === "task") && tier === "task") cls = { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000), cents: lookupCents };
   if (row.kind === "chat" || row.kind === "task") {
@@ -575,20 +608,28 @@ async function wrapUp(t: Tenant, row: SessionRow, reason: string, fallback: stri
       role: "user",
       content: `(${reason} Stop working now and report to the user in at most three short lines: what you got done, what you found (figures, confirmation numbers), and exactly what is blocking or what you need from them. Plain words, no tool calls, no promises, no browser links, no site names.)`,
     });
-    const c = await complete({ model: row.model!, messages: withContextBlock(context, row.contextBlock), tools, toolChoice: "none", maxTokens: 400 });
+    const c = await complete({ model: row.model!, messages: withContextBlock(context, row.contextBlock), tools, toolChoice: "none", maxTokens: 400, reasoning: "low" });
     await chargeCompletion(t, row, c, "wrapup");
     const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
     if (text && !c.message.tool_calls?.length) return text;
+    // A cheap model that ignores tool_choice and calls a tool anyway: once more on the fast model, no tools at all.
+    const c2 = await complete({ model: modelFor("chat", t), messages: withContextBlock(context, row.contextBlock), maxTokens: 400, reasoning: "none" });
+    await chargeCompletion(t, row, c2, "wrapup");
+    const text2 = typeof c2.message.content === "string" ? c2.message.content.trim() : "";
+    if (text2 && !c2.message.tool_calls?.length) return text2;
   } catch (err) {
     console.error(`[wrapup] ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
   }
+  // What the user already saw stands on its own; the host's reason goes underneath in one plain line.
   const last = lastAssistantText(row.messages);
-  return last ? `${fallback} Here's where I got to:\n\n${last}` : fallback;
+  return last ? `${last}\n\n(${fallback.replace(/^I(?:'ve| have)? /, "I ")})` : fallback;
 }
 
 /** The task ended for this turn: deliver the report on the right channel and mark idle. */
 async function finish(t: Tenant, row: SessionRow, persisted: number, report: string, status: "idle" | "error"): Promise<RunOutcome> {
   const proactive = ["review", "weekly", "followup", "triage", "digest", "inbox"].includes(row.kind);
+  // "NO_REPORT" tacked onto the end of a real report is noise; alone, it means silence (proactive kinds only).
+  if (/NO_REPORT/.test(report)) report = stripNoReport(report) || "NO_REPORT";
   // A task that answered, then only wrote its site note: the reply already in the thread is the report.
   if (!proactive && /^NO_REPORT\b/.test(report.trim()) && lastAssistantText(row.messages)) report = lastAssistantText(row.messages);
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
@@ -754,6 +795,41 @@ export function arrivedMidTask(messages: ChatMessage[]): boolean {
 export function supersedeLastReply(messages: ChatMessage[]): void {
   const last = messages[messages.length - 1];
   if (last?.role === "assistant" && !last.tool_calls?.length) last.superseded = true;
+}
+
+export const CUT_PREFIX = "(Cut off:";
+export const RESUME_TASK_PREFIX = "(Back to the task:";
+export const SECOND_MESSAGE_NOTE = "(The user sent another message while you were replying; it is above. If your last reply already covers it, answer only with what is different or new, in a line or two; never send the same content again.)";
+/** A reply that ends on a connector, a colon, a dangling "$3": the provider stopped mid-sentence. Terminal punctuation means it ended on purpose. */
+export function looksCut(text: string): boolean {
+  const t = text.trimEnd();
+  if (!t || /[.!?…)"'”»\]]$/.test(t) || t.length < 12) return false;
+  return /[:;,\-–—]$|\b(and|or|but|for|to|at|with|the|a|an|of|in|on|by|is|are|was|were|from|that|which|your|my)$/i.test(t);
+}
+/** "NO_REPORT" only counts alone; on the end of a report it is noise from a model that read the rule too well. */
+export function stripNoReport(text: string): string {
+  return text.replace(/(^|\n)\s*NO_REPORT\.?\s*(?=\n|$)/g, "$1").replace(/\s*\bNO_REPORT\b\.?\s*$/, "").replace(/^\s*NO_REPORT\b\.?\s*/, "").trim();
+}
+/**
+ * The request before the user's latest message, when that latest message landed mid-task and the
+ * earlier request never got its reply: the task the interruption should go back to.
+ */
+export function unfinishedEarlierTask(messages: ChatMessage[]): string | undefined {
+  const start = taskStart(messages);
+  let prev = -1;
+  for (let i = start - 1; i > 0; i--) if (isUserMessage(messages[i])) { prev = i; break; }
+  if (prev < 0) return undefined;
+  let usedTools = false;
+  for (let i = prev + 1; i < start; i++) {
+    const m = messages[i];
+    if (m.role !== "assistant" || m.ephemeral) continue;
+    if (m.tool_calls?.length) usedTools = true;
+    else if (typeof m.content === "string" && m.content.trim() && !m.superseded) return undefined; // it got its reply
+  }
+  if (!usedTools) return undefined;
+  const text = messageText(messages[prev]).replace(/^\[[^\]]+\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
+  // A steer or a question is not a task to go back to.
+  return text.split(/\s+/).length >= 3 && !/^(\?|status|update|any luck)/i.test(text) ? text : undefined;
 }
 
 /** "done", "signed in": the user finished a takeover step; the task resumes from the current page. */

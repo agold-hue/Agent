@@ -521,6 +521,7 @@ export async function readStream(res: Response, onText: (text: string) => void, 
   let ttft: number | undefined;
   const started = Date.now();
   let finish: string | undefined;
+  let sawDone = false;
   let usage: StreamedResult["usage"];
   let error: string | undefined;
   const calls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
@@ -530,6 +531,7 @@ export async function readStream(res: Response, onText: (text: string) => void, 
   const handle = (line: string) => {
     if (!line.startsWith("data:")) return;
     const payload = line.slice(5).trim();
+    if (payload === "[DONE]") sawDone = true;
     if (!payload || payload === "[DONE]") return;
     let j: { model?: string; choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>; usage?: StreamedResult["usage"]; error?: { message?: string } };
     try {
@@ -604,7 +606,8 @@ export async function readStream(res: Response, onText: (text: string) => void, 
   if (text) onText(text);
   emitReady(calls.length);
   const tool_calls = calls.filter(Boolean);
-  return { model, provider, ttft_ms: ttft, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? "stop" }] };
+  // No finish reason and no [DONE]: the provider dropped the stream mid-reply. The loop asks for the reply again.
+  return { model, provider, ttft_ms: ttft, usage, choices: [{ message: { role: "assistant", content: text || null, tool_calls: tool_calls.length ? tool_calls : undefined }, finish_reason: finish ?? (sawDone ? "stop" : "cut") }] };
 }
 
 // ---------------------------------------------------------------- Model catalog

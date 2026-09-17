@@ -244,9 +244,42 @@ export function threadReplies(items: ChatItem[]): ChatItem[] {
     // Lines of the same answer (an "on it", a progress line, the reply) sit between the request and this bubble.
     while (j >= 0 && items[j].kind === "agent" && (items[j] as { replyTo?: string }).replyTo === it.replyTo) j--;
     const adjacent = j >= 0 && items[j].id === it.replyTo;
-    const { replyTo, replyText, ...rest } = it;
-    return adjacent || !replyText ? rest : { ...rest, quote: { id: replyTo, who: "user", text: replyText } };
+    const { replyTo, replyText, replyQuoted, ...rest } = it;
+    // A message the user sent as a reply to a bubble gets its answer as a reply too, always.
+    return (adjacent && !replyQuoted) || !replyText ? rest : { ...rest, quote: { id: replyTo, who: "user", text: replyText } };
   }) as ChatItem[];
+}
+
+/** "?", "status", "any luck?": a ping that wants one line on where things stand, no model needed. */
+export const STATUS_PING = /^(\?+|status\??|update\??|progress\??|eta\??|any (?:luck|update|news|progress)\??|you there\??|still there\??|hello\??|well\??|and\??|so\??)$/i;
+
+/**
+ * One human line on where the work stands, written by the host from the thread's own progress:
+ * "Still on it: pay the Con Ed bill, 4 min in. Signed in, pulling up the bill now." No model call.
+ */
+export function statusLine(main: SessionRow, tasks: SessionRow[]): string {
+  const live = [main, ...tasks.filter((s) => s.id !== main.id)].filter((s) => s.status === "running" || s.status === "waiting");
+  if (!live.length) return "Nothing running right now.";
+  const parts = live.slice(0, 3).map((s) => {
+    const start = taskStart(s.messages);
+    const asked = taskUserText(s.messages).replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").replace(/\s+/g, " ").trim().slice(0, 80);
+    const mins = Math.max(1, Math.round((Date.now() - new Date(s.messages[start]?.at ?? s.created_at).getTime()) / 60_000));
+    let said = "";
+    let step = "";
+    let waiting = "";
+    for (let i = start; i < s.messages.length; i++) {
+      const m = s.messages[i];
+      if (m.role !== "assistant") continue;
+      if (m.ephemeral && typeof m.content === "string" && m.content.trim()) said = m.content.trim().slice(0, 120);
+      for (const tc of m.tool_calls ?? []) {
+        step = STEP_WORDS[tc.function.name] ?? step;
+        if (s.status === "waiting" && tc.id === s.pending_event_id) waiting = tc.function.name === "request_code" ? "a code from you" : tc.function.name === "ask_user" ? "your answer" : "your ok";
+      }
+    }
+    const where = waiting ? `waiting on ${waiting}` : said ? said.replace(/[.]+$/, "") : step ? `just ${step}` : "getting started";
+    return `${s === main ? "Still on" : "Alongside,"} "${asked}" (${mins} min): ${where}.`;
+  });
+  return parts.join(" ");
 }
 
 /** What is going on right now across the chat thread and its parallel tasks, plus the last exchanges. */
@@ -282,7 +315,7 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; at: string; approx?: boolean; reaction?: string; quote?: MessageQuote; task?: string }
-  | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string; task?: string; quote?: MessageQuote; replyTo?: string; replyText?: string }
+  | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string; task?: string; quote?: MessageQuote; replyTo?: string; replyText?: string; replyQuoted?: boolean }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean; preview?: string }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
 
@@ -299,7 +332,7 @@ export function toChatItems(row: SessionRow): ChatItem[] {
   let last = new Date(row.created_at).toISOString();
   const task = row.kind === "task" ? { task: (row.title ?? "task").slice(0, 60) } : {};
   // The request each agent line answers, for threading (see threadReplies).
-  let reply: { replyTo: string; replyText: string } | undefined;
+  let reply: { replyTo: string; replyText: string; replyQuoted: boolean } | undefined;
   row.messages.forEach((m: ChatMessage, i) => {
     const at = m.at && m.at > last ? m.at : last;
     last = at;
@@ -316,7 +349,10 @@ export function toChatItems(row: SessionRow): ChatItem[] {
       if (file) text = `📎 ${file[1].trim()}`;
       else if (text.startsWith("(voice note) ")) text = `🎤 ${text.slice("(voice note) ".length)}`;
       items.push({ kind: "user", id: `${row.id}-${i}`, text, at, ...approx, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}), ...task });
-      reply = { replyTo: `${row.id}-${i}`, replyText: text.replace(/\s+/g, " ").slice(0, 160) };
+      // A steer typed mid-task ("no, the Amex") is not what the task's report answers; the request is.
+      const next = row.messages[i + 1];
+      const steer = next?.role === "user" && messageText(next).startsWith("(That message arrived while you are mid-task");
+      if (!steer || !reply) reply = { replyTo: `${row.id}-${i}`, replyText: text.replace(/\s+/g, " ").slice(0, 160), replyQuoted: !!m.quote };
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
       // A draft the host sent back to the model (an offer instead of an answer, an unverified figure) is not a bubble.

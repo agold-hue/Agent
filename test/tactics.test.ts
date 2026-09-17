@@ -109,3 +109,55 @@ test("post-mortems for the task's site or class ride along, newest first, at mos
   assert.match(byClass[0], /newer water one/);
   assert.equal(relevantFailures(failures, ["chase.com"], ["travel"]).length, 0);
 });
+
+import { looksCut, stripNoReport, unfinishedEarlierTask } from "../lib/runtime.js";
+import { STATUS_PING, statusLine } from "../lib/chat.js";
+import { reactionFor } from "../lib/reaction.js";
+
+test("a reply cut mid-sentence is caught; one that ends on purpose is not", () => {
+  assert.ok(looksCut("It's a solid asset with thin cash flow: bought for"));
+  assert.ok(looksCut("You have $302,760 in debt at 7% and"));
+  assert.ok(looksCut("Two things to check:"));
+  assert.ok(!looksCut("Balance is $142, due 9/20."));
+  assert.ok(!looksCut("Booked Tue 9am. Want a reminder?"));
+  assert.ok(!looksCut("Balance is $142")); // a figure can end a reply
+});
+
+test("NO_REPORT is stripped from the end of a real report and stands alone only when alone", () => {
+  assert.equal(stripNoReport("No new scan since 4:10pm. Same status as last check.\n\nNO_REPORT"), "No new scan since 4:10pm. Same status as last check.");
+  assert.equal(stripNoReport("NO_REPORT"), "");
+  assert.equal(stripNoReport("NO_REPORT\nStill nothing."), "Still nothing.");
+});
+
+test("an earlier task interrupted by a question is resumed after the answer; a finished one is not", () => {
+  const messages: ChatMessage[] = [{ role: "system", content: "s" }, user("Check for uber ride home now"), call("a", "browser_goto", { url: "https://uber.com" }), result("a", "Uber\nhttps://uber.com"), user("More news from ukraine"), { role: "user", content: "(That message arrived while you are mid-task ...)" }, { role: "assistant", content: "Ukraine news from the last two hours: ..." }];
+  assert.equal(unfinishedEarlierTask(messages), "Check for uber ride home now");
+  const finished: ChatMessage[] = [{ role: "system", content: "s" }, user("Check for uber ride home now"), call("a", "browser_goto", { url: "https://uber.com" }), result("a", "Uber"), { role: "assistant", content: "UberX $110, 14 min away." }, user("More news from ukraine"), { role: "assistant", content: "news" }];
+  assert.equal(unfinishedEarlierTask(finished), undefined);
+});
+
+test("a status ping gets a host-written line on where things stand", () => {
+  for (const p of ["?", "status", "any luck?", "you there?", "well?"]) assert.ok(STATUS_PING.test(p), p);
+  for (const n of ["any luck with ConEd?", "what's the status of the bill", "cancel the ride"]) assert.ok(!STATUS_PING.test(n), n);
+  const main = { id: "m", kind: "chat", status: "running", created_at: new Date(Date.now() - 4 * 60_000), messages: [{ role: "system", content: "s" }, { role: "user", content: "[stamp]\nCheck for uber ride home now", at: new Date(Date.now() - 4 * 60_000).toISOString() }, { role: "assistant", content: null, tool_calls: [{ id: "a", type: "function", function: { name: "login", arguments: "{}" } }] }, { role: "assistant", content: "Signed in, checking fares", ephemeral: true }] } as unknown as SessionRow;
+  const line = statusLine(main, [{ id: "t", kind: "task", status: "running", created_at: new Date(), messages: [{ role: "system", content: "s" }, { role: "user", content: "[stamp]\nBook the dentist", at: new Date().toISOString() }] } as unknown as SessionRow]);
+  assert.equal(line, 'Still on "Check for uber ride home now" (4 min): Signed in, checking fares. Alongside, "Book the dentist" (1 min): getting started.');
+});
+
+test("a message sent as a reply gets its answer as a reply even when adjacent", () => {
+  const items: ChatItem[] = [
+    { kind: "user", id: "a-1", text: "Are you crazy?", at: "1", quote: { id: "a-0", who: "agent", text: "bought for $3" } },
+    { kind: "agent", id: "a-2", text: "My message cut off; not three dollars.", at: "2", replyTo: "a-1", replyText: "Are you crazy?", replyQuoted: true },
+  ];
+  const out = threadReplies(items) as Array<{ quote?: { id: string } }>;
+  assert.equal(out[1].quote?.id, "a-1");
+});
+
+test("reactions read like a person: none on a cancel, a long request or a question; a thumbs up on a yes", () => {
+  assert.equal(reactionFor("Cancel the ride"), undefined);
+  assert.equal(reactionFor("Check for uber ride home now and tell me the cheapest option please, then book it"), undefined);
+  assert.equal(reactionFor("Are you crazy?"), undefined);
+  assert.equal(reactionFor("yes"), "👍");
+  assert.equal(reactionFor("thanks!"), "❤️");
+  assert.equal(reactionFor("ok", ["👍"]), "👍"); // a yes is always a yes
+});

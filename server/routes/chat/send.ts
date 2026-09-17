@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
-import { ASIDE_LIMIT, currentChatSession, isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, PARALLEL_TASKS, startAsideSession, startChatSession, startTaskSession, wantsSideReply, withQuote } from "../../../lib/chat.js";
+import { ASIDE_LIMIT, currentChatSession, isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, PARALLEL_TASKS, startAsideSession, startChatSession, startTaskSession, STATUS_PING, statusLine, wantsSideReply, withQuote } from "../../../lib/chat.js";
 import type { MessageQuote } from "../../../lib/llm.js";
 import { appendTranscript } from "../../../lib/memory.js";
 import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
@@ -52,7 +52,7 @@ function quoteOf(body: unknown): MessageQuote | undefined {
  * own when the thread is busy and the message is a fresh request (or says so); otherwise the chat
  * thread, where a steer sent mid-task is applied to the running work.
  */
-async function route(t: Tenant, main: SessionRow | undefined, text: string, quote: MessageQuote | undefined): Promise<{ target: SessionRow | undefined; spawn: "task" | "aside" | null; text: string }> {
+async function route(t: Tenant, main: SessionRow | undefined, text: string, quote: MessageQuote | undefined): Promise<{ target: SessionRow | undefined; spawn: "task" | "aside" | "status" | null; text: string }> {
   const tasks = await activeTaskSessions(t.id);
   if (quote) {
     // Bubble ids are "<session>-<index>", cards "<session>-<index>t<call>".
@@ -67,11 +67,17 @@ async function route(t: Tenant, main: SessionRow | undefined, text: string, quot
   if (codeIn(text)) return { target: main, spawn: null, text };
   const explicit = PARALLEL_PREFIX.test(text);
   const busy = !!main && (main.status === "running" || !!main.pending_kind);
+  // A reply to one of the agent's own bubbles ("Are you crazy?", "tell me more about that") is a
+  // question about it, answered as a reply; a reply to the user's own earlier message is a steer of
+  // the work it started. Only the steer is handed to the running task.
+  const steer = quote?.who === "user" ? quote : undefined;
+  // A bare "?" or "status" while the thread works: the host answers from the thread's progress, no model.
+  if (main && busy && !quote && STATUS_PING.test(text.trim())) return { target: main, spawn: "status", text };
   // While the thread works, a greeting, a thank-you or a question ("any luck?", "did you use the
   // Amex?", "do you have my address?") is answered alongside at once, as a plain reply in the chat,
   // from the thread's own progress; the running task is never interrupted and never has to notice.
-  if (main && busy && !explicit && wantsSideReply(text, quote) && (await activeAsideSessions(t.id).catch(() => [])).length < ASIDE_LIMIT) return { target: main, spawn: "aside", text };
-  if (main && (explicit || (busy && isSeparateTask(text, quote))) && tasks.length < PARALLEL_TASKS) {
+  if (main && busy && !explicit && wantsSideReply(text, steer) && (await activeAsideSessions(t.id).catch(() => [])).length < ASIDE_LIMIT) return { target: main, spawn: "aside", text };
+  if (main && (explicit || (busy && isSeparateTask(text, steer))) && tasks.length < PARALLEL_TASKS) {
     return { target: main, spawn: "task", text: text.replace(PARALLEL_PREFIX, "") };
   }
   return { target: main, spawn: null, text: text.replace(PARALLEL_PREFIX, "") };
@@ -124,6 +130,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const recentSaid = (session?.messages ?? []).filter((m) => m.role === "assistant" && typeof m.content === "string").slice(-6).map((m) => m.content as string);
     let ack: string | undefined;
     let action: string;
+    if (routed.spawn === "status") {
+      // The host answers a status ping itself: the ping and one line on where things stand, both shown, no model run.
+      await appendUserEcho(session!, text, reaction, quote);
+      const line = statusLine(session!, await activeTaskSessions(t.id).catch(() => []));
+      await appendAssistantMessage(session!, line, true);
+      await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
+      return res.status(200).json({ session_id: session!.id, action: "status", reaction, status: session!.status });
+    }
     if (routed.spawn === "aside") {
       // The thread is busy: this question is answered alongside it, at once, as a normal reply.
       session = await startAsideSession(t, forModel, main!, quote, reaction);
