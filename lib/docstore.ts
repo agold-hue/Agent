@@ -159,6 +159,11 @@ export function chunkPages(pages: string[], maxChars = REVIEW_CHUNK_CHARS): Arra
  */
 export async function ingestFile(t: Tenant, content: Buffer, mime: string, filename: string, source: "chat" | "mail"): Promise<{ text: string; readable: boolean; doc?: StoredDocument }> {
   const ex: Extracted = await extractText(content, mime, filename);
+  // A voice note is a message, not a document: it never goes to the document store, it reads as talk.
+  if (ex.how === "audio") {
+    if (ex.text.trim()) return { text: `(Voice note: ${filename}; transcript below. This is someone speaking, so read it as talk: filler, no punctuation, names and numbers sometimes misheard.)\n\n${ex.text}`, readable: true };
+    return { text: `(Voice note: ${filename}; it could not be transcribed: ${ex.why ?? "unknown error"}. Say so in one line and ask for it in writing.)`, readable: false };
+  }
   const pages = ex.pageTexts ?? (ex.text ? [ex.text] : []);
   const chars = pages.reduce((s, p) => s + p.length, 0);
   const kind = ex.how === "pdf" || ex.how === "pdf-ocr" ? `PDF, ${ex.pages ?? pages.length} page${(ex.pages ?? pages.length) === 1 ? "" : "s"}${ex.how === "pdf-ocr" ? ", scanned, read by OCR" : ""}` : ex.how === "text" ? "text" : mime;

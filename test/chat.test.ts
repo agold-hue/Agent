@@ -155,3 +155,42 @@ test("acknowledgements are terse and carry no cheer", () => {
     assert.ok(!/!|boss|hang tight|sure thing|you got it/i.test(a), a);
   }
 });
+
+import { isAudio } from "../lib/stt.js";
+
+test("a voice note is recognised by mime type or by the name a phone gives it", () => {
+  assert.ok(isAudio("audio/webm", "voice.webm")); // the app's hold-to-record
+  assert.ok(isAudio("audio/mpeg", "memo.mp3"));
+  assert.ok(isAudio("video/mp4", "voice.m4a")); // an iPhone memo
+  assert.ok(isAudio("application/octet-stream", "PTT-20260917-WA0002.opus")); // WhatsApp through a mail server
+  assert.ok(isAudio("", "note.amr"));
+  assert.ok(!isAudio("application/pdf", "bill.pdf"));
+  assert.ok(!isAudio("image/jpeg", "code.jpg"));
+  assert.ok(!isAudio("application/octet-stream", "old.docx"));
+});
+
+test("an attached voice note comes back as a transcript, and says so plainly when it cannot", async () => {
+  const note = Buffer.from("fake audio");
+  const off = await describeFile(note, "audio/webm", "voice.webm");
+  assert.ok(!off.readable && /could not be transcribed/.test(off.text)); // STT_* unset in tests
+
+  process.env.STT_BASE_URL = "https://stt.example/v1";
+  process.env.STT_API_KEY = "k";
+  const realFetch = globalThis.fetch;
+  let sentTo = "";
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    sentTo = String(url);
+    return new Response(JSON.stringify({ text: "pay the con ed bill friday" }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const out = await describeFile(note, "audio/webm", "voice.webm");
+    assert.equal(sentTo, "https://stt.example/v1/audio/transcriptions");
+    assert.ok(out.readable);
+    assert.match(out.text, /Voice note: voice\.webm/);
+    assert.match(out.text, /pay the con ed bill friday/);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.STT_BASE_URL;
+    delete process.env.STT_API_KEY;
+  }
+});

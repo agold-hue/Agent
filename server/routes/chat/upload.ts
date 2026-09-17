@@ -7,7 +7,7 @@ import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { atLeastModel, visionTier } from "../../../lib/router.js";
 import { appendToolResult, appendUserMessage, updateSession, type SessionRow } from "../../../lib/sessions.js";
 import { stampMessage } from "../../../lib/transcript.js";
-import { sttConfigured, transcribe } from "../../../lib/stt.js";
+import { isAudio, sttConfigured, transcribe } from "../../../lib/stt.js";
 
 /**
  * An attachment (or voice note) while the agent is waiting on the user: it IS the answer (a screenshot
@@ -38,7 +38,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const content = Buffer.from(body.data, "base64");
   if (content.length > 4 * 1024 * 1024) return res.status(413).json({ error: "file too large (4 MB max); email it instead" });
   const mime = body.mimeType ?? "application/octet-stream";
-  if (mime.startsWith("audio/") || mime.startsWith("video/webm") || body.voice) {
+  // Held-to-record in the app, or an audio file picked or dropped in (an iPhone memo, a WhatsApp note):
+  // either way it is the user talking, so it becomes a spoken message rather than an attachment.
+  if (isAudio(mime, body.filename) || body.voice) {
     if (!sttConfigured()) return res.status(501).json({ error: "voice notes are not enabled on this server; use the dictation button instead" });
     let spoken: string;
     try {

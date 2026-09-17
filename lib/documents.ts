@@ -3,8 +3,11 @@
  * a receipt. PDFs are read page by page with pdf.js from the text layer, with lines rebuilt from the
  * glyph positions so columns stay columns (a statement's date | merchant | amount survives). A PDF
  * with no text layer (a scan, a photo saved as PDF) goes through OCR when the provider supports it;
- * otherwise it is reported as a scan. Text-like files are decoded; anything else is described by name.
+ * otherwise it is reported as a scan. Text-like files are decoded; audio is transcribed (STT_*), so a
+ * voice note arrives as words like any other message; anything else is described by name.
  */
+import { isAudio, transcribeQuietly } from "./stt.js";
+
 const MAX_CHARS = Number(process.env.DOCUMENT_MAX_CHARS ?? 400_000);
 const OCR_MAX_PAGES = Number(process.env.PDF_OCR_MAX_PAGES ?? 30);
 
@@ -12,10 +15,12 @@ export interface Extracted {
   /** What the model reads (pages joined with page markers). */
   text: string;
   /** How it was read, for the note that precedes the text. */
-  how: "pdf" | "pdf-ocr" | "text" | "none";
+  how: "pdf" | "pdf-ocr" | "text" | "audio" | "none";
   pages?: number;
   /** Per-page text, for the document store. */
   pageTexts?: string[];
+  /** Why an otherwise readable file came back empty (a transcription that failed), for the note. */
+  why?: string;
 }
 
 export function isTextLike(mime: string, filename = ""): boolean {
@@ -246,6 +251,11 @@ export function joinPages(pages: string[]): string {
 }
 
 export async function extractText(content: Buffer, mime: string, filename = ""): Promise<Extracted> {
+  // A voice note is a message, not a document: transcribe it first, before the PDF and text branches.
+  if (isAudio(mime, filename)) {
+    const { text, error } = await transcribeQuietly(content, filename, mime);
+    return { text: text.slice(0, MAX_CHARS), how: "audio", why: error, pageTexts: text ? [text] : [] };
+  }
   if (isPdf(content, mime, filename)) {
     try {
       const { pages, numPages } = await extractPdfPages(content);
@@ -270,6 +280,10 @@ export async function extractText(content: Buffer, mime: string, filename = ""):
 /** The message text for an attachment when it is inlined whole: a header line the page can recognise, then the content. */
 export async function describeFile(content: Buffer, mime: string, filename: string): Promise<{ text: string; readable: boolean }> {
   const ex = await extractText(content, mime, filename);
+  if (ex.how === "audio") {
+    if (ex.text.trim()) return { text: `(Voice note: ${filename}; transcript below. This is someone speaking, so read it as talk: filler, no punctuation, names and numbers sometimes misheard.)\n\n${ex.text}`, readable: true };
+    return { text: `(Voice note: ${filename}; it could not be transcribed: ${ex.why ?? "unknown error"}. Say so in one line and ask for it in writing.)`, readable: false };
+  }
   if (ex.text.trim()) {
     const kind = ex.how === "pdf" || ex.how === "pdf-ocr" ? `PDF, ${ex.pages} page${ex.pages === 1 ? "" : "s"}${ex.how === "pdf-ocr" ? ", scanned, read by OCR" : ""}` : "text";
     return { text: `(Attached file: ${filename}; ${kind}, contents below)\n\n${ex.text}`, readable: true };
