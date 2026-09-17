@@ -11,9 +11,14 @@ import type { Tenant } from "../../../lib/tenant.js";
 
 const STALL_KICK_MS = Number(process.env.STALL_KICK_MS ?? 4000);
 
-/** A cheap fingerprint of everything the page shows: nothing changed means a tiny reply (or no event). */
+/**
+ * A cheap fingerprint of everything the page shows: nothing changed means a tiny reply (or no event).
+ * The last field is whether a reply is being written (the page shows typing dots for it), not how
+ * much of it: the draft grows every 700 ms, and each growth used to rebuild and push the whole week
+ * of sessions for a page that never renders the draft text.
+ */
 export async function historyVersion(t: Tenant): Promise<string> {
-  const fp = await one<{ v: string }>("select coalesce(max(updated_at)::text, '') || ':' || count(*)::text || ':' || coalesce(sum(case when status in ('running','waiting') then 1 else 0 end), 0)::text || ':' || coalesce(sum(length(draft)), 0)::text as v from agent_sessions where user_id = $1", [t.id]);
+  const fp = await one<{ v: string }>("select coalesce(max(updated_at)::text, '') || ':' || count(*)::text || ':' || coalesce(sum(case when status in ('running','waiting') then 1 else 0 end), 0)::text || ':' || coalesce(sum(case when status = 'running' and coalesce(draft, '') <> '' then 1 else 0 end), 0)::text as v from agent_sessions where user_id = $1", [t.id]);
   return fp?.v ?? "";
 }
 

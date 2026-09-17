@@ -1,5 +1,5 @@
 import type { ChatMessage, MessageQuote } from "./llm.js";
-import { activeTaskSessions, chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, taskStart, taskTurns, taskUserText, type SessionRow } from "./sessions.js";
+import { activeTaskSessions, chatSessionHeadsSince, chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, type SessionRow, sessionsByIds, taskStart, taskTurns, taskUserText } from "./sessions.js";
 import { codeIn, isApprovalReply } from "./policy.js";
 import { ASKS, isAsk, isQuickQuestion, STEERS, tierFor } from "./router.js";
 import { stampMessage } from "./transcript.js";
@@ -470,14 +470,29 @@ export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> 
  * first. Only the current thread carries a status; tool cards (approvals, questions, code requests)
  * show for the current thread and for tasks still going, so a task can ask the user something.
  */
+/**
+ * Rendered timelines per session, keyed on the row state they were rendered from. A poll or a
+ * stream tick re-reads only the sessions that changed since the last rendering in this worker (one
+ * session while a reply is being written), not a week of message arrays every time.
+ */
+const rendered = new Map<string, { key: string; items: ChatItem[] }>();
+const RENDER_CACHE_MAX = Number(process.env.HISTORY_RENDER_CACHE ?? 400);
+const renderKey = (s: { updated_at: Date; status: string; pending_kind: string | null }) => `${new Date(s.updated_at).toISOString()}:${s.status}:${s.pending_kind ?? ""}`;
+
 export async function chatHistory(t: Tenant, current: SessionRow | undefined, days = 30): Promise<ChatItem[]> {
-  const rows = await chatSessionsSince(t.id, new Date(Date.now() - days * 86_400_000), Number(process.env.HISTORY_SESSIONS ?? 60), { tasks: true });
-  const out: ChatItem[] = [];
-  for (const row of rows) {
-    const items = toChatItems(row);
-    const live = (current && row.id === current.id) || (row.kind === "task" && (row.status === "running" || row.status === "waiting"));
-    out.push(...(current && row.id === current.id ? items : items.filter((i) => i.kind !== "status" && (live || i.kind !== "tool"))));
+  const heads = await chatSessionHeadsSince(t.id, new Date(Date.now() - days * 86_400_000), Number(process.env.HISTORY_SESSIONS ?? 60), { tasks: true });
+  const stale = heads.filter((h) => rendered.get(h.id)?.key !== renderKey(h));
+  for (const row of await sessionsByIds(stale.map((h) => h.id))) {
+    rendered.delete(row.id);
+    rendered.set(row.id, { key: renderKey(row), items: toChatItems(row) });
   }
-  if (current && !rows.some((r) => r.id === current.id)) out.push(...toChatItems(current));
+  while (rendered.size > RENDER_CACHE_MAX) rendered.delete(rendered.keys().next().value!);
+  const out: ChatItem[] = [];
+  for (const head of heads) {
+    const items = rendered.get(head.id)?.items ?? [];
+    const live = (current && head.id === current.id) || (head.kind === "task" && (head.status === "running" || head.status === "waiting"));
+    out.push(...(current && head.id === current.id ? items : items.filter((i) => i.kind !== "status" && (live || i.kind !== "tool"))));
+  }
+  if (current && !heads.some((r) => r.id === current.id)) out.push(...toChatItems(current));
   return out;
 }
