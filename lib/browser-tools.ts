@@ -260,6 +260,32 @@ export function pointlessSite(url: string): string {
   return "";
 }
 
+/**
+ * How to put text into a field. Keystroke by keystroke is right for a short one: search boxes and
+ * address fields only show their suggestion list in response to real key events, and some sign-in
+ * forms watch the typing. It is absurd for a long one — a 4,300-character document typed at 15ms a
+ * character took 64.6 seconds in production, which is the whole of one browser_type call in the logs.
+ * Anything past a line or two is set in one go.
+ */
+export const TYPE_DELAY_MS = Number(process.env.TYPE_DELAY_MS ?? 15);
+export const TYPE_CHAR_LIMIT = Number(process.env.TYPE_KEYSTROKE_LIMIT ?? 120);
+
+export function typePlan(text: string): { mode: "keystrokes" | "paste"; delayMs: number; estMs: number } {
+  if (text.length > TYPE_CHAR_LIMIT || /\n/.test(text)) return { mode: "paste", delayMs: 0, estMs: 50 };
+  return { mode: "keystrokes", delayMs: TYPE_DELAY_MS, estMs: text.length * TYPE_DELAY_MS };
+}
+
+/** Put `text` into `loc` the cheap way when it is long, the human way when it is short. */
+export async function enterText(loc: { fill: (v: string) => Promise<void>; type: (v: string, o?: { delay?: number }) => Promise<void> }, text: string): Promise<"keystrokes" | "paste"> {
+  const plan = typePlan(text);
+  if (plan.mode === "paste") {
+    await loc.fill(text);
+    return "paste";
+  }
+  await loc.type(text, { delay: plan.delayMs });
+  return "keystrokes";
+}
+
 /** "amazon.com/orders", "www.coned.com" or a full URL, all reaching the same place. */
 export function normalizeUrl(url: string): string {
   const u = url.trim();
@@ -593,7 +619,7 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         const { loc, how } = await resolveTarget(page, a);
         await loc.click({ timeout: 10_000 });
         await loc.fill("").catch(() => {});
-        await loc.type(str("text"), { delay: 15 });
+        await enterText(loc, str("text"));
         if (a.enter) {
           await loc.press("Enter");
           await settle(page);

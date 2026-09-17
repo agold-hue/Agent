@@ -173,3 +173,18 @@ test("the online PDF and OCR farms are refused, with the tool that does the job"
     assert.equal(pointlessSite(url), "");
   }
 });
+
+test("long text is pasted, short text is typed like a person", async () => {
+  const { typePlan } = await import("../lib/browser-tools.js");
+  // A search box or a login field: real key events, because sites listen for them.
+  const short = typePlan("mendy@example.com");
+  assert.equal(short.mode, "keystrokes");
+  assert.ok(short.estMs < 400);
+  // The 4,300-character document that took 64.6 seconds in production.
+  const doc = "x".repeat(4300);
+  const long = typePlan(doc);
+  assert.equal(long.mode, "paste");
+  assert.ok(long.estMs < 200, "a document must not be typed one key at a time");
+  // Anything with a line break is a body, not a field.
+  assert.equal(typePlan("line one\nline two").mode, "paste");
+});

@@ -1,5 +1,5 @@
 import type { Locator, Page } from "playwright-core";
-import { after, pageText, ref, settle, snapshot, waitInteractive, withPage, rememberSnapshot } from "./browser-tools.js";
+import { after, enterText, pageText, ref, rememberSnapshot, settle, snapshot, waitInteractive, withPage } from "./browser-tools.js";
 import type { BrowserHandle } from "./browser.js";
 import { findCredential, recordLoginOutcome, registrableDomain } from "./credentials.js";
 import type { ChatMessage } from "./llm.js";
@@ -102,13 +102,13 @@ export async function fillForm(t: Tenant, row: SessionRow, fields: FormField[], 
         await loc.click({ timeout: 8000 }).catch(() => {});
         await loc.fill(value).catch(async () => {
           await loc.fill("").catch(() => {});
-          await loc.type(value, { delay: 10 });
+          await enterText(loc, value);
         });
         // React-style inputs sometimes drop a programmatic fill; type it when the value did not stick.
         const now = await loc.inputValue().catch(() => value);
         if (now !== value && type !== "password") {
           await loc.fill("").catch(() => {});
-          await loc.type(value, { delay: 10 }).catch(() => {});
+          await enterText(loc, value).catch(() => {});
         }
       }
       last = loc;
@@ -789,7 +789,7 @@ export async function replayPath(t: Tenant, row: SessionRow, domainArg: string, 
           const { loc } = await resolveTarget(page, { text: step.label });
           await loc.click({ timeout: 8000 }).catch(() => {});
           await loc.fill(step.value).catch(async () => {
-            await loc.type(step.value, { delay: 10 });
+            await enterText(loc, step.value);
           });
           if (step.enter) {
             await loc.press("Enter");
