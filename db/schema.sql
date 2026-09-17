@@ -457,3 +457,28 @@ create table if not exists readings (
 create index if not exists readings_user_time on readings(user_id, read_at desc);
 -- Quick replies for the last reply, written by the fast model after the reply is on the page.
 alter table agent_sessions add column if not exists chips jsonb;
+
+-- Receipts parsed from the owner's inbox: every order, ride, bill, refund and delivery notice, once, so
+-- spending and order questions are answered from here (no browser, no model for the sums) and the
+-- proactive side (packages, refunds, bills) runs off the same feed.
+create table if not exists receipts_ledger (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  message_id text not null,
+  merchant text not null,                     -- amazon.com, uber.com, coned.com ...
+  kind text not null,                         -- order | refund | shipped | delivered | bill | ride | subscription | payment | other
+  amount_cents bigint not null default 0,     -- what this email says was charged (a refund's amount for refunds; 0 for a shipping notice)
+  currency text not null default 'USD',
+  order_id text,
+  tracking text,
+  carrier text,
+  due_at timestamptz,
+  occurred_at timestamptz not null,           -- the email's date
+  subject text,
+  items jsonb not null default '[]',
+  payment_method text,
+  created_at timestamptz not null default now(),
+  unique (user_id, message_id)
+);
+create index if not exists receipts_ledger_user_time on receipts_ledger(user_id, occurred_at desc);
+create index if not exists receipts_ledger_user_merchant on receipts_ledger(user_id, merchant, occurred_at desc);

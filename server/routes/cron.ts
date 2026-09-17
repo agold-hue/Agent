@@ -7,7 +7,7 @@ import { ensureSchema, q } from "../../lib/db.js";
 import { env } from "../../lib/env.js";
 import { takeDueFollowUps } from "../../lib/followups.js";
 import { attachmentsFor, takeUntriaged } from "../../lib/inbound.js";
-import { isBatchMinute, takeDigest } from "../../lib/notify.js";
+import { deferToDigest, isBatchMinute, takeDigest } from "../../lib/notify.js";
 import { modelFor } from "../../lib/router.js";
 import { hostFinish, kick } from "../../lib/runtime.js";
 import { sitesIn } from "../../lib/sessions.js";
@@ -229,6 +229,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     }
 
+    // Receipts from the inbox every four hours: orders, rides, bills, refunds and deliveries parsed
+    // once into the ledger; packages, bills and refunds tracked from them; the notable ones into the
+    // next digest. This is what makes "what did I spend" instant and the day's items current.
+    if (t.googleRefreshToken && clock.m === 7 && clock.h % 4 === 0) {
+      const { syncReceipts } = await import("../../lib/receipts.js");
+      const r = await syncReceipts(t, { days: 2, max: 40 }).catch((err) => (console.error(`[cron] receipts ${t.slug}:`, err), { scanned: 0, parsed: 0, notable: [] as string[] }));
+      out.receipts = (out.receipts ?? 0) + r.parsed;
+      if (r.notable.length) await deferToDigest(t, "From your receipts", r.notable.join("\n")).catch(() => {});
+    }
     // Overnight: refresh the figures this customer keeps asking for (recorded paths + readers), one browser per night.
     if (env.browserbase.configured()) {
       const tmp = { id: `readings-${t.id}`, user_id: t.id, browserbase_session_id: null, browser_target_id: null, messages: [], kind: "task", channel: "chat", status: "running" } as unknown as import("../../lib/sessions.js").SessionRow;

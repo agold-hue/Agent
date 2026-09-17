@@ -1,6 +1,7 @@
 import { listItems } from "./daily.js";
 import { freshReadings } from "./proactive.js";
 import type { Tenant } from "./tenant.js";
+import { spendingFromInbox, spendingQuestion } from "./receipts.js";
 
 /**
  * Answers the host writes from what it already tracks, with no model call: "what's due", "where's
@@ -37,6 +38,13 @@ export async function trackedAnswer(t: Tenant, text: string): Promise<string | u
   const q = text.replace(/^\[[^\]]*\]\n/, "").trim();
   const tz = t.timezone;
   let m: RegExpMatchArray | null;
+  // "How much did I spend on Amazon in January", "everything I spent in 2026": the receipts in the inbox,
+  // summed by the host. No browser, no model for the figures. Falls through when the inbox has nothing.
+  const spend = spendingQuestion(q);
+  if (spend) {
+    const answer = await spendingFromInbox(t, spend).catch(() => undefined);
+    if (answer) return answer;
+  }
   if ((m = q.match(DUE))) {
     const days = /today/i.test(m[1] ?? "") ? 1 : /tomorrow/i.test(m[1] ?? "") ? 2 : 7;
     const items = await listItems(t, { status: "open", dueBefore: new Date(Date.now() + days * 86_400_000), limit: 12 }).catch(() => []);

@@ -261,7 +261,17 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         return { text: `Started as its own task (${started.id}): "${text.slice(0, 80)}". It reports into the chat when done; do not wait for it.` };
       }
       case "spending_report": {
-        const { spendingReport } = await import("./ledger.js");
+        const { spendingReport, periodAsked } = await import("./ledger.js");
+        // The inbox first: receipt emails cover the period with no sign-in and no page reading.
+        if (t.googleRefreshToken && args.period) {
+          const { spendingFromInbox, spendingQuestion } = await import("./receipts.js");
+          const period = periodAsked(s("period"));
+          const merchant = spendingQuestion(`spent on ${s("site") || ""} in ${s("period")}`)?.merchant;
+          if (period) {
+            const fromInbox = await spendingFromInbox(t, { period, merchant }).catch(() => undefined);
+            if (fromInbox) return { text: `SPENDING REPORT for ${period.label} (${period.from.toISOString().slice(0, 10)} to ${period.to.toISOString().slice(0, 10)}) from the user's receipt emails, computed by the host. COVERS ${period.from.toISOString().slice(0, 10)}..${period.to.toISOString().slice(0, 10)}.\n${fromInbox}\n(Report these figures as they are; say they come from the receipts in their inbox.)` };
+          }
+        }
         return { text: await spendingReport(t, row, { period: args.period ? s("period") : undefined, site: args.site ? s("site") : undefined, next_label: args.next_label ? s("next_label") : undefined }) };
       }
       case "escalate_model": {
