@@ -20,8 +20,37 @@ const fn = (name: string, description: string, parameters: Record<string, unknow
  * else gets the full set. Names not listed here fall back to "all".
  */
 const QUICK_TOOLS = new Set(["memory_read", "memory_append", "memory_write", "memory_grep", "memory_list", "list_items", "track_item", "calendar", "schedule_follow_up", "tell_user", "escalate_model", "start_task", "set_preferred_name", "web_search", "fetch_page", "bank", "track_package", "watch_page", "document"]);
-export function toolsFor(kind: "quick" | "all"): ToolDef[] {
-  return kind === "quick" ? tools.filter((t) => QUICK_TOOLS.has(t.function.name)) : tools;
+/** Tools that only work with an integration the customer may not have; dropped from the call when it is absent. */
+const GOOGLE_TOOLS = new Set(["calendar", "owner_inbox", "drive"]);
+const BANK_TOOLS = new Set(["bank"]);
+const TRACKING_TOOLS = new Set(["track_package"]);
+const RELAY_TOOLS = new Set(["local_browser"]);
+export interface ToolOpts {
+  google?: boolean;
+  bank?: boolean;
+  tracking?: boolean;
+  relay?: boolean;
+  /** Tool names already used in this thread: kept whatever the class, since providers expect the definitions of calls in the history. */
+  keep?: Set<string>;
+}
+/**
+ * The tools sent with a call, by what the task can need. "quick" is the small set; "all" is every
+ * tool minus the ones whose integration this customer does not have (no Google means no calendar,
+ * inbox or Drive tool; no bank link means no bank tool). Thousands of tokens of definitions leave
+ * every call, and a model never reaches for a tool that would only fail.
+ */
+export function toolsFor(kind: "quick" | "all", opts: ToolOpts = {}): ToolDef[] {
+  const keep = opts.keep ?? new Set<string>();
+  return tools.filter((t) => {
+    const n = t.function.name;
+    if (keep.has(n)) return true;
+    if (kind === "quick" && !QUICK_TOOLS.has(n)) return false;
+    if (opts.google === false && GOOGLE_TOOLS.has(n)) return false;
+    if (opts.bank === false && BANK_TOOLS.has(n)) return false;
+    if (opts.tracking === false && TRACKING_TOOLS.has(n)) return false;
+    if (opts.relay === false && RELAY_TOOLS.has(n)) return false;
+    return true;
+  });
 }
 
 export const tools: ToolDef[] = [
@@ -42,6 +71,7 @@ export const tools: ToolDef[] = [
   fn("browser_find", "Find elements by visible text and get their refs and roles, e.g. 'Pay bill', 'Transactions', 'Continue'. Use it instead of reading a long snapshot for one control.", obj({ text: { type: "string" } }, ["text"])),
   fn("browser_fill_form", "Fill a whole form in one call: each field by ref or by its visible `label`, with its value (selects by option label, checkboxes with true/false), then optionally submit (`submit`: a button's text, a ref, or true to press Enter). Returns what changed on the page. One call instead of one turn per field.", obj({ fields: { type: "array", items: obj({ ref: { type: "string" }, label: { type: "string" }, value: { type: "string" } }, ["value"]) }, submit: { type: "string", description: "Button text or ref to click after filling, or 'enter'." } }, ["fields"])),
   fn("browser_extract", "Pull the page's table, grid or repeated list (transactions, orders, statements, search results) out as rows of cells in JSON, in one call instead of scrolling and reading. `scroll` loads lazy lists to the end first. For a spending question set `ledger_days` (e.g. 15 or 30): the host then does the accounting itself and returns money out (posted charges), pending, money back (refunds), and $0/cancelled/points-covered lines for that window, each with dates and descriptions. Report those figures; never add rows up yourself.", obj({ scroll: { type: "boolean" }, max_rows: { type: "number" }, ledger_days: { type: "number", description: "Window in days for a spending summary computed by the host." } })),
+  fn("spending_report", "The whole period's accounting, done by the host: 'how much did I spend on Amazon in 2026', 'last 12 months at Chase'. It reads EVERY page of the order or transaction history for the period (in parallel on sites that page by URL, by the Next button otherwise), parses each order's date and total, separates refunds, gift-card and points lines, de-duplicates by order id, and returns the sums with the exact dates covered. Call it FIRST for any total over a period longer than the current screen; never add up a recent-activity view and call it the year. On a site without URL paging, open the history page for the period first, then call it. Report its figures and its coverage; never your own sum.", obj({ period: { type: "string", description: "'2026', 'last 12 months', 'this year', 'last 3 months', 'last month', 'Sep 2026'" }, site: { type: "string", description: "Domain, when not the current page (amazon.com)." }, next_label: { type: "string", description: "The site's next-page button text when it is unusual." } }, ["period"])),
   fn("browser_run_path", "Replay a recorded path from sites/<domain>.md ('## Recorded paths', written by the host from a task that worked): every step runs server-side and you get the page at the end. Call it FIRST when the site note for this task's site lists a path that fits; it stops before anything that pays, sends, cancels or deletes and hands the page to you. `path` is the recorded name (or a part of it); omit it when the site has one path.", obj({ domain: { type: "string" }, path: { type: "string" } }, ["domain"])),
   fn("browser_press", "Press a key: Enter, Escape, Tab, ArrowDown...", obj({ key: { type: "string" } }, ["key"])),
   fn("browser_scroll", "Scroll the page down or up.", obj({ direction: { type: "string", enum: ["down", "up"] } })),

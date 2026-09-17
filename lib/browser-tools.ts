@@ -255,12 +255,20 @@ const SNAPSHOT_FN = `(max, offset) => {
     if (tag === "input" && e.value && String(e.type) !== "password") extra.push('value="' + e.value.slice(0, 40) + '"');
     if (tag === "select") extra.push('selected="' + ((e.options && e.options[e.selectedIndex] && e.options[e.selectedIndex].text) || "") + '"');
     if (e.checked) extra.push("checked");
+    const ac = el.getAttribute("aria-checked"); if (ac && !e.checked) extra.push("checked=" + ac);
+    if (el.getAttribute("aria-selected") === "true" || el.getAttribute("aria-current")) extra.push("selected");
+    const ae = el.getAttribute("aria-expanded"); if (ae) extra.push("expanded=" + ae);
+    if (el.getAttribute("aria-pressed") === "true") extra.push("pressed");
+    if (e.required) extra.push("required");
     if (e.disabled) extra.push("disabled");
     if (tag === "a" && e.href && !e.href.startsWith("javascript:")) { try { const u = new URL(e.href); extra.push((u.origin === location.origin ? u.pathname + u.search : e.href).slice(0, 60)); } catch { extra.push(e.href.slice(0, 60)); } }
     lines.push(("[" + id + "] " + role + ' "' + String(label).replace(/\\s+/g, " ").slice(0, 60) + '" ' + extra.join(" ")).trim());
   }
   for (const [k, c] of seen) if (c > 3) lines.push("(+" + (c - 3) + ' more ' + k.split("|")[0] + ' "' + k.split("|")[1] + '" like the ones above)');
   const headings = Array.from(document.querySelectorAll("h1, h2")).filter(isVisible).slice(0, 12).map((h) => "# " + h.innerText.trim().replace(/\\s+/g, " ").slice(0, 100));
+  // An open dialog blocks the page behind it; the model must deal with it first.
+  const dlg = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]')).filter(isVisible)[0];
+  if (dlg) { const name = dlg.getAttribute("aria-label") || (dlg.querySelector("h1, h2, h3") && dlg.querySelector("h1, h2, h3").innerText) || ""; headings.unshift("(a dialog is open" + (name ? ': "' + String(name).trim().slice(0, 80) + '"' : "") + "; controls behind it will not respond until it is closed)"); }
   return { title: document.title, url: location.href, headings, lines, total: els.length };
 }`;
 

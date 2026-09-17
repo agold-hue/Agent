@@ -28,7 +28,9 @@ export async function historyPayload(t: Tenant, version: string): Promise<Record
   if (session?.status === "running" && !session.lease_until && Date.now() - new Date(session.updated_at).getTime() > STALL_KICK_MS) await kick(session.id).catch(() => {});
   // While the agent works in the browser (or waits for a code), the user can watch or take over.
   const wantsLive = !!session?.browserbase_session_id && (session.status === "running" || session.status === "waiting") && env.browserbase.configured();
-  const [items, notices, liveView, tasks, asides] = await Promise.all([chatHistory(t, session), recentNotices(t, 30).catch(() => []), wantsLive ? liveViewIfRunning(session!.browserbase_session_id!) : Promise.resolve(null), taskStrip(t), activeAsideSessions(t.id).catch(() => [])]);
+  // A week of sessions, not a month: every session's full message array is loaded to render the
+  // timeline, and a month of them took seconds per poll. Older history is in the conversation files.
+  const [items, notices, liveView, tasks, asides] = await Promise.all([chatHistory(t, session, Number(process.env.HISTORY_DAYS ?? 7)), recentNotices(t, 20).catch(() => []), wantsLive ? liveViewIfRunning(session!.browserbase_session_id!) : Promise.resolve(null), taskStrip(t), activeAsideSessions(t.id).catch(() => [])]);
   // The reply being written right now: the thread's, or a side reply's (a question answered while the thread works).
   const draft = (session?.status === "running" ? session.draft : null) || asides.find((a) => a.draft)?.draft || null;
   const floor = Date.now() - 7 * 86_400_000;

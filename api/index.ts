@@ -10,6 +10,7 @@ import portal from "../server/routes/billing/portal.js";
 import history from "../server/routes/chat/history.js";
 import send from "../server/routes/chat/send.js";
 import stream from "../server/routes/chat/stream.js";
+import prefetch from "../server/routes/chat/prefetch.js";
 import react from "../server/routes/chat/react.js";
 import account from "../server/routes/account.js";
 import cancel from "../server/routes/chat/cancel.js";
@@ -54,6 +55,7 @@ const routes: Record<string, Handler> = {
   "chat/history": history,
   "chat/send": send,
   "chat/stream": stream,
+  "chat/prefetch": prefetch,
   "chat/upload": upload,
   "chat/cancel": cancel,
   account,

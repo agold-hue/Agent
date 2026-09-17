@@ -3,8 +3,11 @@ import type { ChatMessage } from "./llm.js";
 import { readMemory } from "./memory.js";
 import { parsePaths } from "./browser-extras.js";
 import { isHardSite, RANK, tierOfModel, type Tier } from "./router.js";
-import { messageText, sitesIn, taskStart, taskUserText, type SessionRow } from "./sessions.js";
+import { chargeCompletion, messageText, sitesIn, taskStart, taskUserText, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
+import { complete } from "./llm.js";
+import { modelFor } from "./router.js";
+import { periodAsked, periodCovered } from "./ledger.js";
 
 /**
  * Host tactics: what the loop does around the model so a task succeeds sooner and cheaper. Each is a
@@ -41,6 +44,11 @@ export async function preflightNote(t: Tenant, row: SessionRow): Promise<string 
   if (GOOGLE_WORDS.test(text) && !t.googleRefreshToken) gaps.push("Google is not connected, so the inbox, calendar and Drive tools will fail");
   if (NEEDS_ADDRESS.test(text) && !/\b(home|address)\b[^\n]{0,40}:\s*\S/i.test(facts)) gaps.push("no home address is on file");
   if (NEEDS_CARD.test(text) && !/\b(card|visa|amex|mastercard|discover)\b[^\n]{0,60}\d{4}/i.test(facts) && !/\bcard\b[^\n]{0,40}:\s*\S/i.test(facts)) gaps.push("no card is on file");
+  // A total over a period is the whole period's history, read page by page by the host, never one screen.
+  const period = periodAsked(text);
+  if (period && /\b(spend|spent|spending|total|orders|purchases|transactions|paid|bought|history)\b/i.test(text)) {
+    return `${PREFLIGHT_PREFIX} this asks for ${period.label} (${period.from.toISOString().slice(0, 10)} to ${period.to.toISOString().slice(0, 10)}), which is the whole period's history, not the current screen. Say in one tell_user line that you are reading every page of the period, sign in if needed, then call spending_report with the period (it pages through the history and does the sums). Never report a recent-activity view or a partial window as the answer, and never offer a menu of options instead of the figure.${gaps.length ? ` Also: ${gaps.join("; ")}.` : ""})`;
+  }
   if (!gaps.length) return undefined;
   return `${PREFLIGHT_PREFIX} ${gaps.join("; ")}. A missing login is not a blocker yet: the shared browser may already be signed in from an earlier task, and many pages read without an account, so open the site and see. If it does ask you to sign in, or a step needs the missing address or card, ask the user in one line for exactly that (or to add it under Settings > Logins) and stop; do not guess, do not try a login you do not have, and do not spend steps working around it.)`;
 }
@@ -222,3 +230,84 @@ export function splitTurnModel(row: SessionRow, taskModel: string, t?: Tenant): 
 
 /** The note that sends a draft report written by the task model back to the judgment model. */
 export const SPLIT_REPORT_NOTE = "(That draft was written by the assistant model that handled the clicking. You are the model in charge of this task: check the figures against what was read, keep what is right, fix what is not, and send the final report yourself as if for the first time. Never mention the draft or this note.)";
+
+// ---------------------------------------------------------------- Scope check before a total (B2)
+
+export const SCOPE_PREFIX = "(Scope check:";
+const TOTAL_WORDS = /\b(spend|spent|spending|total|orders|purchases|transactions|paid|bought)\b/i;
+
+/** The tool results of the current task, in order. */
+export function taskToolResults(messages: ChatMessage[]): string[] {
+  const out: string[] = [];
+  for (let i = taskStart(messages); i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "tool" && typeof m.content === "string") out.push(m.content);
+  }
+  return out;
+}
+
+/**
+ * A reply that gives a dollar total for a period the request named, when nothing read in this task
+ * covers that period: sent back with the one route that does. "$140.68 for 2026" from a six-week
+ * transactions view never reaches the user.
+ */
+export function scopeNote(messages: ChatMessage[], reply: string): string | undefined {
+  const request = taskUserText(messages);
+  const period = periodAsked(request);
+  if (!period || !TOTAL_WORDS.test(request) || !/\$\s?\d/.test(reply)) return undefined;
+  if (periodCovered(taskToolResults(messages), period)) return undefined;
+  return `${SCOPE_PREFIX} the user asked for ${period.label} (${period.from.toISOString().slice(0, 10)} to ${period.to.toISOString().slice(0, 10)}) and your reply gives a total, but nothing you read covers that period. Do not send it. Call spending_report with the period now (on the site's order or transaction history; sign in first if it asks), then report its figures and the dates it covered. If the site keeps less history than the period, say exactly what it covers.)`;
+}
+
+// ---------------------------------------------------------------- A second model's veto (B5)
+
+export const VETO_PREFIX = "(Before you send that:";
+const PARTIAL_WORDS = /\b(so far|only (kept|shows|goes back|covers)|recent (months|weeks|activity)|last (six|6|few) weeks|no longer exists|can'?t (find|access|see)|couldn'?t|could not|unable to|not able to|isn'?t available|wasn'?t able|no way to)\b/i;
+
+/**
+ * Before a reply that gives up or reports a partial window, a cheap model reads what was tried and
+ * the routes on file (site-note URLs, recorded paths, the host tools) and names the one not taken.
+ * Once per task; a reply the veto lets through goes out as is.
+ */
+export async function vetoReport(t: Tenant, row: SessionRow, reply: string): Promise<string | undefined> {
+  if ((process.env.REPORT_VETO ?? "on") === "off" || !PARTIAL_WORDS.test(reply)) return undefined;
+  const request = taskUserText(row.messages);
+  const tried: string[] = [];
+  const urls = new Set<string>();
+  for (let i = taskStart(row.messages); i < row.messages.length; i++) {
+    for (const c of row.messages[i].tool_calls ?? []) {
+      let a: Record<string, unknown> = {};
+      try {
+        a = JSON.parse(c.function.arguments || "{}");
+      } catch {
+        /* ignore */
+      }
+      tried.push(`${c.function.name}${a.url ? ` ${String(a.url).slice(0, 80)}` : a.period ? ` ${String(a.period)}` : a.text ? ` "${String(a.text).slice(0, 40)}"` : ""}`);
+      if (a.url) urls.add(String(a.url));
+    }
+  }
+  const notes: string[] = [];
+  for (const site of new Set([...sitesIn(request), ...[...urls].map((u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }).filter(Boolean)])) {
+    const note = await readMemory(t, `sites/${site}.md`).catch(() => null);
+    if (note) notes.push(`sites/${site}.md:\n${note.slice(0, 1500)}`);
+  }
+  const c = await complete({
+    model: modelFor("chat", t),
+    reasoning: "none",
+    temperature: 0,
+    maxTokens: 160,
+    messages: [
+      { role: "system", content: "You check an assistant's draft reply before it goes to the person. The draft gives up, or reports only part of what was asked. You get the request, what the assistant tried (tool calls in order), its site notes, and the host tools it has: spending_report (reads every page of an order or transaction history for a period and does the sums), browser_run_path (replays a recorded path from the site note), browser_extract (a table or list as rows), browser_find (a control by its label), browser_fill_form, browser_wait_for, web_search / fetch_page (find the right page), login (sign in from the vault), escalate_model. Answer JSON only: {\"ok\": true} when every reasonable route was tried or the request is impossible for a browser assistant; otherwise {\"route\": \"<one concrete instruction, one line, naming the tool and the page or URL>\"}. Never suggest a route already in the tried list." },
+      { role: "user", content: `Request: ${request.slice(0, 600)}\n\nDraft reply: ${reply.slice(0, 1200)}\n\nTried, in order:\n${tried.slice(-25).join("\n") || "(nothing)"}\n\n${notes.join("\n\n") || "(no site notes)"}` },
+    ],
+  });
+  await chargeCompletion(t, row, c, "audit").catch(() => {});
+  const text = typeof c.message.content === "string" ? c.message.content : "";
+  try {
+    const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? "{}") as { ok?: boolean; route?: string };
+    if (parsed.route && !parsed.ok) return `${VETO_PREFIX} ${String(parsed.route).slice(0, 300)} Do that now with tools; send a reply only after it has been tried, and then say what it gave.)`;
+  } catch {
+    /* an unreadable verdict lets the reply through */
+  }
+  return undefined;
+}

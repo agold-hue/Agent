@@ -531,6 +531,10 @@ export async function readPages(urls: string[], opts: { focus?: string; charge?:
 export async function condensePage(page: PageRead, opts: { focus?: string; charge?: (c: Completion) => Promise<unknown>; condenseModel?: string }): Promise<PageRead> {
   if (page.text.length <= PAGE_CONDENSE_CHARS) return page;
   if (opts.condenseModel && opts.focus) {
+    // The same page condensed around the same question is the same text: kept for a day, no model call.
+    const key = `condensed:${page.finalUrl}:${opts.focus.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120)}`;
+    const hit = await cacheGet<{ text: string }>(key);
+    if (hit?.text) return { ...page, text: hit.text, condensed: true, cached: true };
     try {
       const c = await complete({
         model: opts.condenseModel,
@@ -543,7 +547,11 @@ export async function condensePage(page: PageRead, opts: { focus?: string; charg
       });
       if (opts.charge) await opts.charge(c);
       const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
-      if (text) return { ...page, text: text === "NOTHING_RELEVANT" ? `(nothing on "${opts.focus}" in this ${page.chars.toLocaleString()}-character page)` : text, condensed: true };
+      if (text) {
+        const out = text === "NOTHING_RELEVANT" ? `(nothing on "${opts.focus}" in this ${page.chars.toLocaleString()}-character page)` : text;
+        await cachePut(key, "page", { text: out }, 24 * 3_600_000).catch(() => {});
+        return { ...page, text: out, condensed: true };
+      }
     } catch (err) {
       console.error(`[search] condense ${page.finalUrl}: ${err instanceof Error ? err.message : String(err)}`);
     }

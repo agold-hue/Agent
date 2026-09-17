@@ -8,6 +8,7 @@ import { chatSessionExhausted, kick, runSession } from "../../../lib/runtime.js"
 import { isPleasantryCloser, reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
 import { isLookupQuestion, isQuickQuestion, reroutedModel, tierFor } from "../../../lib/router.js";
+import { trackedAnswer } from "../../../lib/quick-answers.js";
 import { activeAsideSessions, activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
 
 /** How long a quick question or side reply may run inside the send request before a worker takes over. */
@@ -111,6 +112,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .slice(-9)
       .map((m) => m.reaction!);
     const reaction = reactionFor(text, recentReactions);
+    // "What's due", "where's my package", "when is the Con Ed bill due": answered from what the host
+    // tracks, when it has it, in one line and no model call. The user can ask for a live check.
+    if (!routed.spawn && !quote && !session?.pending_kind) {
+      const tracked = await trackedAnswer(t, text).catch(() => undefined);
+      if (tracked) {
+        if (!session) {
+          session = await startChatSession(t, forModel, undefined, reaction, quote);
+          await updateSession(session.id, { status: "idle", draft: null });
+          await appendAssistantMessage(session, tracked, false);
+        } else if (session.status === "running") {
+          await appendUserEcho(session, text, reaction, quote);
+          await appendAssistantMessage(session, tracked, true);
+        } else {
+          await appendUserMessage(session, stampMessage(t, forModel, "chat"), undefined, reaction, quote);
+          await appendAssistantMessage(session, tracked, false);
+          await updateSession(session.id, { status: "idle", draft: null });
+        }
+        await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
+        await appendTranscript(t, { channel: "chat", role: "agent", text: tracked }).catch(() => {});
+        return res.status(200).json({ session_id: session.id, action: "tracked", reaction, status: session.status === "running" ? "running" : "idle" });
+      }
+    }
     // A pure "thanks"/"perfect"/"got it" closing the exchange: react with an emoji and say nothing
     // back, the way a person taps a heart instead of typing "you're welcome". Only when nothing is
     // running or waiting (mid-task or a pending approval still gets the normal path) and it is not a

@@ -4,9 +4,10 @@ import { recordPaths } from "./browser-extras.js";
 import { closeTab, disconnectBrowser, runBrowserTool } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
-import { tools, toolsFor } from "./agent-config.js";
+import { tools, toolsFor, type ToolOpts } from "./agent-config.js";
 import { complete, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
 import { appendMemory, appendTranscript } from "./memory.js";
+import { appendAssistantMessage } from "./sessions.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
 import { quickLookup } from "./research.js";
 import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, RANK, reasoningFor, tierOfModel, type Tier } from "./router.js";
@@ -16,10 +17,10 @@ import { learnFromCorrection } from "./learn.js";
 import { detectFixes, gradeReply, keepPromise, recordFixes, suggestReplies } from "./proactive.js";
 import { recordOutcome, taskClassKey } from "./outcomes.js";
 import { readMemory } from "./memory.js";
-import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, sharedSystem, sitesIn, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
+import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, quickSystem, sharedSystem, sitesIn, takePrefetch, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool, type ToolOutcome } from "./tools.js";
-import { compactAfterHandoff, HANDOFF_PREFIX, HANDOFF_REQUEST, pageStuck, PREFLIGHT_PREFIX, preflightNote, ROUTES_PREFIX, SPLIT_REPORT_NOTE, splitTurnModel, stuckRoutesNote, tooDearForValue, valueAtStake, valueBudgetCents } from "./tactics.js";
+import { compactAfterHandoff, HANDOFF_PREFIX, HANDOFF_REQUEST, pageStuck, PREFLIGHT_PREFIX, preflightNote, ROUTES_PREFIX, SCOPE_PREFIX, scopeNote, SPLIT_REPORT_NOTE, splitTurnModel, stuckRoutesNote, tooDearForValue, valueAtStake, valueBudgetCents, VETO_PREFIX, vetoReport } from "./tactics.js";
 import { taskStateNote } from "./chat.js";
 
 /**
@@ -102,6 +103,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number; l
         if (now && now.status !== "idle") break;
       }
       await updateSession(sessionId, { lease_until: null });
+      const left = await getSession(sessionId).catch(() => undefined);
+      if (left?.browserbase_session_id) await disconnectBrowser(left.browserbase_session_id);
     }
   }
   return outcome;
@@ -126,8 +129,14 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
   // reply (a question answered alongside a busy thread) carries its own status brief and never
   // touches a site: no playbook or site notes, no list of parallel tasks.
   const aside = row.kind === "aside";
-  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: sharedSystem() };
-  row.contextBlock = await customerContext(t, aside ? { parallel: false } : { task: taskUserText(row.messages) });
+  // A quick question or a side reply runs on a prompt a tenth the size; everything else on the shared
+  // prompt trimmed to its kind (task sessions without the proactive rules, proactive ones without the
+  // browser rules): three small cache entries instead of one large one.
+  const quickRun = aside || (isQuickQuestion(taskUserText(row.messages)) && tierOfModel(row.model ?? "", t) === "chat");
+  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: quickRun ? quickSystem() : sharedSystem(row.kind) };
+  row.contextBlock = (!aside && takePrefetch(t.id, taskUserText(row.messages))) || (await customerContext(t, aside ? { parallel: false } : { task: taskUserText(row.messages) }));
+  // The tools this customer can use: no Google tools without Google, no bank tool without a bank link.
+  const toolOpts = await toolOptsFor(t, row);
   // Near the plan's monthly cap, step the tier down instead of hard-stopping at the cap later.
   const landed = await softLanding(t, row.model ?? "").catch(() => undefined);
   if (landed && landed !== row.model) {
@@ -298,8 +307,8 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
           model: turnModel,
           reasoning: reasoningFor(tierOfModel(turnModel, t)),
           messages: context,
-          tools: toolsFor(quick ? "quick" : "all"),
-          maxTokens: midTask && TOOL_TURN_MAX_TOKENS > 0 && !hasHostNotePrefix(row.messages, CUT_PREFIX) ? TOOL_TURN_MAX_TOKENS : undefined,
+          tools: toolsFor(quick ? "quick" : "all", toolOpts),
+          maxTokens: maxTokensFor(row, turnModel, t, midTask),
           onText: (text) => {
             if (Date.now() - lastDraft < 700) return;
             lastDraft = Date.now();
@@ -353,6 +362,29 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
           await save();
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
           continue;
+        }
+        // A total for a period nothing read covers ("$140.68 for 2026" off a six-week view): back to the
+        // full read, once. Then a draft that gives up or reports a partial window meets a second model's
+        // veto naming the route not taken, once.
+        if (text && (row.kind === "chat" || row.kind === "task") && !hasHostNotePrefix(row.messages, SCOPE_PREFIX)) {
+          const scope = scopeNote(row.messages, text);
+          if (scope) {
+            supersedeLastReply(row.messages);
+            row.messages.push({ role: "user", content: scope });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} scope`);
+            continue;
+          }
+        }
+        if (text && (row.kind === "chat" || row.kind === "task") && taskUsedTools(row.messages) && !hasHostNotePrefix(row.messages, VETO_PREFIX)) {
+          const veto = await vetoReport(t, row, text).catch(() => undefined);
+          if (veto) {
+            supersedeLastReply(row.messages);
+            row.messages.push({ role: "user", content: veto });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} veto`);
+            continue;
+          }
         }
         // Figures in the reply that appear nowhere in what the model read or was told this task: one
         // turn to re-read and correct them (or show the arithmetic), before the user sees them.
@@ -436,7 +468,7 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
         }
         const toolStart = Date.now();
         const started_early = early.get(call.id);
-        let out = started_early ? await started_early : ahead.has(i) ? await ahead.get(i)! : await executeTool(t, row, call.function.name, args, call.id);
+        let out = await withTick(row, call.function.name, started_early ? started_early : ahead.has(i) ? ahead.get(i)! : executeTool(t, row, call.function.name, args, call.id));
         // Several browser actions in one turn: the page comes back once, with the last of them.
         if (BROWSER_ACTIONS.has(call.function.name) && lastBrowserAction > i && !/^Tool .* failed/.test(out.text)) out = { ...out, text: `${out.text.split("\n\n")[0]}\n(page snapshot omitted: the last browser action in this turn returns the page)` };
         timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s${started_early ? "»" : ahead.has(i) ? "‖" : ""}`);
@@ -701,9 +733,66 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
       await closeTab(row).catch(() => {});
       if (!(await browserShared(row.browserbase_session_id, row.id).catch(() => true))) await releaseBrowser(row.browserbase_session_id).catch(() => {});
     }
-    await disconnectBrowser(row.browserbase_session_id);
+    // A chat thread keeps its connection through the warm wait: the next browser task skips the reconnect.
+    if (!(row.kind === "chat" && status === "idle" && WARM_WAIT_MS > 0)) await disconnectBrowser(row.browserbase_session_id);
   }
   return status === "error" ? "error" : "done";
+}
+
+/** The tools this customer can actually use right now, plus every tool already called in the thread. */
+async function toolOptsFor(t: Tenant, row: SessionRow): Promise<ToolOpts> {
+  const keep = new Set<string>();
+  for (const m of row.messages) for (const c of m.tool_calls ?? []) keep.add(c.function.name);
+  const opts: ToolOpts = { google: !!t.googleRefreshToken, keep };
+  try {
+    const { plaidConfigured } = await import("./plaid.js");
+    opts.bank = plaidConfigured();
+    const { trackingConfigured } = await import("./tracking.js");
+    opts.tracking = trackingConfigured().length > 0;
+    const { relayStatus } = await import("./relay.js");
+    opts.relay = (await relayStatus(t)).devices.length > 0;
+  } catch {
+    /* an integration check never blocks a turn */
+  }
+  return opts;
+}
+
+/** Output cap for a turn: a few hundred tokens on the chat tier, a thousand and a half on clicking turns, the full cap for judgment and for a reply asked for again after a cut. */
+function maxTokensFor(row: SessionRow, model: string, t: Tenant, midTask: boolean): number | undefined {
+  if (hasHostNotePrefix(row.messages, CUT_PREFIX)) return 4000;
+  const tier = tierOfModel(model, t);
+  const cap = Number(process.env[`MAX_TOKENS_${tier.toUpperCase()}`] ?? { chat: 600, task: 1500, hard: 4000, max: 4000 }[tier]);
+  return midTask && TOOL_TURN_MAX_TOKENS > 0 ? Math.min(TOOL_TURN_MAX_TOKENS, cap) : cap;
+}
+
+/** A tool that runs long posts one progress line so a slow page never looks like silence. */
+const TICK_AFTER_MS = Number(process.env.TOOL_TICK_MS ?? 7000);
+const TICK_WORDS: Record<string, string> = { browser_goto: "Loading the page…", browser_open: "Opening the browser…", browser_wait_for: "Waiting for the page…", browser_watch: "Waiting for a reply on the page…", browser_extract: "Reading the list…", browser_run_path: "Going through the site…", login: "Signing in…", spending_report: "Reading the history, page by page…", web_search: "Searching…", fetch_page: "Reading the page…", browser_fill_form: "Filling in the form…" };
+async function withTick<T>(row: SessionRow, tool: string, work: Promise<T>): Promise<T> {
+  if (row.channel !== "chat" || TICK_AFTER_MS <= 0) return work;
+  const timer = setTimeout(() => {
+    void appendAssistantMessage(row, TICK_WORDS[tool] ?? "Still working…", true).catch(() => {});
+  }, TICK_AFTER_MS);
+  try {
+    return await work;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A session the host finished itself (a standing order whose recorded path read the figure): the
+ * report goes into the thread and to the user, the tab closes, no model turn at all.
+ */
+export async function hostFinish(t: Tenant, row: SessionRow, report: string): Promise<void> {
+  await persistTurn(row.id, [{ role: "assistant", content: report, at: stamp() }], { status: "idle", last_report: report.slice(0, 20_000), lease_until: null });
+  await notifyOwner(t, row, report);
+  await appendTranscript(t, { channel: row.channel, role: "agent", text: report }).catch(() => {});
+  if (row.browserbase_session_id) {
+    await closeTab(row).catch(() => {});
+    if (!(await browserShared(row.browserbase_session_id, row.id).catch(() => true))) await releaseBrowser(row.browserbase_session_id).catch(() => {});
+    await disconnectBrowser(row.browserbase_session_id);
+  }
 }
 
 /**

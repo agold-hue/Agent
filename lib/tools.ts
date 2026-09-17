@@ -260,6 +260,10 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         await kick(started.id);
         return { text: `Started as its own task (${started.id}): "${text.slice(0, 80)}". It reports into the chat when done; do not wait for it.` };
       }
+      case "spending_report": {
+        const { spendingReport } = await import("./ledger.js");
+        return { text: await spendingReport(t, row, { period: args.period ? s("period") : undefined, site: args.site ? s("site") : undefined, next_label: args.next_label ? s("next_label") : undefined }) };
+      }
       case "escalate_model": {
         const next = nextTier(tierOfModel(row.model ?? "", t));
         if (!next) return { text: "You are already on the most capable model. Keep going with what you have, or tell the user where you are stuck." };

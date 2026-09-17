@@ -131,7 +131,7 @@ export async function fillForm(t: Tenant, row: SessionRow, fields: FormField[], 
 // ------------------------------------------------------------------ rows out of a page
 
 /** Runs in the page: the visible tables (or grids, or the largest repeated row-like structure) as header + rows. */
-const EXTRACT_FN = `(maxRows) => {
+export const EXTRACT_FN = `(maxRows) => {
   const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const txt = (el) => String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim();
   const headingFor = (el) => { let n = el; for (let i = 0; i < 4 && n; i++) { n = n.parentElement; const h = n && n.querySelector("h1, h2, h3, h4, caption"); if (h && vis(h)) return txt(h).slice(0, 80); } return ""; };
@@ -170,7 +170,7 @@ const EXTRACT_FN = `(maxRows) => {
   return out.slice(0, 3);
 }`;
 
-type Extracted = { source: string; heading: string; headers: string[]; rows: string[][]; total: number };
+export type Extracted = { source: string; heading: string; headers: string[]; rows: string[][]; total: number };
 const EXTRACT_MAX_CHARS = Number(process.env.EXTRACT_MAX_CHARS ?? 14_000);
 
 // ---------------- ledger summary: the accounting done by the host, not the model
@@ -193,9 +193,9 @@ export interface LedgerSummary {
 }
 
 const MONEY_CELL = /^[-+(]?\s?\$?\s?-?\d[\d,]*(?:\.\d{2})?\)?$|^-?\$\s?\d/;
-const REFUND_WORDS = /\b(refund|return|credit|reversal|reimburse|cashback|cash back|payment received|rewards? applied)\b/i;
-const PENDING_WORDS = /\bpending\b/i;
-const CANCEL_WORDS = /\b(cancel+ed|voided|declined|not charged|never charged)\b/i;
+export const REFUND_WORDS = /\b(refund|return|credit|reversal|reimburse|cashback|cash back|payment received|rewards? applied)\b/i;
+export const PENDING_WORDS = /\bpending\b/i;
+export const CANCEL_WORDS = /\b(cancel+ed|voided|declined|not charged|never charged)\b/i;
 
 export function parseMoney(s: string): number | undefined {
   const t = s.replace(/\s/g, "");

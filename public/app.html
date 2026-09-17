@@ -1118,6 +1118,14 @@
       if (!busy()) { clearInterval(pollTimer); pollTimer = null; }
     }, 1200);
   }
+  // While the user is still typing, the server prepares the context for that request (a one-second pause, once per text).
+  let prefetchTimer = null, prefetched = "";
+  $("text").addEventListener("input", () => {
+    clearTimeout(prefetchTimer);
+    const v = $("text").value.trim();
+    if (v.length < 12 || v === prefetched) return;
+    prefetchTimer = setTimeout(() => { prefetched = v; api("/api/chat/prefetch", { method: "POST", body: JSON.stringify({ text: v }) }).catch(() => {}); }, 900);
+  });
   function optimistic(text, reaction, quote) {
     const it = { kind: "user", id: "tmp-" + Date.now(), text, at: new Date().toISOString(), reaction, ...(quote ? { quote } : {}) };
     items.push(it); renderRooms(); renderList(true); return it;

@@ -450,7 +450,7 @@ export async function recentNotices(t: Tenant, limit = 10): Promise<ChatItem[]> 
  * show for the current thread and for tasks still going, so a task can ask the user something.
  */
 export async function chatHistory(t: Tenant, current: SessionRow | undefined, days = 30): Promise<ChatItem[]> {
-  const rows = await chatSessionsSince(t.id, new Date(Date.now() - days * 86_400_000), 200, { tasks: true });
+  const rows = await chatSessionsSince(t.id, new Date(Date.now() - days * 86_400_000), Number(process.env.HISTORY_SESSIONS ?? 60), { tasks: true });
   const out: ChatItem[] = [];
   for (const row of rows) {
     const items = toChatItems(row);

@@ -9,7 +9,8 @@ import { takeDueFollowUps } from "../../lib/followups.js";
 import { attachmentsFor, takeUntriaged } from "../../lib/inbound.js";
 import { isBatchMinute, takeDigest } from "../../lib/notify.js";
 import { modelFor } from "../../lib/router.js";
-import { kick } from "../../lib/runtime.js";
+import { hostFinish, kick } from "../../lib/runtime.js";
+import { sitesIn } from "../../lib/sessions.js";
 import { evalRanToday, runSearchEval } from "../../lib/search-eval.js";
 import { refreshReadings, remindPending, weeklyStyleNote } from "../../lib/proactive.js";
 import { replayPath } from "../../lib/browser-extras.js";
@@ -197,6 +198,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     for (const o of orders) {
       if (!scheduleMatches(o.schedule, clock) || (o.last_run && new Date(o.last_run).toISOString().slice(0, 10) === clock.day)) continue;
       await q("update standing_orders set last_run = $2::date where id = $1", [o.id, clock.day]);
+      // A standing order whose site has a recorded path with readers ("balance: the figure under Amount
+      // due") is done by the host: the path is replayed, the figure read off the page, the report written.
+      // No model turn. Anything the replay cannot read goes to a model task as before.
+      const site = sitesIn(o.what)[0];
+      if (site && /\b(check|read|what'?s|how much|balance|status|due|price|fare|rate)\b/i.test(o.what)) {
+        try {
+          const row = await createSession(t, { channel: "chat", kind: "task", title: o.what.slice(0, 120), text: stampMessage(t, `${o.what}\n(A standing order you run on a schedule, set by the user under Settings. Do it now and report the result in a few lines.)`, "chat") });
+          const replay = await replayPath(t, row, site).catch(() => "");
+          const read = replay.match(/read off the page: (.+)/)?.[1]?.trim();
+          if (read) {
+            await hostFinish(t, row, `${read} (${site}, read just now)`);
+            out.followups++;
+            out.host_replayed = (out.host_replayed ?? 0) + 1;
+            continue;
+          }
+          await kick(row.id);
+          out.followups++;
+          continue;
+        } catch (err) {
+          if (err instanceof UsageCapError) {
+            out.capped++;
+            continue;
+          }
+          console.error(`[cron] ${t.slug} standing order:`, err);
+        }
+      }
       await start(t, "followups", () =>
         createSession(t, { channel: "chat", kind: "task", title: o.what.slice(0, 120), text: stampMessage(t, `${o.what}\n(A standing order you run on a schedule, set by the user under Settings. Do it now and report the result in a few lines.)`, "chat") }),
       );
@@ -217,6 +244,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const reviewHour = Number(t.settings.daily_review_hour ?? 8);
+    // One morning session: when the inbox sweep is due at the same hour it rides inside the review,
+    // sharing the prompt, the context block and the cache instead of paying for them twice.
+    const sweepInReview = !!t.googleRefreshToken && !(await hasSessionOfKindToday(t.id, "inbox", clock.day));
     if (reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "review", clock.day)) && !(await markedToday(t.id, "review-skip", clock.day).catch(() => false))) {
       // Nothing due, no open project, nothing failed, no calendar: no model call today.
       if (!(await hasReviewWork(t).catch(() => true))) {
@@ -237,13 +267,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               `Look ahead 7 days: travel that needs bookings or check-ins, appointments that need prep, deliveries or pickups that collide with where the owner will be, meetings that need a brief. Start tasks for what can be done; set schedule_follow_up for the rest.`,
               `Walk renewals.md and watchlist.md: anything due, expiring, renewing, or worth checking today. If topics.md has entries, add a short signals digest (web_search; only if new and relevant).`,
               `Read history/failures.md for the last 7 days. For each failure, write the one change that prevents it next time into the right place (sites/<domain>.md for a site, preferences.md for a rule, standing_instructions.md for a default the owner should add), then remove the entry from failures.md.`,
-              `Then text the owner a short morning brief: what you started (one line each), what moved, what is coming, what needs their decision, and any change you made after a failure. If there is truly nothing, reply with exactly NO_REPORT.`,
+              ...(sweepInReview
+                ? [
+                    `Inbox sweep, in this same session: with owner_inbox, go through the owner's unread mail from the last day (search "is:unread newer_than:1d", up to 40). Per playbooks/inbox.md: archive noise; label anything that needs the owner; draft replies in their voice (owner_inbox draft) for their one-tap send; bills, receipts, confirmations, tracking and cancellations update items (track_item) and renewals.md; anything with a date goes on calendar.md with a follow-up.`,
+                  ]
+                : []),
+              `Then text the owner a short morning brief: what you started (one line each), what moved, what is coming, what needs their decision, and any change you made after a failure${sweepInReview ? ", and the inbox in one line (N handled, M need you) plus one line per item that needs them" : ""}. If there is truly nothing, reply with exactly NO_REPORT.`,
             ].join("\n"),
             "email",
           ),
           row: { review_day: new Date(clock.day), email_subject: `Morning brief ${clock.day}` },
         }),
       );
+      if (sweepInReview) await markToday(t.id, "inbox-merged", clock.day).catch(() => {});
     }
 
     // A week-ahead text on Sunday evening unless the user set another time or "off".
@@ -272,7 +308,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Inbox sweep, once a day at the review hour, when the owner's Google inbox is connected.
-    if (t.googleRefreshToken && reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "inbox", clock.day))) {
+    if (t.googleRefreshToken && reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "inbox", clock.day)) && !(await markedToday(t.id, "inbox-merged", clock.day).catch(() => false))) {
       await start(t, "reviews", () =>
         createSession(t, {
           channel: "chat",
