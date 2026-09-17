@@ -126,17 +126,17 @@ export function choosePoolModel(pool: string[], stats: Map<string, { ok: number;
  * or a support agent that stonewalls it triggers escalate_model, so the judgment model still arrives
  * when it is needed.
  */
-const HARD = /\b(refund|dispute|chargeback|negotiat\w*|escalat\w*|complain\w*|complaint|appeal|contract|lease|mortgage|lawyer|attorney|insurance claim|denied|refus\w*|settlement|fraud|overcharg\w*|buy (me )?a (house|car|home))s?\b/i;
+const HARD = /\b(file (a|an|the) claim|claim (for|against)|demand letter|collections|lien|eviction|refund|dispute|chargeback|negotiat\w*|escalat\w*|complain\w*|complaint|appeal|contract|lease|mortgage|lawyer|attorney|insurance claim|denied|refus\w*|settlement|fraud|overcharg\w*|buy (me )?a (house|car|home))s?\b/i;
 // Account work (bills, balances, payments, logins, utilities, banks) is task-tier: the task model is
 // strong enough for logins, second factors and portals, at a fraction of the judgment model's price.
-const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|cancellation|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|con ?ed(ison)?|utility|bill|balance|statement|due date|account|autopay|bank|card|sign ?in|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current|compare|research|options|recommend|offer|hire|realtor|broker|plan (a|my) trip|find (me )?the best)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
+const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|cancellation|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|con ?ed(ison)?|utility|bill|balance|statement|due date|account|autopay|bank|card|sign ?in|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current|compare|research|options|recommend|offer|hire|realtor|broker|plan (a|my) trip|find (me )?the best|package|packages|delivery|deliver\w*|shipment|shipped|tracking|unsubscribe|newsletters?|spam|archive)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
 /**
  * Writing something: a document the user will print, sign, send or file. None of these words were in
  * either list, so "give me the operating agreement pdf" scored as small talk and ran on the cheapest
  * chat model, which does not reach for make_pdf at all — it searched the web and narrated for eight
  * minutes. Drafting needs the task model at least.
  */
-const DOCUMENT = /\b(pdf|document|letter|memo|agreement|contract|invoice|receipt letter|affidavit|addendum|amendment|resolution|bylaws|deed|waiver|nda|disclosure|notice|form|application|report|summary|write (me )?(a|an|the)|draft (me )?(a|an|the)|type up|put (it|that) in writing|generate|produce)\b/i;
+const DOCUMENT = /\b(pdf|document|letter|memo|agreement|contract|invoice|receipt letter|affidavit|addendum|amendment|resolution|bylaws|deed|waiver|nda|disclosure|notice|form|application|report|summary|write (me )?(a|an|the)|draft (me )?(a|an|the)|write up|draw up|type up|type out|make me (a|an)|put together (a|an|the)|prepare (a|an|the)|put (it|that) in writing|generate|produce)\b/i;
 /**
  * A document with legal or financial consequence: worth the judgment model. Getting an operating
  * agreement's clauses wrong costs more than every model call the customer makes in a month.
@@ -177,8 +177,13 @@ export function tierFor(text: string, kind: string): Tier {
   // A note is a note even when it mentions a refund or a lease: "remind me the lease is up in March".
   if (LIGHT.test(t.trim())) return "chat";
   if (HARD.test(t)) return "hard";
-  if (DOCUMENT.test(t) && LEGAL_DOCUMENT.test(t)) return "hard";
-  if (TASK.test(t) && HARD_SITES.test(t)) return "hard";
+  // A legal or financial document is judgment work whatever verb wraps it: "prepare a promissory
+  // note" names no drafting word at all, and used to score as small talk.
+  if (LEGAL_DOCUMENT.test(t)) return "hard";
+  // A bank, a card issuer, an airline or a government portal is hard on its own. This used to need a
+  // task verb alongside it, so "move $5,000 from savings to checking at Citi" — a named bank and a
+  // four-figure transfer — fell through to the chat tier with a three-step budget.
+  if (HARD_SITES.test(t)) return "hard";
   if (TASK.test(t) || DOCUMENT.test(t)) return "task";
   return "chat";
 }
@@ -218,6 +223,9 @@ export function isAsk(text: string): boolean {
  * tight step budget. Approvals ("yes", "do it"), skeptical nudges ("hmmm"), codes, attachments and
  * anything with a task keyword are not quick.
  */
+/** A sum of money written any of the usual ways: $5,000 · 5000 dollars · 340 bucks. */
+const MONEY = /\$\s?\d|\b\d[\d,]*(\.\d+)?\s?(dollars?|bucks|usd|k)\b/i;
+
 export function isQuickQuestion(text: string): boolean {
   const t = clean(text);
   if (!t || t.startsWith("(") || /^\d[\d\s-]{2,9}\d$/.test(t)) return false;
@@ -225,6 +233,11 @@ export function isQuickQuestion(text: string): boolean {
   if (REOPENS.test(t) || CORRECTS.test(t)) return false;
   const first = t.split(/\r?\n/)[0].toLowerCase();
   if (APPROVES.test(first)) return false;
+  // The backstop under the tier heuristic. A quick question gets three steps and a stripped tool set
+  // (no browser, no documents), so every word the tier lists miss is punished twice. Two things are
+  // never small talk however the heuristic scores them: a sum of money, and a named bank, airline or
+  // government portal. "Move $5,000 from savings to checking at Citi" was both.
+  if (MONEY.test(t) || HARD_SITES.test(t)) return false;
   return tierFor(t, "chat") === "chat" && t.split(/\s+/).length <= 40;
 }
 
