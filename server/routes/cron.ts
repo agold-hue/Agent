@@ -8,6 +8,7 @@ import { env } from "../../lib/env.js";
 import { takeDueFollowUps } from "../../lib/followups.js";
 import { attachmentsFor, takeUntriaged } from "../../lib/inbound.js";
 import { learningReport } from "../../lib/learning.js";
+import { isAudio, transcribeQuietly } from "../../lib/stt.js";
 import { deferToDigest, isBatchMinute, takeDigest } from "../../lib/notify.js";
 import { modelFor } from "../../lib/router.js";
 import { hostFinish, kick } from "../../lib/runtime.js";
@@ -354,9 +355,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (mails.length) {
         const atts = await attachmentsFor(mails.map((m) => m.id));
         const images = atts.filter((a) => a.mime_type.startsWith("image/")).slice(0, 4).map((a) => ({ mimeType: a.mime_type, base64: a.content.toString("base64") }));
+        // A voice note that arrives by mail (the owner's own memo forwarded in, a note from someone
+        // they deal with) is transcribed here, so triage reads what was said instead of a file name.
+        const heard = new Map<string, string>();
+        for (const a of atts.filter((a) => isAudio(a.mime_type, a.filename)).slice(0, 4)) {
+          const { text, error } = await transcribeQuietly(a.content, a.filename, a.mime_type);
+          heard.set(`${a.inbound_id}/${a.filename}`, text ? `  [voice note ${a.filename}, transcript — someone speaking, so read it as talk]\n${text.slice(0, 6000)}` : `  [voice note ${a.filename}: could not be transcribed: ${error ?? "unknown error"}]`);
+        }
         const blocks = mails.map((m) => {
           const texts = atts.filter((a) => a.inbound_id === m.id && (a.mime_type.startsWith("text/") || /csv|json/.test(a.mime_type))).map((a) => `  [${a.filename}]\n${a.content.toString("utf8").slice(0, 6000)}`);
-          return [`--- From: ${m.from_address} | Subject: ${m.subject ?? ""} | ${new Date(m.received_at).toISOString()}`, m.attachment_names.length ? `Attachments: ${m.attachment_names.join(", ")}` : "", (m.body ?? "").slice(0, 4000), ...texts].filter(Boolean).join("\n");
+          const spoken = atts.filter((a) => a.inbound_id === m.id).map((a) => heard.get(`${a.inbound_id}/${a.filename}`)).filter((x): x is string => !!x);
+          return [`--- From: ${m.from_address} | Subject: ${m.subject ?? ""} | ${new Date(m.received_at).toISOString()}`, m.attachment_names.length ? `Attachments: ${m.attachment_names.join(", ")}` : "", (m.body ?? "").slice(0, 4000), ...texts, ...spoken].filter(Boolean).join("\n");
         });
         await start(t, "triage", () =>
           createSession(t, {
