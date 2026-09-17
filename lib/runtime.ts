@@ -71,7 +71,10 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
     await new Promise((r) => setTimeout(r, 1500));
     row = (await getSession(sessionId)) ?? row;
   }
-  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t, { task: taskUserText(row.messages) }) };
+  // A side reply (a question answered alongside a busy thread) carries its own status brief and never
+  // touches a site: no playbook or site notes, no list of parallel tasks.
+  const aside = row.kind === "aside";
+  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t, aside ? { parallel: false } : { task: taskUserText(row.messages) }) };
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   // Everything up to here is already in the DB; the loop only ever appends beyond this index, so a
   // message the user sends mid-task (its own atomic append) is never overwritten.
@@ -132,7 +135,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       }
       // A quick question must not turn into a task: a few lookups, then the reply. Past that, the
       // model is told to answer with what it has; if it still will not, the host wraps it up.
-      const quick = isQuickQuestion(taskUserText(row.messages));
+      // Once a quick question has escalated off the chat tier it is a task: full tools, full budget.
+      const quick = aside || (isQuickQuestion(taskUserText(row.messages)) && tierOfModel(row.model ?? "", t) === "chat");
       if (quick && (steps >= QUICK_STEPS || elapsed > QUICK_TIME_MS)) {
         if (hasHostNote(row.messages, QUICK_NOTE) && steps >= QUICK_STEPS + 2) {
           return await finish(t, row, persisted, await wrapUp(t, row, "This was a quick question and you kept working instead of answering.", "Here's where things stand."), "idle");

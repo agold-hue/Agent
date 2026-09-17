@@ -1,14 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
-import { currentChatSession, isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, PARALLEL_TASKS, startChatSession, startTaskSession, withQuote } from "../../../lib/chat.js";
+import { ASIDE_LIMIT, currentChatSession, isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, PARALLEL_TASKS, startAsideSession, startChatSession, startTaskSession, wantsSideReply, withQuote } from "../../../lib/chat.js";
 import type { MessageQuote } from "../../../lib/llm.js";
 import { appendTranscript } from "../../../lib/memory.js";
 import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
-import { isQuickQuestion, modelFor, tierFor, tierOfModel, upgradedModel } from "../../../lib/router.js";
-import { activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
+import { reroutedModel, tierFor } from "../../../lib/router.js";
+import { activeAsideSessions, activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
 
 /** The host's note behind a message that lands while the session is mid-task. */
 const MID_TASK_NOTE = "(That message arrived while you are mid-task. If it changes the task, apply it. If it needs an answer, answer it with tell_user in one line. Then continue the task; a text reply now would end it.)";
@@ -37,31 +37,34 @@ function quoteOf(body: unknown): MessageQuote | undefined {
 
 /**
  * Where a message goes. In order: the session whose bubble it replies to; the one session waiting on
- * the user, when the message reads like an answer; a task of its own when the thread is busy and the
- * message is a fresh request (or says so); otherwise the chat thread.
+ * the user, when the message reads like an answer; a side reply when the thread is busy and the
+ * message is a question or a greeting (answered alongside, at once, as a plain reply); a task of its
+ * own when the thread is busy and the message is a fresh request (or says so); otherwise the chat
+ * thread, where a steer sent mid-task is applied to the running work.
  */
-async function route(t: Tenant, main: SessionRow | undefined, text: string, quote: MessageQuote | undefined): Promise<{ target: SessionRow | undefined; spawn: boolean; text: string }> {
+async function route(t: Tenant, main: SessionRow | undefined, text: string, quote: MessageQuote | undefined): Promise<{ target: SessionRow | undefined; spawn: "task" | "aside" | null; text: string }> {
   const tasks = await activeTaskSessions(t.id);
   if (quote) {
     // Bubble ids are "<session>-<index>", cards "<session>-<index>t<call>".
     const id = quote.id.replace(/-\d+(t[\w-]*)?$/, "");
     const quoted = id === main?.id ? main : (tasks.find((s) => s.id === id) ?? (await ownSession(t.id, id)));
     // A reply to a task's bubble, or to any session's waiting card, goes to that session and never spawns.
-    if (quoted && quoted.status !== "terminated" && (quoted.kind === "task" || quoted.pending_kind)) return { target: quoted, spawn: false, text };
+    if (quoted && quoted.status !== "terminated" && (quoted.kind === "task" || quoted.pending_kind)) return { target: quoted, spawn: null, text };
   }
   const waiting = [main, ...tasks].filter((s): s is SessionRow => !!s?.pending_kind);
-  if (waiting.length === 1 && looksLikeAnswer(text)) return { target: waiting[0], spawn: false, text };
+  if (waiting.length === 1 && looksLikeAnswer(text)) return { target: waiting[0], spawn: null, text };
   // A code never starts a task: it belongs to whatever is signing in (the thread, when nothing waits).
-  if (codeIn(text)) return { target: main, spawn: false, text };
+  if (codeIn(text)) return { target: main, spawn: null, text };
   const explicit = PARALLEL_PREFIX.test(text);
   const busy = !!main && (main.status === "running" || !!main.pending_kind);
-  // While the thread works, a greeting or status question is answered alongside at once (its own
-  // small session on the fast model) instead of waiting for the task to reach it.
-  if (main && busy && !quote && isQuickQuestion(text) && tasks.length < PARALLEL_TASKS) return { target: main, spawn: true, text };
+  // While the thread works, a greeting, a thank-you or a question ("any luck?", "did you use the
+  // Amex?", "do you have my address?") is answered alongside at once, as a plain reply in the chat,
+  // from the thread's own progress; the running task is never interrupted and never has to notice.
+  if (main && busy && !explicit && wantsSideReply(text, quote) && (await activeAsideSessions(t.id).catch(() => [])).length < ASIDE_LIMIT) return { target: main, spawn: "aside", text };
   if (main && (explicit || (busy && isSeparateTask(text, quote))) && tasks.length < PARALLEL_TASKS) {
-    return { target: main, spawn: true, text: text.replace(PARALLEL_PREFIX, "") };
+    return { target: main, spawn: "task", text: text.replace(PARALLEL_PREFIX, "") };
   }
-  return { target: main, spawn: false, text: text.replace(PARALLEL_PREFIX, "") };
+  return { target: main, spawn: null, text: text.replace(PARALLEL_PREFIX, "") };
 }
 
 /** POST { text, reply_to? } -> { session_id, action }. Sends into the right session (or starts one) and kicks the worker. */
@@ -94,7 +97,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const recentSaid = (session?.messages ?? []).filter((m) => m.role === "assistant" && typeof m.content === "string").slice(-6).map((m) => m.content as string);
     let ack: string | undefined;
     let action: string;
-    if (routed.spawn) {
+    if (routed.spawn === "aside") {
+      // The thread is busy: this question is answered alongside it, at once, as a normal reply.
+      session = await startAsideSession(t, forModel, main!, quote, reaction);
+      action = "aside";
+    } else if (routed.spawn === "task") {
       // The thread is busy: this request runs as its own task alongside it.
       session = await startTaskSession(t, forModel, main, quote, reaction);
       action = "task_started";
@@ -110,11 +117,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await resolvePending(t, session, forModel, null);
       action = "question_answered";
     } else {
-      // Up to the tier the message needs; and back down to the fast chat model for a quick question
-      // on an idle thread ("what's up" after a bill was handled on the strong model), so a greeting
-      // answers in seconds. A thread mid-task keeps its model.
+      // Every request is tiered on its own: up to the tier the message needs at any time, and back
+      // down on an idle thread ("check my balance" after a refund ran on the judgment model runs on
+      // the task model; "thanks" on the chat model). A thread mid-task keeps its model for a steer.
       const idle = session.status !== "running" && !session.pending_kind;
-      const model = upgradedModel(session.model ?? "", text, t) ?? (idle && isQuickQuestion(text) && tierOfModel(session.model ?? "", t) !== "chat" ? modelFor("chat", t) : undefined);
+      const model = reroutedModel(session.model ?? "", text, idle, t);
       if (model) {
         console.log(`[route] ${session.id}: ${session.model} -> ${model} for "${text.slice(0, 60)}"`);
         await updateSession(session.id, { model });
@@ -134,7 +141,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
     await kick(session.id);
-    return res.status(200).json({ session_id: session.id, action, reaction, ack, task: routed.spawn ? session.title : undefined });
+    return res.status(200).json({ session_id: session.id, action, reaction, ack, task: routed.spawn === "task" ? session.title : undefined });
   } catch (err) {
     if (err instanceof UsageCapError) return res.status(402).json({ error: err.message });
     throw err;

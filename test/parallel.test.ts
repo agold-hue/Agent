@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, toChatItems } from "../lib/chat.js";
+import { isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, progressBrief, sessionProgress, toChatItems, wantsSideReply } from "../lib/chat.js";
 import type { SessionRow } from "../lib/sessions.js";
 
 test("a fresh request while the thread is busy runs as its own task; steers and answers do not", () => {
@@ -13,6 +13,8 @@ test("a fresh request while the thread is busy runs as its own task; steers and 
   assert.ok(!isSeparateTask("why didn't you pay it?"));
   assert.ok(!isSeparateTask("what's the status on the bill"));
   assert.ok(!isSeparateTask("Hmmm"));
+  assert.ok(!isSeparateTask("did you use the Amex card?"));
+  assert.ok(!isSeparateTask("what did Con Ed say about the bill?"));
   assert.ok(!isSeparateTask("905168"));
   assert.ok(!isSeparateTask('Re: "Uber texted another code to your phone to view ride prices. Send it here."\n3054'));
   assert.ok(!isSeparateTask("pay it", undefined)); // too short to be a separate task
@@ -64,4 +66,50 @@ test("standing-order schedules match the local clock", () => {
   assert.ok(!scheduleMatches("monthly 21 18:00", clock));
   for (const ok of ["daily 9:00", "weekly Sun 18:00", "monthly 20 09:00"]) assert.ok(SCHEDULE.test(ok), ok);
   for (const bad of ["weekly Someday 18:00", "hourly", "monthly 40 09:00 extra"]) assert.ok(!SCHEDULE.test(bad), bad);
+});
+
+test("questions and greetings sent while the thread is busy get a side reply; steers, answers and requests do not", () => {
+  for (const q of ["any luck with ConEd?", "how's it going?", "did you use the Amex card?", "what did they say about the bill", "do you have my address?", "hi Pete", "you there?", "status", "why didn't you pay it?", "is it paid yet?"]) assert.ok(wantsSideReply(q), q);
+  for (const n of ["yes", "ok do it", "thanks!", "905168", "no, use the other card", "actually make it Tuesday", "wait", "Hmmm", "try again", "book the dentist for next Tuesday morning", "how much is an uber to JFK right now", "can you also book the dentist"]) assert.ok(!wantsSideReply(n), n);
+  assert.ok(!wantsSideReply("any luck?", { id: "s_1-2", who: "agent", text: "Balance is $142" })); // a reply to a bubble goes to its thread
+});
+
+test("the side reply's brief says what the thread is doing, what it said, its last steps and what it waits for", () => {
+  const main = {
+    id: "s_m",
+    kind: "chat",
+    status: "waiting",
+    pending_kind: "checkpoint",
+    pending_event_id: "c3",
+    created_at: new Date(Date.now() - 20 * 60_000),
+    messages: [
+      { role: "system", content: "s" },
+      { role: "user", content: "[stamp]\nwhat's up", at: new Date(Date.now() - 15 * 60_000).toISOString() },
+      { role: "assistant", content: "Quiet day. Con Ed is due Friday.", at: new Date(Date.now() - 14 * 60_000).toISOString() },
+      { role: "user", content: "[stamp]\npay the Con Ed bill at https://coned.com", at: new Date(Date.now() - 4 * 60_000).toISOString() },
+      { role: "assistant", content: "On it, Boss.", ephemeral: true },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "browser_goto", arguments: "{\"url\":\"https://coned.com\"}" } }] },
+      { role: "tool", tool_call_id: "c1", content: "page" },
+      { role: "assistant", content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "login", arguments: "{\"domain\":\"coned.com\"}" } }] },
+      { role: "tool", tool_call_id: "c2", content: "logged in" },
+      { role: "assistant", content: null, tool_calls: [{ id: "t1", type: "function", function: { name: "tell_user", arguments: "{\"text\":\"Signed in, pulling up the bill\"}" } }] },
+      { role: "assistant", content: "Signed in, pulling up the bill", ephemeral: true },
+      { role: "tool", tool_call_id: "t1", content: "shown" },
+      { role: "assistant", content: null, tool_calls: [{ id: "c3", type: "function", function: { name: "checkpoint", arguments: "{\"action_type\":\"payment\",\"summary\":\"Pay $142.17 to Con Ed from the Visa\",\"details\":\"x\"}" } }] },
+    ],
+  } as unknown as SessionRow;
+  const one = sessionProgress(main);
+  assert.match(one, /Asked: "pay the Con Ed bill at https:\/\/coned.com" \(the chat thread, waiting on the user, 4 min in, 4 steps\)/);
+  assert.match(one, /Told the user so far: "On it, Boss." · "Signed in, pulling up the bill"/);
+  assert.match(one, /Last steps: opened a page, signed in, posted a progress line, asked for your ok/);
+  assert.match(one, /Waiting for: your ok on: Pay \$142.17 to Con Ed from the Visa/);
+  const brief = progressBrief(main, [{ id: "s_t", kind: "task", status: "running", title: "Book the dentist", created_at: new Date(), messages: [{ role: "system", content: "s" }, { role: "user", content: "[stamp]\nBook the dentist", at: new Date().toISOString() }] } as unknown as SessionRow]);
+  assert.match(brief, /# In progress right now/);
+  assert.match(brief, /Asked: "Book the dentist" \(a task alongside the chat, running, 0 min in, 0 steps\)/);
+  assert.match(brief, /# The chat so far \(newest last\)\nUser: what's up\nYou: Quiet day. Con Ed is due Friday.\nUser: pay the Con Ed bill/);
+  // A side reply's bubbles show as plain replies, never tagged as a task.
+  const aside = { id: "s_a", kind: "aside", title: "any luck?", status: "idle", created_at: new Date(), updated_at: new Date(), messages: [{ role: "system", content: "s" }, { role: "user", content: "(The user sent the message below ...)" }, { role: "user", content: "[stamp]\nany luck?", at: new Date().toISOString() }, { role: "assistant", content: "Signed in and on the bill; waiting on your ok to pay $142.17.", at: new Date().toISOString() }] } as unknown as SessionRow;
+  const items = toChatItems(aside).filter((i) => i.kind !== "status");
+  assert.equal(items.length, 2);
+  assert.ok(items.every((i) => !("task" in i)));
 });

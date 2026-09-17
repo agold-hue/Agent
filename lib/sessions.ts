@@ -389,9 +389,9 @@ export async function latestChatSession(userId: string, maxAgeHours: number): Pr
   );
 }
 
-/** Every chat session in the window (and, with tasks, the parallel tasks spawned from chat), oldest first, so the page can show the full conversation. */
+/** Every chat session in the window (and, with tasks, the parallel tasks and side replies spawned from chat), oldest first, so the page can show the full conversation. */
 export async function chatSessionsSince(userId: string, since: Date, limit = 200, opts: { tasks?: boolean } = {}): Promise<SessionRow[]> {
-  const kinds = opts.tasks ? ["chat", "task"] : ["chat"];
+  const kinds = opts.tasks ? ["chat", "task", "aside"] : ["chat"];
   const rows = await q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = any($4::text[]) and created_at > $2 order by created_at desc limit $3", [userId, since, limit, kinds]);
   return rows.reverse();
 }
@@ -399,6 +399,11 @@ export async function chatSessionsSince(userId: string, since: Date, limit = 200
 /** Parallel tasks still going (running, or waiting on the user), oldest first. */
 export async function activeTaskSessions(userId: string): Promise<SessionRow[]> {
   return q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = 'task' and status in ('running', 'waiting') order by created_at", [userId]);
+}
+
+/** Side replies (a question answered alongside a busy thread) still being written, newest first. */
+export async function activeAsideSessions(userId: string): Promise<SessionRow[]> {
+  return q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = 'aside' and status = 'running' order by created_at desc", [userId]);
 }
 
 /** A chat-side session by id, only if it belongs to this user. */

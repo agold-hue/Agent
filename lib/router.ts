@@ -3,14 +3,21 @@ import type { Tenant } from "./tenant.js";
 
 /**
  * Which model runs a session. Three tiers, each an env var holding any model id your provider
- * accepts. Defaults are cheap-first; the agent can escalate mid-task with the escalate tool.
+ * accepts. The router's job is to pick the cheapest tier that does the job well; the agent can
+ * escalate mid-task with the escalate tool, and the loop guard escalates on its own when a task
+ * is stuck.
  *
- *   MODEL_CHAT  short replies, calendar notes, recall           (default google/gemini-3.8-flash)
- *   MODEL_TASK  routine browser work, reorders, forms, drafting (default anthropic/claude-sonnet-5)
- *   MODEL_HARD  refunds, negotiations, projects, anything with judgment (default anthropic/claude-opus-5)
+ *   MODEL_CHAT  short replies, notes, reminders, recall, digests   (default google/gemini-3.8-flash)
+ *   MODEL_TASK  browser work: lookups, orders, forms, bookings, research, drafting, accounts
+ *                                                                  (default anthropic/claude-sonnet-5)
+ *   MODEL_HARD  judgment against a counterparty: refunds, disputes, negotiations, appeals, contracts
+ *                                                                  (default anthropic/claude-opus-5)
  *
  * The defaults favour a secretary that notices things over one that is cheap: a reply that misses the
- * wrong unit number on a bill costs more than the model does. Monthly and per-task caps still apply.
+ * wrong unit number on a bill costs more than the model does. What keeps the bill down is routing:
+ * every request is tiered on its own (a thread that ran a refund on the judgment model drops back to
+ * the task model for the next lookup and to the chat model for a thank-you), notes and reminders never
+ * leave the chat model, and only work that needs judgment starts on the judgment model.
  */
 export type Tier = "chat" | "task" | "hard";
 
@@ -24,10 +31,23 @@ export function modelFor(tier: Tier, t?: Tenant): string {
   return process.env[`MODEL_${tier.toUpperCase()}`] || def;
 }
 
+/**
+ * Judgment work: money to claw back, a counterparty to move, a decision with real downside. Everything
+ * else that touches a site is task-tier. Comparisons, research, quotes, bookings, cancellations and
+ * hires used to start here; the task model does them as well at a fraction of the price, and a site
+ * or a support agent that stonewalls it triggers escalate_model, so the judgment model still arrives
+ * when it is needed.
+ */
+const HARD = /\b(refund|dispute|chargeback|negotiat\w*|escalat\w*|complain\w*|complaint|appeal|contract|lease|mortgage|lawyer|attorney|insurance claim|denied|refus\w*|settlement|fraud|overcharg\w*|buy (me )?a (house|car|home))s?\b/i;
 // Account work (bills, balances, payments, logins, utilities, banks) is task-tier: the task model is
 // strong enough for logins, second factors and portals, at a fraction of the judgment model's price.
-const HARD = /\b(refund|dispute|chargeback|negotiat|escalat|complain|appeal|cancel(l)?ation|contract|offer|mortgage|realtor|broker|lawyer|insurance claim|denied|refus|buy (me )?a (house|car)|find (me )?the best|compare|research|plan (a|my) trip|book (a|my) flight|hire|quote)s?\b/i;
-const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|con ?ed(ison)?|utility|bill|balance|statement|due date|account|autopay|bank|card|sign ?in|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
+const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up|register|return|track|renew|cancel|cancellation|check|look up|search|find|send|email|draft|fill|submit|download|upload|log ?in|enter|add|update|record|website|site|amazon|zillow|con ?ed(ison)?|utility|bill|balance|statement|due date|account|autopay|bank|card|sign ?in|quickbooks|how much|price|prices|cost|costs|fare|estimate|quote|rate|uber|lyft|taxi|cab|ride|flight|train|ticket|actual|right now|current|compare|research|options|recommend|offer|hire|realtor|broker|plan (a|my) trip|find (me )?the best)\b|why (didn'?t|did not|haven'?t) you|you (forgot|never|didn'?t|still haven'?t)|still (waiting|not done)/i;
+/**
+ * A note, a list item or a reminder: memory and the calendar, never the browser. These match task
+ * words ("add", "pay", "bill") but are one memory call on the chat model, answered in seconds with
+ * no "on it" line. Anything that names a cart, an account, a card or a site is real work and stays out.
+ */
+const LIGHT = /^(?:please |pls |hey,? |can you |could you )?(?:(?:add|put) [^\n]{1,80}?\b(?:to|on) (?:the |my )?(?:shopping |grocery )?list\b|(?:note|jot down|fyi|for the record|reminder)\b|(?:remember|remind me)\b(?![^\n]*\b(?:log ?in|password|sign ?in)\b))/i;
 
 /** Pick a tier from the request text and where it came from. Cheap heuristics; wrong guesses can escalate. */
 export function tierFor(text: string, kind: string): Tier {
@@ -35,6 +55,8 @@ export function tierFor(text: string, kind: string): Tier {
   if (kind === "review" || kind === "weekly" || kind === "digest" || kind === "triage") return "chat";
   // Classify the request itself, not the host's stamp ("[... via email]") or the subject label.
   const t = text.replace(/^\[[^\]]*\]\n/, "").replace(/^Subject: /m, "").replace(/^\(Request from a family member[^)]*\)\n/, "").slice(0, 2000);
+  // A note is a note even when it mentions a refund or a lease: "remind me the lease is up in March".
+  if (LIGHT.test(t.trim())) return "chat";
   if (HARD.test(t)) return "hard";
   if (TASK.test(t)) return "task";
   return "chat";
@@ -43,19 +65,61 @@ export function tierFor(text: string, kind: string): Tier {
 /** Replies that reopen the last task rather than chat: approvals, skepticism, "again". */
 const REOPENS = /^(hmm+|really|seriously|that'?s it|come on|try again|again|keep going|continue|go on|more|retry)\b/i;
 
+/** A yes, in the words people type. */
+const APPROVES = /^(yes|y|yes please|approve|approved|ok|okay|go|go ahead|do it|confirm|confirmed|proceed|send it|sure|👍)\b/i;
+
+/** A correction or an instruction that changes the task at hand ("no, the Amex", "actually make it Tuesday"). */
+const CORRECTS = /^(no|nope|wait|stop|hold on|actually|instead|never ?mind|forget it|use|try|don'?t|not that|also for|and|but)\b/i;
+/**
+ * A message that steers the running task rather than starting another: a correction, an instruction,
+ * an acknowledgement, a skeptical grunt.
+ */
+export const STEERS = /^(no|nope|wait|stop|hold on|actually|instead|never ?mind|forget it|use|try|don'?t|not that|also for|and|but|ok|okay|yes|yep|sure|go|do it|go ahead|fine|thanks|thank you|hmm+)\b/i;
+
+/**
+ * A question about the work in progress or about what the agent knows: status, progress, "did you",
+ * "what did they say", "do you have my address". It wants an answer now, not a task; while the thread
+ * is busy the host answers it alongside from the thread's own progress (a side reply).
+ */
+export const ASKS =
+  /^(?:(?:any|got any|is there any) (?:luck|update|news|progress|word)\b|(?:what'?s|whats|how'?s|hows|what is|how is) (?:the |it |that |this )?(?:status|progress|going|looking|happening|taking|holding|eta)\b|(?:status|update|progress|eta)\??$|(?:did|didn'?t|have|haven'?t|has|hasn'?t|do|does|don'?t) (?:you|it|that|this|they|we)\b|(?:are|aren'?t|were|is|isn'?t|was) you\b|(?:what|why|how|where|when) (?:did|didn'?t|do|does|is|are|was|were|have|haven'?t|has|come|about|far|long|much longer|many)\b|you (?:there|done|stuck|still|ok|okay|alive|back)\b|(?:is|are) (?:it|they|that|you|this) (?:done|ready|finished|paid|booked|in|working|going|ok|okay)\b|still (?:waiting|working|on it|there)\b)/i;
+
+/** A short status or knowledge question (see ASKS) that is not a yes, a code or a reopen. */
+export function isAsk(text: string): boolean {
+  const t = clean(text);
+  if (!t || t.startsWith("(") || REOPENS.test(t) || APPROVES.test(t)) return false;
+  return ASKS.test(t) && t.split(/\s+/).length <= 16;
+}
+
 /**
  * A message that deserves a one-line answer in seconds, not a task: a greeting, "what's up", a
- * thank-you, a status question, small talk. It runs on the chat model with a tight step budget.
- * Approvals ("yes", "do it"), skeptical nudges ("hmmm"), codes, attachments and anything with a
- * task keyword are not quick.
+ * thank-you, a status question, a note for memory, small talk. It runs on the chat model with a
+ * tight step budget. Approvals ("yes", "do it"), skeptical nudges ("hmmm"), codes, attachments and
+ * anything with a task keyword are not quick.
  */
 export function isQuickQuestion(text: string): boolean {
-  const t = text.replace(/^\[[^\]]*\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
+  const t = clean(text);
   if (!t || t.startsWith("(") || /^\d[\d\s-]{2,9}\d$/.test(t)) return false;
-  if (REOPENS.test(t)) return false;
+  // A correction ("actually make it Tuesday") continues the last task and may need the browser.
+  if (REOPENS.test(t) || CORRECTS.test(t)) return false;
   const first = t.split(/\r?\n/)[0].toLowerCase();
-  if (/^(yes|y|yes please|approve|approved|ok|okay|go|go ahead|do it|confirm|confirmed|proceed|send it|sure|👍)\b/.test(first)) return false;
+  if (APPROVES.test(first)) return false;
   return tierFor(t, "chat") === "chat" && t.split(/\s+/).length <= 40;
+}
+
+/**
+ * A request in its own right, as opposed to a steer, an answer, a question about the running work or
+ * a "try again": the kind of message that starts a task and so gets that task's own tier.
+ */
+export function isFreshRequest(text: string): boolean {
+  const t = clean(text);
+  if (!t || t.startsWith("(") || /^\d[\d\s-]{2,9}\d$/.test(t)) return false;
+  if (REOPENS.test(t) || APPROVES.test(t) || STEERS.test(t) || ASKS.test(t)) return false;
+  return t.split(/\s+/).length >= 3;
+}
+
+function clean(text: string): string {
+  return text.replace(/^\[[^\]]*\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
 }
 
 export function nextTier(current: Tier): Tier | null {
@@ -65,14 +129,23 @@ export function nextTier(current: Tier): Tier | null {
 const RANK: Record<Tier, number> = { chat: 0, task: 1, hard: 2 };
 
 /**
- * A chat session lives for hours and its model was picked from its first message, so "update?"
- * followed by "how much is an uber to JFK" left the browser work on the cheapest model. Each new
- * message re-routes: the session moves up to the tier the message needs, never down mid-conversation.
+ * A chat thread lives for hours and its model was picked from its first message. Each new message
+ * re-routes the thread to the tier that message needs: up at any time ("update?" then "how much is
+ * an uber to JFK" moves the browser work up to the task model, even mid-task), and back down when
+ * the thread is idle and the message is a request of its own or a quick question (a thread that just
+ * ran a refund on the judgment model does the next balance check on the task model and answers
+ * "thanks" on the chat model). A steer, an answer, a "hmm" or a "try again" keeps the model it has:
+ * the running work continues where it is. Returns the model to switch to, or undefined to keep it.
  */
-export function upgradedModel(currentModel: string, text: string, t?: Tenant): string | undefined {
+export function reroutedModel(currentModel: string, text: string, idle: boolean, t?: Tenant): string | undefined {
   const wanted = tierFor(text, "chat");
-  if (RANK[wanted] <= RANK[tierOfModel(currentModel, t)]) return undefined;
-  const model = modelFor(wanted, t);
+  const current = tierOfModel(currentModel, t);
+  let target: Tier | undefined;
+  if (RANK[wanted] > RANK[current]) target = wanted;
+  // A question about the last task ("any luck?", "did you pay it?") is answered by the model that did it.
+  else if (idle && RANK[wanted] < RANK[current] && !ASKS.test(clean(text)) && (isQuickQuestion(text) || isFreshRequest(text))) target = wanted;
+  if (!target) return undefined;
+  const model = modelFor(target, t);
   return model === currentModel ? undefined : model;
 }
 

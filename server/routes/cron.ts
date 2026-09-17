@@ -78,7 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // 0b. Parallel tasks left waiting on the user for half a day, or running with no worker for two hours: closed.
   await q(
-    "update agent_sessions set status = 'terminated', pending_kind = null, pending_event_id = null, pending_deadline = null, lease_until = null where kind = 'task' and channel = 'chat' and ((status = 'waiting' and updated_at < now() - interval '12 hours') or (status = 'running' and updated_at < now() - interval '2 hours' and (lease_until is null or lease_until < now())))",
+    "update agent_sessions set status = 'terminated', pending_kind = null, pending_event_id = null, pending_deadline = null, lease_until = null where kind in ('task', 'aside') and channel = 'chat' and ((status = 'waiting' and updated_at < now() - interval '12 hours') or (status = 'running' and updated_at < now() - interval '2 hours' and (lease_until is null or lease_until < now())))",
   ).catch((err) => console.error("[cron] stale tasks:", err));
 
   // 1. Timers and watches.

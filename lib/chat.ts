@@ -1,7 +1,7 @@
 import type { ChatMessage, MessageQuote } from "./llm.js";
-import { activeTaskSessions, chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, type SessionRow } from "./sessions.js";
+import { activeTaskSessions, chatSessionsSince, createSession, latestChatSession, messageText, recentProactiveSessions, taskStart, taskTurns, taskUserText, type SessionRow } from "./sessions.js";
 import { codeIn, isApprovalReply } from "./policy.js";
-import { tierFor } from "./router.js";
+import { ASKS, isAsk, isQuickQuestion, STEERS, tierFor } from "./router.js";
 import { stampMessage } from "./transcript.js";
 import type { Tenant } from "./tenant.js";
 
@@ -34,23 +34,60 @@ export async function startTaskSession(t: Tenant, text: string, parent: SessionR
   });
 }
 
+/**
+ * A question sent while the thread is busy, answered alongside it at once. A small session of its own
+ * on the chat model, with no browser: it reads the thread's progress (what the running task was asked,
+ * what it has said, its last steps, what it is waiting for) and the last exchanges of the chat, and
+ * answers in a line or two. Its bubbles show in the chat as plain replies, not as a task; the running
+ * task is never interrupted and never has to notice the question.
+ */
+export async function startAsideSession(t: Tenant, text: string, main: SessionRow, quote?: MessageQuote, reaction?: string): Promise<SessionRow> {
+  const tasks = await activeTaskSessions(t.id).catch(() => [] as SessionRow[]);
+  const brief = progressBrief(main, tasks);
+  const title = text.replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").replace(/\s+/g, " ").trim().slice(0, 120);
+  return createSession(t, {
+    channel: "chat",
+    kind: "aside",
+    title,
+    text: stampMessage(t, text, "chat"),
+    quote,
+    reaction,
+    tier: "chat",
+    recap: `(The user sent the message below while their chat is busy with the work listed here. Answer it now, in one or two lines, from this status and what you know; the work itself is being done by those sessions, so do not start on it, do not open the browser, and do not promise to do it. If it asks how something is going, say exactly where it stands from the steps below. If it asks for something new that is not listed, say you noted it and it will be picked up when the current work is done. Your reply shows in the chat as a normal reply.)\n\n${brief}`,
+    row: { parent_session_id: main.id },
+  });
+}
+
+/** At most this many side replies in flight per user; past it the question waits for the thread. */
+export const ASIDE_LIMIT = Number(process.env.ASIDE_LIMIT ?? 2);
+
+/**
+ * Whether a message typed while the thread is busy should be answered alongside it (a side reply)
+ * rather than handed to the running task: a greeting, a thank-you, a status or knowledge question.
+ * A reply to a bubble, a code, a yes, a steer and a fresh request are not.
+ */
+export function wantsSideReply(text: string, quote?: MessageQuote): boolean {
+  if (quote || codeIn(text) || isApprovalReply(text)) return false;
+  // A steer or an acknowledgement ("no, the Amex", "thanks", "ok") belongs to the running task.
+  if (STEERS.test(text.replace(/^\[[^\]]*\]\n/, "").trim())) return false;
+  return isQuickQuestion(text) || isAsk(text);
+}
+
 /** Maximum parallel tasks per user; past it a new request joins the main thread instead. */
 export const PARALLEL_TASKS = Number(process.env.PARALLEL_TASKS ?? 20);
 
 /** "also: book the dentist" / "in parallel, ..." asks for a task of its own; the prefix is dropped. */
 export const PARALLEL_PREFIX = /^(?:also|parallel|in parallel|meanwhile|separately|new task)\s*[:,-]\s*/i;
-/** A message that steers the running task rather than starting another. */
-const STEERS = /^(no|nope|wait|stop|hold on|actually|instead|never ?mind|forget it|use|try|don'?t|not that|also for|and|but|ok|okay|yes|yep|sure|go|do it|go ahead|fine|thanks|hmm+|(what|why|how|where|when)\s+(did|didn'?t|do|does|is it|are you|was|were|about|come|far|long|happened|can'?t|couldn'?t)|what'?s\s+(the\s+)?(status|going on|happening|taking)|is it|did you|are you|any (luck|update|news)|status|update\??$)\b/i;
 
 /**
  * Whether a message typed while the thread is busy is a new task to run alongside it, rather than a
- * steer, an answer, or a remark about the running one. New tasks read like requests (the task or hard
+ * steer, an answer, or a question about the running one. New tasks read like requests (the task or hard
  * tier), have some length, and do not start like a correction or a question about the current work.
  */
 export function isSeparateTask(text: string, quote?: MessageQuote): boolean {
   if (quote || codeIn(text)) return false;
   const t = text.trim();
-  if (t.split(/\s+/).length < 3 || STEERS.test(t)) return false;
+  if (t.split(/\s+/).length < 3 || STEERS.test(t) || ASKS.test(t)) return false;
   return tierFor(t, "chat") !== "chat";
 }
 
@@ -70,6 +107,98 @@ export function withQuote(text: string, quote: MessageQuote | undefined): string
 export function replyPrefix(quote: MessageQuote): string {
   const excerpt = quote.text.replace(/\s+/g, " ").trim().slice(0, 160);
   return `Re: ${quote.who === "user" ? "my" : "your"} message "${excerpt}"\n`;
+}
+
+/** A tool call in the user's words, for a status line ("opened a page", "signed in"). */
+const STEP_WORDS: Record<string, string> = {
+  browser_open: "opened the browser",
+  browser_goto: "opened a page",
+  browser_click: "clicked through",
+  browser_type: "filled in a form",
+  browser_select: "filled in a form",
+  browser_press: "filled in a form",
+  browser_scroll: "read down the page",
+  browser_snapshot: "read the page",
+  browser_text: "read the page",
+  browser_screenshot: "looked at the page",
+  browser_watch: "waited for a reply on the page",
+  browser_wait_for: "waited for the page",
+  browser_back: "went back a page",
+  login: "signed in",
+  request_code: "asked you for a code",
+  web_search: "searched the web",
+  memory_read: "checked notes",
+  memory_grep: "checked notes",
+  memory_list: "checked notes",
+  memory_write: "took notes",
+  memory_append: "took notes",
+  calendar: "checked the calendar",
+  owner_inbox: "read your mail",
+  send_email: "wrote an email",
+  drive: "checked Drive",
+  checkpoint: "asked for your ok",
+  ask_user: "asked you a question",
+  track_item: "updated a tracked item",
+  list_items: "checked what is tracked",
+  record_receipt: "filed a receipt",
+  record_win: "logged a win",
+  escalate_model: "switched to a stronger model",
+  start_task: "started a task",
+  tell_user: "posted a progress line",
+};
+
+/**
+ * Where a live session stands, for a side reply: what it was asked, how long it has run, what it has
+ * told the user, its last steps in plain words, and what it is waiting for. No URLs, no site names.
+ */
+export function sessionProgress(row: SessionRow): string {
+  const start = taskStart(row.messages);
+  const asked = taskUserText(row.messages).replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const first = row.messages[start]?.at ?? row.created_at;
+  const mins = Math.max(0, Math.round((Date.now() - new Date(first).getTime()) / 60_000));
+  const said: string[] = [];
+  const steps: string[] = [];
+  let waiting = "";
+  for (let i = start; i < row.messages.length; i++) {
+    const m = row.messages[i];
+    if (m.role !== "assistant") continue;
+    if (m.ephemeral && typeof m.content === "string" && m.content.trim()) said.push(m.content.trim().slice(0, 200));
+    for (const tc of m.tool_calls ?? []) {
+      const words = STEP_WORDS[tc.function.name] ?? "worked on it";
+      if (steps[steps.length - 1] !== words) steps.push(words);
+      if (row.status === "waiting" && tc.id === row.pending_event_id) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(tc.function.arguments);
+        } catch {
+          /* ignore */
+        }
+        if (tc.function.name === "checkpoint") waiting = `your ok on: ${String(args.summary ?? "").slice(0, 160)}`;
+        else if (tc.function.name === "send_email") waiting = `your ok to send an email to ${String(args.to ?? "someone")}`;
+        else if (tc.function.name === "request_code") waiting = "a code from your phone";
+        else if (tc.function.name === "ask_user") waiting = `your answer to: ${((args.questions as Array<{ question: string }>) ?? []).map((q) => q.question).join(" / ").slice(0, 200)}`;
+      }
+    }
+  }
+  const lines = [`- Asked: "${asked || row.title || "a task"}" (${row.kind === "task" ? "a task alongside the chat" : "the chat thread"}, ${row.status === "waiting" ? "waiting on the user" : "running"}, ${mins} min in, ${taskTurns(row.messages)} steps)`];
+  if (said.length) lines.push(`  Told the user so far: ${said.slice(-3).map((s) => `"${s}"`).join(" · ")}`);
+  if (steps.length) lines.push(`  Last steps: ${steps.slice(-6).join(", ")}`);
+  if (waiting) lines.push(`  Waiting for: ${waiting}`);
+  return lines.join("\n");
+}
+
+/** What is going on right now across the chat thread and its parallel tasks, plus the last exchanges. */
+export function progressBrief(main: SessionRow, tasks: SessionRow[]): string {
+  const live = [main, ...tasks.filter((s) => s.id !== main.id)].filter((s) => s.status === "running" || s.status === "waiting");
+  const parts: string[] = [];
+  if (live.length) parts.push(`# In progress right now\n${live.map(sessionProgress).join("\n")}`);
+  const recent: string[] = [];
+  for (const m of main.messages) {
+    if (m.role === "user" && !m.ephemeral && typeof m.content === "string" && m.content.startsWith("[")) recent.push(`User: ${m.content.replace(/^\[[^\]]+\]\n/, "").replace(/\s+/g, " ").slice(0, 300)}`);
+    else if (m.role === "assistant" && typeof m.content === "string" && m.content.trim() && !m.tool_calls?.length) recent.push(`You: ${m.content.trim().replace(/\s+/g, " ").slice(0, 400)}`);
+  }
+  if (recent.length) parts.push(`# The chat so far (newest last)\n${recent.slice(-10).join("\n")}`);
+  return parts.join("\n\n").slice(0, 6000);
 }
 
 /**

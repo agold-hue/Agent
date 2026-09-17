@@ -9,7 +9,7 @@ import { messageText, type SessionRow } from "../../lib/sessions.js";
  * result line, step count and cost. GET ?id= -> one task with its step log (what it called, when, how
  * long) so a task can be audited after the fact.
  */
-const LABEL: Record<string, string> = { chat: "Chat", task: "Task", review: "Morning brief", weekly: "Week ahead", followup: "Follow-up", triage: "Mail", digest: "Heads-ups", correspondence: "Reply", inbox: "Inbox sweep" };
+const LABEL: Record<string, string> = { chat: "Chat", task: "Task", aside: "Side reply", review: "Morning brief", weekly: "Week ahead", followup: "Follow-up", triage: "Mail", digest: "Heads-ups", correspondence: "Reply", inbox: "Inbox sweep" };
 
 function resultOf(row: SessionRow): string {
   for (let i = row.messages.length - 1; i >= 0; i--) {
