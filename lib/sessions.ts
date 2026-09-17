@@ -608,7 +608,8 @@ export async function appendAssistantMessage(row: SessionRow, text: string, ephe
 /** Show the user's own text as a chat bubble (with its reaction) when it answered a question. UI-only: the model gets the answer via the tool result, so this echo is ephemeral. */
 export async function appendUserEcho(row: SessionRow, text: string, reaction?: string, quote?: MessageQuote): Promise<void> {
   const msg: ChatMessage = { role: "user", content: text, ephemeral: true, at: now(), ...(reaction ? { reaction } : {}), ...(quote ? { quote } : {}) };
-  await q("update agent_sessions set messages = messages || $2::jsonb where id = $1", [row.id, JSON.stringify([msg])]);
+  // updated_at moves too: the page's fingerprint is built on it, so the bubble shows at once.
+  await q("update agent_sessions set messages = messages || $2::jsonb, updated_at = now() where id = $1", [row.id, JSON.stringify([msg])]);
 }
 
 /** Append a tool result for a pending call (the user's answer) and mark runnable. Stamped: the task clock restarts here. */
@@ -636,6 +637,22 @@ export async function chatSessionsSince(userId: string, since: Date, limit = 200
   const kinds = opts.tasks ? ["chat", "task", "aside"] : ["chat"];
   const rows = await q<SessionRow>("select * from agent_sessions where user_id = $1 and channel = 'chat' and kind = any($4::text[]) and created_at > $2 order by created_at desc limit $3", [userId, since, limit, kinds]);
   return rows.reverse();
+}
+
+/** The identity and state of a session without its messages: enough to know whether a cached rendering of it is current. */
+export type SessionHead = Pick<SessionRow, "id" | "kind" | "status" | "pending_kind" | "title" | "created_at" | "updated_at">;
+
+/** Like chatSessionsSince, without the message arrays (the heavy column), oldest first. */
+export async function chatSessionHeadsSince(userId: string, since: Date, limit = 200, opts: { tasks?: boolean } = {}): Promise<SessionHead[]> {
+  const kinds = opts.tasks ? ["chat", "task", "aside"] : ["chat"];
+  const rows = await q<SessionHead>("select id, kind, status, pending_kind, title, created_at, updated_at from agent_sessions where user_id = $1 and channel = 'chat' and kind = any($4::text[]) and created_at > $2 order by created_at desc limit $3", [userId, since, limit, kinds]);
+  return rows.reverse();
+}
+
+/** Full rows for these ids (any order). */
+export async function sessionsByIds(ids: string[]): Promise<SessionRow[]> {
+  if (!ids.length) return [];
+  return q<SessionRow>("select * from agent_sessions where id = any($1::text[])", [ids]);
 }
 
 /** Parallel tasks still going (running, or waiting on the user), oldest first. */
