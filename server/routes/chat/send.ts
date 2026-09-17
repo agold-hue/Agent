@@ -20,6 +20,11 @@ async function warmWorkerHolds(sessionId: string): Promise<boolean> {
   return !!r?.warm;
 }
 
+/** "Completely off", "not true", "that's wrong", "way more than that": the user disputes the last figure. */
+const DISPUTES = /\b(completely off|way off|not true|that'?s (wrong|not right|way off)|wrong|no way|doesn'?t sound right|can'?t be right|that can'?t be|impossible|nonsense|come on|are you (sure|serious|crazy)|i spent (way |a lot |much )?(more|over)|(more|over) than that|much (more|higher|lower))\b/i;
+/** The host's note behind a disputed figure: never repeat it; go to the full source. */
+const DISPUTE_NOTE = "(The user says your last figure is wrong. Do not repeat it and do not defend it. First say in one line exactly what you read and where (which page, which date range), then read the full source before answering again: every page of the whole period, not a summary or a recent-activity view (for Amazon, the year's order history page by page with browser_extract, adding gift-card and refund lines). If the full read is long, say so in one line with tell_user and do it. Reply only with the new figure and how you got it.)";
+
 /** The host's note behind a message that lands while the session is mid-task. */
 const MID_TASK_NOTE = "(That message arrived while you are mid-task. If it changes the task, apply it. If it needs an answer, answer it with tell_user in one line. Then continue the task; a text reply now would end it.)";
 import { resolvePending } from "../../../lib/tools.js";
@@ -173,6 +178,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // sure it gets typed into the site rather than read as chat.
       const code = codeIn(text);
       if (code) await appendHostNote(session, codeHint(code));
+      else if (DISPUTES.test(text) && /\$\s?\d/.test(recentSaid[recentSaid.length - 1] ?? "")) await appendHostNote(session, DISPUTE_NOTE);
       else if (midTask) await appendHostNote(session, MID_TASK_NOTE);
       action = "sent";
     }
