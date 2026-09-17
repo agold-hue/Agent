@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loopPeriod, NUDGE_PREFIX, shownSinceTaskStart, stallNudge } from "../lib/runtime.js";
+import { loopPeriod, NUDGE_PREFIX, promisesAction, shownSinceTaskStart, stallNudge } from "../lib/runtime.js";
 import { isUserMessage, taskClockStart, taskStart, taskTurns, type SessionRow } from "../lib/sessions.js";
 import type { ChatMessage } from "../lib/llm.js";
 
@@ -203,4 +203,38 @@ test("stable facts skip the search; anything that moves does not", () => {
   assert.ok(!isStableFactQuestion("what time does Costco close today"));
   assert.ok(!isStableFactQuestion("how much is a Metro-North ticket to White Plains"));
   assert.ok(!isStableFactQuestion("who is the current mayor of New York"));
+});
+
+test("promisesAction: a reply that announces the step instead of taking it, in the words the cheap models use", () => {
+  for (const p of [
+    "I'll check your TaskRabbit account for completed transactions. One moment.",
+    "Checking TaskRabbit transactions now.",
+    "I'll check TaskRabbit again for completed transactions. One moment.",
+    "Sure! Let me look into that for you.",
+    "On it.",
+    "One moment while I pull up your orders.",
+    "I'm going to sign in and read the statement.",
+    "Got it, I'll take a quick look at the balance.",
+  ]) assert.ok(promisesAction(p), p);
+  for (const fine of [
+    "Balance is $142.18, due 9/20.",
+    "Chris J. isn't accepting task invitations right now, so he can't be booked for Sep 23.",
+    "The returned faucets moved: new scan in Middletown, PA at 9:07pm. I'll keep watching every 30 minutes.",
+    "I'll check back Thursday once it ships.",
+    "The card has $40 on it.",
+    "Done: the order is placed, confirmation 112-4471998.",
+    "Looking at the tasker list, Chris isn't available and nobody else takes Wednesdays.",
+    "Chris isn't available. Let me know if you want another tasker.",
+    "",
+  ]) assert.ok(!promisesAction(fine), fine || "(empty)");
+  // The strict form (escalation, a stop) never fires on a reply that carries a result.
+  assert.ok(promisesAction("I'll check your account now. One moment.", true));
+  assert.ok(!promisesAction("I found 3 results at $12; I'll open the first one now.", true));
+  assert.ok(promisesAction("I found 3 results at $12; I'll open the first one now."));
+});
+
+test("stallNudge: 'I'll check your account, one moment' goes back to work", () => {
+  const r = row([{ role: "system", content: "s" }, user("list my completed transactions on task rabbit"), { role: "assistant", content: "I'll check your TaskRabbit account for completed transactions. One moment." }]);
+  const n = stallNudge(r, "I'll check your TaskRabbit account for completed transactions. One moment.");
+  assert.ok(n?.startsWith(NUDGE_PREFIX) && /promised an action/.test(n));
 });

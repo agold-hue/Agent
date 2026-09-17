@@ -482,3 +482,7 @@ create table if not exists receipts_ledger (
 );
 create index if not exists receipts_ledger_user_time on receipts_ledger(user_id, occurred_at desc);
 create index if not exists receipts_ledger_user_merchant on receipts_ledger(user_id, merchant, occurred_at desc);
+
+-- The worker that holds a session's lease, so a write from a worker that lost it (its turn outlived the
+-- lease and the sweep started another) is refused instead of adding a second copy of every reply.
+alter table agent_sessions add column if not exists lease_owner text;

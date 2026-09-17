@@ -42,6 +42,8 @@ export interface SessionRow {
   messages: ChatMessage[];
   turns: number;
   lease_until: Date | null;
+  /** Token of the worker holding the lease; every write from the loop is fenced on it. */
+  lease_owner?: string | null;
   last_report: string | null;
   error: string | null;
   cost_cents: number;
@@ -556,7 +558,20 @@ export async function cancelSession(row: SessionRow, note: string): Promise<void
  * would clobber a message the user sent (a separate atomic append) while the loop was working, which
  * made typed chats vanish. `messages` in the patch is ignored; pass the new messages in `append`.
  */
-export async function persistTurn(id: string, append: ChatMessage[], patch: Partial<SessionRow> = {}): Promise<void> {
+/** Thrown when a fenced write finds another worker holding the session's lease: this loop must stop, silently. */
+export class LeaseLostError extends Error {
+  constructor(id: string) {
+    super(`lease on ${id} is held by another worker`);
+  }
+}
+
+/**
+ * Append messages and patch the row. With `fence`, the write only lands while this worker still
+ * holds the lease (its owner token), and renews the lease to `until` unless the patch sets it:
+ * a worker whose long turn outlived its lease, and was replaced by the sweep, learns it here and
+ * stops instead of writing a second copy of every reply.
+ */
+export async function persistTurn(id: string, append: ChatMessage[], patch: Partial<SessionRow> = {}, fence?: { owner: string; until?: Date }): Promise<void> {
   const vals: unknown[] = [id, JSON.stringify(append)];
   const sets = ["messages = messages || $2::jsonb"];
   for (const [k, v] of Object.entries(patch)) {
@@ -564,7 +579,17 @@ export async function persistTurn(id: string, append: ChatMessage[], patch: Part
     vals.push(v !== null && typeof v === "object" && !(v instanceof Date) ? JSON.stringify(v) : v);
     sets.push(`${k} = $${vals.length}`);
   }
-  await q(`update agent_sessions set ${sets.join(", ")}, updated_at = now() where id = $1`, vals);
+  if (fence?.until && patch.lease_until === undefined) {
+    vals.push(fence.until);
+    sets.push(`lease_until = $${vals.length}`);
+  }
+  let where = "id = $1";
+  if (fence) {
+    vals.push(fence.owner);
+    where += ` and lease_owner = $${vals.length}`;
+  }
+  const rows = await q(`update agent_sessions set ${sets.join(", ")}, updated_at = now() where ${where} returning id`, vals);
+  if (fence && !rows.length) throw new LeaseLostError(id);
 }
 
 /** Append an assistant bubble (e.g. the instant "on it" ack). Ephemeral ones show in chat but are never sent to the model. */
@@ -647,14 +672,29 @@ export async function staleRunnableSessions(limit = 20): Promise<SessionRow[]> {
   return q<SessionRow>("select * from agent_sessions where status = 'running' and (lease_until is null or lease_until < now()) order by updated_at limit $1", [limit]);
 }
 
-/** Take a lease so only one worker runs the loop. Returns false if someone else holds it. */
-export async function acquireLease(id: string, seconds: number): Promise<boolean> {
-  const rows = await q("update agent_sessions set lease_until = now() + ($2 || ' seconds')::interval where id = $1 and status = 'running' and (lease_until is null or lease_until < now()) returning id", [id, String(seconds)]);
+/** Take a lease so only one worker runs the loop: the owner token to fence writes on, or undefined when someone else holds it. */
+export async function acquireLease(id: string, seconds: number): Promise<string | undefined> {
+  const owner = randomToken(12);
+  const rows = await q("update agent_sessions set lease_until = now() + ($2 || ' seconds')::interval, lease_owner = $3 where id = $1 and status = 'running' and (lease_until is null or lease_until < now()) returning id", [id, String(seconds), owner]);
+  return rows.length > 0 ? owner : undefined;
+}
+
+/** Renew the lease this worker holds; false when another worker took it meanwhile. */
+export async function extendLease(id: string, owner: string, until: Date): Promise<boolean> {
+  const rows = await q("update agent_sessions set lease_until = $3 where id = $1 and lease_owner = $2 returning id", [id, owner, until]);
   return rows.length > 0;
 }
 
-export async function releaseLease(id: string): Promise<void> {
-  await q("update agent_sessions set lease_until = null where id = $1", [id]);
+/** Give the lease up (with `patch`, e.g. an error, in the same write); a no-op when another worker holds it now. */
+export async function releaseLease(id: string, owner: string, patch: Partial<SessionRow> = {}): Promise<void> {
+  const vals: unknown[] = [id, owner];
+  const sets = ["lease_until = null"];
+  for (const [k, v] of Object.entries(patch)) {
+    if (k === "messages" || k === "id" || k === "lease_until") continue;
+    vals.push(v !== null && typeof v === "object" && !(v instanceof Date) ? JSON.stringify(v) : v);
+    sets.push(`${k} = $${vals.length}`);
+  }
+  await q(`update agent_sessions set ${sets.join(", ")}, updated_at = now() where id = $1 and lease_owner = $2`, vals);
 }
 
 /**

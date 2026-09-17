@@ -10,7 +10,7 @@ import { appendMemory, appendTranscript } from "./memory.js";
 import { appendAssistantMessage } from "./sessions.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
 import { quickLookup } from "./research.js";
-import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, RANK, reasoningFor, tierOfModel, type Tier } from "./router.js";
+import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, nextTier, RANK, reasoningFor, tierOfModel, type Tier } from "./router.js";
 import { stubPageResult, stubSearchResult } from "./search.js";
 import { registrableDomain } from "./credentials.js";
 import { learnFromCorrection } from "./learn.js";
@@ -18,7 +18,7 @@ import { detectFixes, gradeReply, keepPromise, recordFixes, suggestReplies } fro
 import { loadModelHistory } from "./model-history.js";
 import { recordOutcome, taskClassKey } from "./outcomes.js";
 import { readMemory } from "./memory.js";
-import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, quickSystem, sharedSystem, sitesIn, takePrefetch, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
+import { acquireLease, browserShared, chargeCompletion, customerContext, extendLease, getLoopState, getMessages, getSession, isUserMessage, LeaseLostError, messageText, monthUsageCents, persistTurn, releaseLease, quickSystem, sharedSystem, sitesIn, takePrefetch, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool, type ToolOutcome } from "./tools.js";
 import { compactAfterHandoff, HANDOFF_PREFIX, HANDOFF_REQUEST, pageStuck, PREFLIGHT_PREFIX, preflightNote, ROUTES_PREFIX, SCOPE_PREFIX, scopeNote, SPLIT_REPORT_NOTE, splitTurnModel, stuckRoutesNote, tooDearForValue, valueAtStake, valueBudgetCents, VETO_PREFIX, vetoReport } from "./tactics.js";
@@ -80,30 +80,36 @@ export function chatSessionExhausted(row: SessionRow): boolean {
 
 const stamp = () => new Date().toISOString();
 
-export async function runSession(sessionId: string, opts: { budgetMs?: number; leased?: boolean; noSiblingWait?: boolean } = {}): Promise<RunOutcome> {
+/** How long each turn's write renews the lease for; a turn that runs longer than this can be taken over by the sweep, and the old worker's next write is refused. */
+const LEASE_RENEW_MS = Number(process.env.LEASE_RENEW_SECONDS ?? 240) * 1000;
+
+export async function runSession(sessionId: string, opts: { budgetMs?: number; leased?: string; noSiblingWait?: boolean } = {}): Promise<RunOutcome> {
   const budgetMs = opts.budgetMs ?? 240_000;
   const started = Date.now();
-  if (!opts.leased && !(await acquireLease(sessionId, Math.ceil(budgetMs / 1000) + 60))) return "busy";
-  if (opts.leased) await updateSession(sessionId, { lease_until: new Date(Date.now() + budgetMs + 60_000) });
-  const outcome = await runLoop(sessionId, started, budgetMs, opts);
+  // The lease names its holder; every write from the loop is fenced on that token, so one session
+  // never has two writers even when a turn outlives the lease and the sweep starts another worker.
+  const owner = opts.leased ?? (await acquireLease(sessionId, Math.ceil(budgetMs / 1000) + 60));
+  if (!owner) return "busy";
+  if (opts.leased && !(await extendLease(sessionId, owner, new Date(Date.now() + budgetMs + 60_000)))) return "busy";
+  const outcome = await runLoop(sessionId, started, budgetMs, { ...opts, owner });
   // The reply is out. Instead of leaving, wait a moment for the next message on this thread: a
   // follow-up ("and the other one?") then starts in this warm process with the context in memory,
   // skipping the kick and the cold start. The lease is held meanwhile, so chat/send does not kick.
   if (outcome === "done" && WARM_WAIT_MS > 0 && Date.now() - started + WARM_WAIT_MS + 30_000 < budgetMs) {
     const state = await getLoopState(sessionId).catch(() => undefined);
     if (state?.status === "idle" && (await getSession(sessionId))?.kind === "chat") {
-      await updateSession(sessionId, { lease_until: new Date(Date.now() + WARM_WAIT_MS + 10_000) });
+      if (!(await extendLease(sessionId, owner, new Date(Date.now() + WARM_WAIT_MS + 10_000)))) return outcome;
       const until = Date.now() + WARM_WAIT_MS;
       while (Date.now() < until) {
         await new Promise((r) => setTimeout(r, 500));
         const now = await getLoopState(sessionId).catch(() => undefined);
         if (now?.status === "running") {
           console.log(`[run] ${sessionId}: next message picked up warm`);
-          return await runSession(sessionId, { budgetMs: budgetMs - (Date.now() - started), leased: true, noSiblingWait: true });
+          return await runSession(sessionId, { budgetMs: budgetMs - (Date.now() - started), leased: owner, noSiblingWait: true });
         }
         if (now && now.status !== "idle") break;
       }
-      await updateSession(sessionId, { lease_until: null });
+      await releaseLease(sessionId, owner);
       const left = await getSession(sessionId).catch(() => undefined);
       if (left?.browserbase_session_id) await disconnectBrowser(left.browserbase_session_id);
     }
@@ -111,8 +117,9 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number; l
   return outcome;
 }
 
-async function runLoop(sessionId: string, started: number, budgetMs: number, opts: { noSiblingWait?: boolean }): Promise<RunOutcome> {
+async function runLoop(sessionId: string, started: number, budgetMs: number, opts: { noSiblingWait?: boolean; owner: string }): Promise<RunOutcome> {
   let row = (await getSession(sessionId))!;
+  row.lease_owner = opts.owner;
   const t = (await tenantById(row.user_id))!;
   await Promise.all([warmCatalog().catch(() => {}), loadModelHistory()]);
   // The system message is rebuilt every run, so a session started hours ago sees today's prompt,
@@ -155,11 +162,15 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
   // model, then stop with a clear message rather than spin.
   const sigs: string[] = [];
   let escalatedForLoop = false;
+  let escalatedForStall = false;
   // The browser opened on the task's site while the model thinks about its first step (F6).
   let warm: Promise<unknown> | undefined;
   let warmed = false;
+  // Every write is fenced on the lease and renews it (capped a little past this slice), so a worker
+  // that lost the lease stops at its next write and a live one is never taken over mid-task.
+  const fence = () => ({ owner: opts.owner, until: new Date(Math.min(Date.now() + LEASE_RENEW_MS, started + budgetMs + 90_000)) });
   const save = (patch: Partial<SessionRow> = {}) =>
-    persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model, draft: null, ...patch }).then(() => {
+    persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model, draft: null, ...patch }, fence()).then(() => {
       persisted = row.messages.length;
     });
 
@@ -364,6 +375,26 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
           continue;
         }
+        if (promisesAction(text, true) && (row.kind === "chat" || row.kind === "task")) {
+          // Nudged already and still promising instead of doing: this model narrates, so a stronger one
+          // takes the task from a hand-off (and the failure goes on this model's record). If that one
+          // promises too, the task stops with an honest line rather than a promise nobody keeps.
+          supersedeLastReply(row.messages);
+          const stuckOn = tierOfModel(row.model ?? "", t);
+          const up = nextTier(stuckOn);
+          if (!escalatedForStall && up && !tooDearForValue(taskUserText(row.messages), up)) {
+            escalatedForStall = true;
+            await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), stuckOn, false, outcomeExtra(row)).catch(() => {});
+            await handoff(t, row);
+            row.model = modelFor(up, t);
+            row.messages.push({ role: "user", content: "(Your last replies announced a step instead of taking it, so nothing has happened and the user is still waiting. You are now on a stronger model. Do the step now with tools, from the hand-off above; a reply without a tool call ends the task. End with the result, or with exactly where you are stuck and what you need from the user.)" });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} promise again -> escalate`);
+            continue;
+          }
+          console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} promise again -> stop`);
+          return await finish(t, row, persisted, await wrapUp(t, row, "You have announced this step several times without taking it and are being stopped.", "I said I'd do this and didn't get it done, so I stopped."), "idle");
+        }
         // A total for a period nothing read covers ("$140.68 for 2026" off a six-week view): back to the
         // full read, once. Then a draft that gives up or reports a partial window meets a second model's
         // veto naming the route not taken, once.
@@ -542,10 +573,15 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
       console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} total=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
     }
     // Out of time for this invocation; a follow-up kick continues it.
-    await updateSession(row.id, { lease_until: null });
+    await releaseLease(row.id, opts.owner);
     return "continue";
   } catch (err) {
-    await updateSession(row.id, { lease_until: null, error: (err instanceof Error ? err.message : String(err)).slice(0, 500) });
+    if (err instanceof LeaseLostError) {
+      // Another worker holds this session now (this turn outlived the lease): leave everything to it.
+      console.error(`[turn] ${row.id} #${row.turns} lease lost; stopping this worker`);
+      return "busy";
+    }
+    await releaseLease(row.id, opts.owner, { error: (err instanceof Error ? err.message : String(err)).slice(0, 500) });
     throw err;
   }
 }
@@ -678,7 +714,7 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   if (rollOver) status = "terminated" as typeof status;
   // The reply reaches the page now. Append-only: never overwrite the whole array, or a message the
   // user just sent is lost. Everything below is bookkeeping the user never waits for.
-  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null, chips: null });
+  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null, chips: null }, row.lease_owner ? { owner: row.lease_owner } : undefined);
   // A task the host had to stop, or that ended on a failure: a three-line post-mortem into memory,
   // so the morning review can propose the one change that prevents it next time.
   if (status === "error" || failedWords) await postMortem(t, row, report).catch(() => {});
@@ -716,7 +752,8 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
   if (!rollOver && status === "idle") {
     const after = await getMessages(row.id).catch(() => null);
     if (after && after.length > row.messages.length) {
-      await updateSession(row.id, { status: "running", lease_until: null });
+      if (row.lease_owner) await releaseLease(row.id, row.lease_owner, { status: "running" });
+      else await updateSession(row.id, { status: "running", lease_until: null });
       await kick(row.id);
     }
   }
@@ -816,8 +853,35 @@ const NUDGES: Record<string, string> = {
 const GAVE_UP = /\b(couldn'?t|could not|unable to|can'?t|cannot|wasn'?t able|not able to|failed to|didn'?t work|no luck|not possible)\b/i;
 /** A task that stops with a failure report before this many steps has not really tried. */
 const GAVE_UP_STEPS = Number(process.env.GAVE_UP_STEPS ?? 12);
+/** A promise for later ("I'll check back Thursday", "once it arrives") is a follow-up the host keeps, not a stall. */
+const LATER = /\b(tomorrow|tonight|this evening|this afternoon|thursday|friday|monday|tuesday|wednesday|saturday|sunday|next week|next month|later today|in (?:a few|\d+) (?:hours?|minutes?|days?)|when (?:it|they|the|you)|once (?:it|they|the|you)|after (?:it|they|the|you)|every \d+|as soon as)\b/i;
+/** "I'll check your account", "let me look", "going to try again": an action announced instead of taken. */
 const PROMISED_ACTION =
-  /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(now\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|search for|look (?:for|up)|open|grab|pull (?:up|it|the|that|them)|fetch|dig|request|submit|download|check (?:again|it|the|that|amazon|the site)|re-?check|run|start)\b(?![^.]*\b(?:tomorrow|tonight|thursday|friday|monday|tuesday|wednesday|saturday|sunday|next week|when it arrives|once it)\b)|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
+  /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to|i(?:'|’)?m about to|i(?:'|’)?ll go ahead and)\s+(now\s+|just\s+|go\s+(?:and\s+)?|quickly\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|take a (?:quick )?look|look (?:for|up|at|into|through)|search|open|grab|pull|fetch|dig|request|submit|download|check|re-?check|verify|confirm|review|read|scan|run|start|get (?:on|started|that|this|it|back to|you)|do (?:that|this|it)|handle|log ?in|sign ?in|head (?:to|over)|go (?:to|through)|find|see|work on)\b|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
+/** A short reply that is only an acknowledgement: "One moment.", "On it!", "Hang tight", "I'll let you know." Nothing was done and the user is still waiting. */
+const ACK_ONLY =
+  /^\W*(?:(?:sure|ok(?:ay)?|got it|understood|absolutely|of course|right away|no problem|sounds good|yes)[,.!]?\s*)*(?:one (?:moment|sec(?:ond)?|minute)|(?:just )?(?:a|another) (?:moment|sec(?:ond)?|minute)|give me (?:a|one) (?:moment|sec(?:ond)?|minute)|hang tight|hold on|stand by|bear with me|(?:i(?:'|’)?m )?on it|will do|let me|i(?:'|’)?ll|i will|i(?:'|’)?m going to|i am going to)\b/i;
+/** "Checking now.", "Looking into it.": a step in progress as the whole reply; only very short, or ending in "now". */
+const IN_PROGRESS = /^\W*(?:(?:sure|ok(?:ay)?|got it|right away)[,.!]?\s*)*(?:checking|looking|pulling|opening|searching|logging|signing|running|working|getting|reading|scanning|verifying|digging)\b/i;
+
+/**
+ * Whether a reply announces a step instead of taking it (a promise or a bare acknowledgement).
+ * `strict` also demands that nothing in it reads as a result (no figure, amount, link) and that it
+ * is short: a false positive then costs one nudge, never an escalation or a stop.
+ */
+export function promisesAction(reply: string, strict = false): boolean {
+  const r = reply.trim();
+  if (!r) return false;
+  // Sentences that promise for later are follow-ups, not stalls; strip them before looking.
+  const now = r.split(/(?<=[.!?])\s+/).filter((s) => !LATER.test(s)).join(" ");
+  if (!now) return false;
+  const words = now.split(/\s+/).length;
+  const bare = !/[\d$€£%]|https?:/.test(now);
+  if (PROMISED_ACTION.test(now)) return !strict || (bare && words <= 60);
+  if (!bare || words > 30) return false;
+  if (ACK_ONLY.test(now)) return true;
+  return IN_PROGRESS.test(now) && (words <= 6 || (words <= 15 && /\bnow\b/i.test(now)));
+}
 const ASKS_FOR_ADDRESS = /\b(provide|tell me|what(?:'|’)?s|what is|send me|confirm|i need|share)\b[^.?\n]{0,60}\b(your|the)\s+(current\s+|pickup\s+|home\s+|starting\s+|exact\s+)?(location|address)\b/i;
 const OFFERS_LOOKUP =
   /\b(want|would you like|do you want|should|shall|need)\s+(me|i)\s+(to\s+)?(check|look|pull|find|see|verify|confirm|dig|get|grab|open|read|search|run|log)\b|\bsay the word\b|\bjust (?:say|tell me|give me the (?:word|go|nod|ok))\b|\b(?:let me know|tell me) (?:if|whether|when) you(?:'d| would)? (?:want|like|need)\b|\bif you (?:want|like|'d like)(?:,)? (?:i(?:'|’)?ll|i can)\b|\b(?:happy|glad) to (?:grab|pull|fetch|dig|check|look)[^.!?\n]{0,40}\bif\b/i;
@@ -840,7 +904,7 @@ export function stallNudge(row: SessionRow, reply: string): string | undefined {
   const system = `${typeof row.messages[0]?.content === "string" ? row.messages[0].content : ""}\n${row.contextBlock ?? ""}`;
   const homeKnown = /home address[^\n]*:\s*\S/i.test(system);
   if (homeKnown && ASKS_FOR_ADDRESS.test(reply)) return pick("address");
-  if (PROMISED_ACTION.test(reply)) return pick("promise");
+  if (promisesAction(reply)) return pick("promise");
   if (OFFERS_LOOKUP.test(reply)) return pick("offer");
   // Giving up early on a task that used tools: a few steps in, the first failure is not the answer.
   if (GAVE_UP.test(reply) && taskUsedTools(row.messages) && taskTurns(row.messages) < GAVE_UP_STEPS) return pick("gaveUp");
