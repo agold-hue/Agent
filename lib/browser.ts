@@ -30,6 +30,8 @@ export async function createBrowser(t: Tenant): Promise<BrowserHandle> {
     browserSettings: {
       context: { id: t.browserbaseContextId, persist: true },
       solveCaptchas: true,
+      // Ads and trackers are a third of the bytes on a retail or news page and nothing the agent reads.
+      ...(process.env.BROWSER_BLOCK_ADS === "0" ? {} : { blockAds: true }),
       viewport: { width: 1366, height: 900 },
       // Browserbase's advanced stealth (Scale plan) gets past more bot walls; BROWSER_STEALTH=1 turns it on.
       ...(process.env.BROWSER_STEALTH === "1" ? { advancedStealth: true } : {}),

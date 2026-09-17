@@ -4,6 +4,7 @@ import { randomToken } from "./crypto.js";
 import { env } from "./env.js";
 import type { ChatMessage, MessageQuote } from "./llm.js";
 import { ensureSeeded, readMemory } from "./memory.js";
+import { lessonsBlock } from "./learning.js";
 import { modelFor, tierFor } from "./router.js";
 import { ensureProvisioned, type Tenant } from "./tenant.js";
 
@@ -213,6 +214,12 @@ export async function systemFor(t: Tenant, opts: { parallel?: boolean; task?: st
   if (opts.task) {
     const inline = await inlinedNotes(t, opts.task).catch(() => "");
     if (inline) parts.push(inline);
+  }
+  // What earlier tasks taught, scored against this request. Last but one, so everything above it
+  // stays byte-identical between calls and the prompt cache keeps paying.
+  if (opts.task) {
+    const learned = await lessonsBlock(t, opts.task).catch(() => "");
+    if (learned) parts.push(learned);
   }
   if (opts.parallel !== false) {
     const note = await parallelTasksNote(t);

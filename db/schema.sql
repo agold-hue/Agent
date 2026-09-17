@@ -241,3 +241,73 @@ create table if not exists standing_orders (
 );
 create index if not exists standing_orders_user on standing_orders(user_id);
 create index if not exists agent_sessions_parent on agent_sessions(parent_session_id) where parent_session_id is not null;
+
+-- ---------------------------------------------------------------- Files the agent produces
+-- Generated artifacts (PDFs it wrote, filled forms, page prints, CSVs). Served from /api/files with
+-- a per-file token so a link can be shown in chat or emailed without exposing anything else.
+create table if not exists agent_files (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  session_id text,
+  filename text not null,
+  mime_type text not null default 'application/pdf',
+  token text not null unique,
+  content bytea not null,
+  bytes int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists agent_files_user on agent_files(user_id, created_at desc);
+
+-- ---------------------------------------------------------------- What the agent learned
+-- One row per durable lesson: a scope (a domain, a task kind, or "general"), the rule in one or two
+-- lines, and a confidence that rises every time it helps and falls when a task using it still failed.
+-- Retrieved by scope and keyword and injected into the prompt, so every later task starts smarter.
+create table if not exists lessons (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  scope text not null default 'general',      -- 'site:amazon.com' | 'kind:bill' | 'general'
+  topic text not null,                        -- short key used to merge duplicates
+  lesson text not null,
+  keywords text not null default '',
+  uses int not null default 0,
+  wins int not null default 0,
+  losses int not null default 0,
+  confidence numeric(4,2) not null default 0.5,
+  session_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists lessons_key on lessons(user_id, scope, topic);
+create index if not exists lessons_user on lessons(user_id, updated_at desc);
+
+-- Per-site running stats: how often work there succeeds, how long a page takes to become usable
+-- (used to tune the wait), and whether the site throws bot checks. Written by the host, not the model.
+create table if not exists site_stats (
+  user_id uuid not null references users(id) on delete cascade,
+  domain text not null,
+  attempts int not null default 0,
+  successes int not null default 0,
+  captchas int not null default 0,
+  settle_ms int not null default 0,
+  last_ok_at timestamptz,
+  last_seen_at timestamptz not null default now(),
+  primary key (user_id, domain)
+);
+
+-- Per-task outcome, written by the host after every task: the fuel for the weekly "am I getting
+-- better" numbers and for the morning review's fixes.
+create table if not exists task_outcomes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  session_id text,
+  kind text not null default 'task',
+  request text not null default '',
+  outcome text not null default 'unknown',    -- success | partial | failed | blocked
+  blocker text,
+  steps int not null default 0,
+  seconds int not null default 0,
+  cost_cents numeric(14,3) not null default 0,
+  domains text[] not null default '{}',
+  created_at timestamptz not null default now()
+);
+create index if not exists task_outcomes_user on task_outcomes(user_id, created_at desc);

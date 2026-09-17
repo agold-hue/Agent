@@ -1,6 +1,7 @@
 import type { Page } from "playwright-core";
 import { attach } from "./browser.js";
 import { pageText } from "./browser-tools.js";
+import { solveCaptcha } from "./captcha.js";
 import { findCredential, registrableDomain } from "./credentials.js";
 import { env } from "./env.js";
 import { recentCodes } from "./inbound.js";
@@ -204,8 +205,14 @@ async function isSignedIn(page: Page): Promise<boolean> {
 }
 
 /** Give the captcha solver a chance: wait while a bot check is on the page, up to `ms`. */
+/**
+ * A wall in the middle of a sign-in. The full captcha routine gets one go — it waits out what clears
+ * itself, ticks the box, and uses the solving service if one is configured — and then we check the
+ * page's own words, because a site can pass the widget and still refuse the sign-in.
+ */
 async function waitOutBotWall(page: Page, ms = 25_000): Promise<boolean> {
   const start = Date.now();
+  await solveCaptcha(page, { maxMs: Math.min(ms, 30_000) }).catch(() => undefined);
   while (Date.now() - start < ms) {
     if (!BOT_WALL.test(await pageText(page).catch(() => ""))) return true;
     await page.waitForTimeout(2500);
@@ -259,7 +266,13 @@ export async function loginToSite(t: Tenant, opts: {
     // The user may have signed in themselves (a takeover after a bot wall) or the cookies still hold.
     if (await isSignedIn(page)) return { status: "already_logged_in", url: page.url(), title: await page.title().catch(() => "") };
     // Only ever type into a sign-in form. A home page's search bar is never a username field.
-    if (!(await reachLoginForm(page, domain))) {
+    let reached = await reachLoginForm(page, domain);
+    if (!reached && BOT_WALL.test(await pageText(page).catch(() => ""))) {
+      // One real attempt at the wall before handing it to the user: most of them are a checkbox or an
+      // interstitial that passes on its own, and the sign-in form is right behind it.
+      if (await waitOutBotWall(page, 20_000)) reached = await reachLoginForm(page, domain);
+    }
+    if (!reached) {
       const title = await page.title().catch(() => "");
       if (/account|orders|welcome|hello,/i.test(title) || (await isSignedIn(page))) return { status: "already_logged_in", url: page.url(), title };
       if (BOT_WALL.test(await pageText(page).catch(() => ""))) return { status: "needs_user", reason: `A bot check blocks the site before the sign-in form. ${TAKEOVER}`, url: page.url() };

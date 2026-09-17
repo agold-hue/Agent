@@ -8,7 +8,9 @@ customer ──email─▶ <slug>@MAIL_DOMAIN ─▶ api/mail-inbound ─┴─�
                                                                     │  api/run: the loop (lib/runtime.ts), resumable across invocations
                                                                     │   model: lib/llm.ts → OpenRouter / DeepSeek / Gemini (tiers in lib/router.ts)
                                                                     │   tools: browser over CDP (Browserbase), memory (Postgres), vault login,
+                                                                    │          forms in one call, captcha, PDFs made and filled, downloads/uploads,
                                                                     │          send_email, checkpoint, ask_user, schedule_follow_up, calendar/inbox/drive
+                                                                    │   after each task: reflection → lessons, site notes, outcome (lib/learning.ts)
 customer ◀── chat (polling) / email ◀───────────────────────────────┘
 api/cron (every minute): resume stalled sessions, timers and watches, digests, daily and weekly reviews, mail triage
 api/stripe-webhook: subscription status → access
@@ -49,7 +51,10 @@ Screenshots go to the model only if it can see images (`VISION_MODELS`); otherwi
 | Your data | `server/routes/account.ts` | Export everything as one JSON file; delete the account and all of it |
 | Sign in to a site | `server/routes/browser-signin.ts` | Logins tab: opens a site's sign-in page in the customer's shared hosted browser and hands back the live view; the customer signs in once by hand, the profile keeps the cookies, and every later task finds the site signed in. The route past bot checks and device codes |
 | Parallel tasks | `server/routes/chat/send.ts`, `lib/chat.ts` | A request sent while the chat is busy (or prefixed "also:") runs as its own `task` session with its own budget, in its own tab of the one shared browser, up to `PARALLEL_TASKS` (20) at once; its request and result show in the chat tagged with the task, questions it asks show as cards, and the page shows a strip of what each task is doing |
-| Documents | `lib/documents.ts` | PDFs and text files attached in chat or forwarded by mail are read (pdf.js text layer) and handed to the model as text; scans are reported as such |
+| Documents in | `lib/documents.ts` | PDFs and text files attached in chat or forwarded by mail are read (pdf.js text layer) and handed to the model as text; scans are reported as such |
+| Documents out | `lib/pdf.ts`, `lib/files.ts`, `server/routes/files.ts` | `make_pdf` writes a real PDF from markdown (headings, bullets, tables, page numbers); `read_pdf_fields`/`fill_pdf` read and fill an AcroForm and flatten the answers; `browser_pdf` prints the page it is on; `browser_download` pulls a file through the signed-in session. Everything lands in `agent_files` behind a random token, shown in chat as a document card, attachable with `email_file`, uploadable with `browser_upload` |
+| Bot checks | `lib/captcha.ts` | Recognises Cloudflare, Turnstile, reCAPTCHA v2/v3, hCaptcha and press-and-hold; waits out what clears itself (including the hosted browser's own solver), ticks the checkbox in its iframe, uses a 2Captcha-compatible service when `CAPTCHA_API_KEY` is set, and otherwise hands the live view to the customer with one plain sentence. Also runs inside `login` when a wall appears mid sign-in |
+| Learning | `lib/learning.ts` | After every task the host reflects on it with one cheap call and stores scoped lessons (`site:coned.com`, `kind:bill`, `general`), updates `sites/<domain>.md`, and records the outcome. Matching lessons are injected into later prompts; a lesson followed by success gains confidence, one followed by failure loses it and eventually drops out. Per-site stats tune the page wait and flag sites that throw bot checks |
 | Web app | `public/index.html`, `public/app.html` | Landing and login; home (today, quick actions, scoreboard, receipts), chat, inbox, settings, logins, billing |
 
 ## Ownership boundary
@@ -91,14 +96,24 @@ Sign up with an email code, start the trial, chat at `/app.html` or email their 
 
 ## Developing
 
-`npm run typecheck` and `npm test` (unit tests for the loop's pure parts: budgets, loop detection, nudges, code detection, chat rendering). Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`.
+`npm run typecheck` and `npm test` (unit tests for the loop's pure parts: budgets, loop detection, nudges, code detection, chat rendering, PDF generation and form filling, URL normalisation, outcome reading). Edit `agent/system-prompt.md`, tools in `lib/agent-config.ts`, playbooks in `agent/memory-seed/playbooks/`.
 
 ### Shipping changes to existing customers
 
 Everything is shared and takes effect for every customer on the next deploy: code, tools, the system prompt, the web app, and the playbooks (served live from `agent/memory-seed/playbooks/`; a customer's own notes are stored separately and appended on read). Schema changes go in `db/schema.sql` as idempotent statements and are applied with `npm run db:migrate` before the deploy. The only files that do not update in place are the per-customer data templates (`profile.md`, `contacts.md`, `renewals.md`, ...), copied once at signup and owned by the customer from then on; a new template file is only picked up by new customers, so if an existing customer needs it, add it with a one-off script against the `memories` table.
 
+## Speed and reliability
+
+Where the time and the money go, and what is done about it:
+
+- **Fewer round trips.** `browser_fill_form` fills a whole form in one call instead of one model call per field; read-only tools asked for in the same turn (memory, tracked items, stored files) run in parallel; a repeated `web_search` is answered from a five-minute cache.
+- **Lighter pages.** Web fonts, video, ads and trackers are blocked in the tab and at the hosted browser, cookie banners and pop-ups are dismissed before the snapshot, and the wait for a page to become usable is learned per site instead of fixed.
+- **Fewer dead ends.** `browser_click_text` and `browser_find` survive a page that renumbered itself; a bot check is reported the moment it appears rather than discovered thirty steps later; the loop guard still escalates once and then stops.
+- **A faster first word.** Only a short, unfinished-looking message waits to be joined with its sibling, so a real question is answered about 1.5 seconds sooner; the reply streams as it is written and the chat polls at 600 ms while it does.
+
 ## Known limits
 
 - Cheap models are less reliable at long browser tasks and tool discipline; the escalation path and the hard tier exist for that reason. Measure cost per completed task, not per request, before lowering tiers further.
-- No file generation (PDF forms, spreadsheets) without a sandbox; text and CSV via Drive only.
+- Spreadsheets still have no generator (PDFs and text do); CSV goes out through Drive.
+- Image and puzzle captchas need `CAPTCHA_API_KEY`; without it the customer clears one by hand in the live view and the cookie sticks.
 - No SMS/WhatsApp in, no phone calls out, no native push. Voice is voice notes (server transcription) and browser dictation; no spoken replies yet.

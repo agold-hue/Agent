@@ -6,6 +6,7 @@ import { tools, toolsFor } from "./agent-config.js";
 import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
 import { appendMemory, appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
+import { guessOutcome, reflect } from "./learning.js";
 import { isQuickQuestion, modelFor, tierOfModel } from "./router.js";
 import { acquireLease, browserShared, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
@@ -40,6 +41,13 @@ const CHAT_ROLLOVER_SHARE = 0.6;
 // How many identical tool calls in a row count as a stuck loop (a real failure hit ~40).
 const LOOP_LIMIT = Number(process.env.LOOP_LIMIT ?? 6);
 
+/**
+ * Tools that only read and never touch the one shared browser tab, so several of them asked for in
+ * one turn can run at once. Everything else (the browser, mail, the vault, anything that can pause
+ * the loop or spend money) stays strictly in the order the model asked for it.
+ */
+const READ_ONLY_TOOLS = new Set(["memory_read", "memory_grep", "memory_list", "list_items", "list_files", "read_pdf_fields", "get_email_code"]);
+
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
 
 /**
@@ -64,11 +72,17 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   await warmCatalog().catch(() => {});
   // The system message is rebuilt every run, so a session started hours ago sees today's prompt,
   // today's settings, and which services (browser, mail, Google) are available right now.
-  // Messages typed in quick succession ("add milk", "remind me at 3", "note Sam's number") are one
-  // call, not three: a request under two seconds old waits a moment for its siblings.
-  const lastAt = row.messages[row.messages.length - 1]?.at;
-  if (lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
-    await new Promise((r) => setTimeout(r, 1500));
+  // Messages typed in quick succession are one request, but waiting costs every reply 1.5 seconds, so
+  // only a message that looks unfinished waits for its sibling: short, no closing punctuation, no
+  // question mark. "add milk" waits; "how much is an Uber to JFK?" does not.
+  const last = row.messages[row.messages.length - 1];
+  const lastAt = last?.at;
+  const looksUnfinished = (() => {
+    const text = last && last.role === "user" ? messageText(last).trim() : "";
+    return !!text && text.length < 40 && !/[.?!:;)\]]$/.test(text);
+  })();
+  if (lastAt && looksUnfinished && Date.now() - new Date(lastAt).getTime() < 2000) {
+    await new Promise((r) => setTimeout(r, Number(process.env.COALESCE_MS ?? 1200)));
     row = (await getSession(sessionId)) ?? row;
   }
   if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t, { task: taskUserText(row.messages) }) };
@@ -205,17 +219,39 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         return await finish(t, row, persisted, text, "idle");
       }
 
-      for (const call of calls) {
-        let args: Record<string, unknown> = {};
+      // Several calls in one turn that only read (memory, tracked items, the calendar, a stored file)
+      // run at the same time instead of one after another: three memory reads used to cost three
+      // round trips of latency for nothing. Anything that touches the one browser tab, sends mail, or
+      // can pause the loop stays strictly in order.
+      const parsedCalls = calls.map((call) => {
         try {
-          args = JSON.parse(call.function.arguments || "{}");
+          return { call, args: JSON.parse(call.function.arguments || "{}") as Record<string, unknown>, bad: false };
         } catch {
+          return { call, args: {} as Record<string, unknown>, bad: true };
+        }
+      });
+      const parallel = parsedCalls.length > 1 && parsedCalls.every((c) => !c.bad && READ_ONLY_TOOLS.has(c.call.function.name));
+      const preRun = parallel
+        ? new Map(
+            await Promise.all(
+              parsedCalls.map(async (c) => {
+                const at = Date.now();
+                const out = await executeTool(t, row, c.call.function.name, c.args, c.call.id);
+                return [c.call.id, { out, ms: Date.now() - at }] as const;
+              }),
+            ),
+          )
+        : undefined;
+      if (parallel) timings.push(`parallel×${parsedCalls.length}`);
+      for (const { call, args, bad } of parsedCalls) {
+        if (bad) {
           row.messages.push({ role: "tool", tool_call_id: call.id, content: "Invalid JSON arguments; call again with valid JSON." });
           continue;
         }
         const toolStart = Date.now();
-        const out = await executeTool(t, row, call.function.name, args, call.id);
-        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s`);
+        const pre = preRun?.get(call.id);
+        const out = pre ? pre.out : await executeTool(t, row, call.function.name, args, call.id);
+        timings.push(`${call.function.name}=${((pre ? pre.ms : Date.now() - toolStart) / 1000).toFixed(1)}s`);
         if (out.pending) {
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} pending:${out.pending}`);
           row.status = "waiting";
@@ -279,6 +315,37 @@ async function postMortem(t: Tenant, row: SessionRow, report: string): Promise<v
   if (!text) return;
   const sites = [...new Set([...row.messages.flatMap((m) => (typeof m.content === "string" ? m.content.match(/https?:\/\/([\w.-]+)/g) ?? [] : [])).map((u) => u.replace(/^https?:\/\//, "").replace(/^www\./, ""))])].slice(0, 3);
   await appendMemory(t, "history/failures.md", `\n### ${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${(row.title ?? row.kind).slice(0, 80)}${sites.length ? ` · ${sites.join(", ")}` : ""}\n${text}\n`);
+}
+
+/**
+ * The reflection pass: after every real task the host asks a cheap model what it would do differently,
+ * and stores the answer as scoped lessons plus per-site notes (lib/learning.ts). It runs on the way
+ * out, capped in time, and its failure never reaches the user.
+ *
+ * Skipped for greetings and for sessions with no tool use: there is nothing to learn from "thanks".
+ */
+async function learn(t: Tenant, row: SessionRow, report: string): Promise<void> {
+  if (process.env.LEARNING === "off") return;
+  if (!["chat", "task", "followup", "correspondence"].includes(row.kind)) return;
+  const request = taskUserText(row.messages);
+  if (!request || isQuickQuestion(request)) return;
+  const steps = taskTurns(row.messages);
+  if (steps < 2 && guessOutcome(report) !== "blocked") return;
+  const clock = taskClockStart(row.messages);
+  const timeout = Number(process.env.LEARN_TIMEOUT_MS ?? 25_000);
+  await Promise.race([
+    reflect(t, {
+      sessionId: row.id,
+      kind: row.kind,
+      request,
+      report,
+      steps,
+      seconds: clock ? (Date.now() - clock) / 1000 : 0,
+      costCents: Number(row.cost_cents),
+      context: compacted(row.messages).slice(-20),
+    }),
+    new Promise((r) => setTimeout(r, timeout)),
+  ]);
 }
 
 /** A provider failure in the user's words, not the provider's JSON. */
@@ -374,6 +441,9 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
     else await notifyOwner(t, row, report, row.kind === "review" ? "Morning brief" : row.kind === "weekly" ? "Week ahead" : row.kind === "digest" ? "Heads-ups" : undefined);
     await appendTranscript(t, { channel: row.channel, role: "agent", text: report }).catch(() => {});
   }
+  // Learn from it, win or lose. One cheap call that turns this task into lessons the next one starts
+  // with, and into the numbers behind "am I getting better". Never allowed to delay or fail the reply.
+  await learn(t, row, report).catch(() => {});
   if (row.browserbase_session_id) {
     // A finished task or self-started session lets go of its tab; the browser itself is released only
     // when no other live session of this customer is using it (one browser per customer).

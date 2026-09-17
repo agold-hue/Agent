@@ -18,6 +18,7 @@ import tasks from "../server/routes/tasks.js";
 import upload from "../server/routes/chat/upload.js";
 import cron from "../server/routes/cron.js";
 import drafts from "../server/routes/drafts.js";
+import files from "../server/routes/files.js";
 import googleCallback from "../server/routes/google/callback.js";
 import googleConnect from "../server/routes/google/connect.js";
 import googleDisconnect from "../server/routes/google/disconnect.js";
@@ -58,6 +59,7 @@ const routes: Record<string, Handler> = {
   "chat/react": react,
   cron,
   drafts,
+  files,
   "google/callback": googleCallback,
   "google/connect": googleConnect,
   "google/disconnect": googleDisconnect,

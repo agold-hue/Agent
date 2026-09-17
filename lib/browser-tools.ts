@@ -1,6 +1,10 @@
 import { chromium, type Browser, type Page } from "playwright-core";
 import { createBrowser, pageByTarget, reuseBrowser, targetIdOf, type BrowserHandle } from "./browser.js";
+import { detectCaptcha, handoverLine, solveCaptcha } from "./captcha.js";
 import { env } from "./env.js";
+import { fileContent, saveFile } from "./files.js";
+import { noteSiteVisit, siteStat } from "./learning.js";
+import { makePdf } from "./pdf.js";
 import { otherActiveBrowsers, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
@@ -51,12 +55,107 @@ async function pageFor(row: SessionRow, context: ReturnType<Browser["contexts"]>
   const blank = pages.find((p) => p.url() === "about:blank" || p.url() === "");
   if (!row.browser_target_id && blank && pages.length === 1) page = blank;
   else page = await context.newPage();
+  await harden(page);
   const id = await targetIdOf(page);
   if (id) {
     row.browser_target_id = id;
     await updateSession(row.id, { browser_target_id: id });
   }
   return page;
+}
+
+/**
+ * Applied once to every tab we open: drop the freight a task never reads, and stop looking like a
+ * script. Web fonts, video, ads and analytics are a third of the bytes and most of the wait on a
+ * retail or utility page, and none of them change what the agent can see or click. Images stay (the
+ * screenshot and the vision models need them) unless BROWSER_BLOCK_IMAGES=1.
+ */
+const JUNK_HOST = /doubleclick|googletagmanager|google-analytics|googlesyndication|adservice|adsystem|scorecardresearch|hotjar|mixpanel|segment\.(io|com)|fullstory|optimizely|criteo|taboola|outbrain|quantserve|moatads|amplitude|braze|clarity\.ms|newrelic|sentry\.io|facebook\.net|connect\.facebook|tiktok\.com\/i18n|snap\.licdn/i;
+const BLOCK_TYPES = new Set(["font", "media", "beacon", "websocket", ...(process.env.BROWSER_BLOCK_IMAGES === "1" ? ["image"] : [])]);
+
+const hardened = new WeakSet<Page>();
+
+async function harden(page: Page): Promise<void> {
+  if (hardened.has(page) || process.env.BROWSER_LIGHT === "off") return;
+  hardened.add(page);
+  await page
+    .route("**/*", (route) => {
+      const req = route.request();
+      if (BLOCK_TYPES.has(req.resourceType()) || JUNK_HOST.test(req.url())) return route.abort().catch(() => {});
+      return route.continue().catch(() => {});
+    })
+    .catch(() => {});
+  // The three tells that cost nothing to remove and get past the cheapest bot checks.
+  await page
+    .addInitScript(`() => {
+      try {
+        Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+        if (!navigator.languages || !navigator.languages.length) Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+        if (!window.chrome) window.chrome = { runtime: {} };
+      } catch {}
+    }`)
+    .catch(() => {});
+}
+
+/**
+ * Cookie banners, "continue in the app", newsletter pop-ups and region pickers sit on top of the page
+ * and swallow the first click of every task. Dismissed in one pass right after a navigation: accept
+ * the cookies (that is what a person does), close the rest. Silent when there is nothing to close.
+ */
+const CONSENT_TEXT = /^(accept( all)?( cookies)?|allow all|i agree|agree( & continue)?|got it|ok(ay)?|continue|understood|close|no thanks|not now|maybe later|dismiss|reject all|stay on (the )?(web|site))$/i;
+
+export async function dismissOverlays(page: Page): Promise<number> {
+  if (process.env.BROWSER_DISMISS === "off") return 0;
+  let closed = 0;
+  for (const frame of page.frames().slice(0, 6)) {
+    const hits = (await frame
+      .evaluate(`(() => {
+        const vis = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 1 && r.height > 1 && s.visibility !== "hidden" && s.display !== "none" && s.opacity !== "0"; };
+        const words = /^(accept( all)?( cookies)?|allow all|i agree|agree( & continue)?|got it|ok(ay)?|understood|close|no thanks|not now|maybe later|dismiss|reject all)$/i;
+        let n = 0;
+        const roots = Array.from(document.querySelectorAll('[id*="cookie" i], [class*="cookie" i], [id*="consent" i], [class*="consent" i], [role="dialog"], [aria-modal="true"], [class*="modal" i], [class*="banner" i], [id*="onetrust" i], [class*="gdpr" i]'));
+        for (const root of roots.slice(0, 12)) {
+          if (!vis(root)) continue;
+          const btns = Array.from(root.querySelectorAll('button, a[role="button"], [role="button"], input[type="button"], input[type="submit"]')).filter(vis);
+          const hit = btns.find((b) => words.test((b.innerText || b.value || b.getAttribute("aria-label") || "").trim()));
+          if (hit) { hit.click(); n++; continue; }
+          const x = btns.find((b) => /^(×|✕|x|close)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
+          if (x) { x.click(); n++; }
+        }
+        return n;
+      })()`)
+      .catch(() => 0)) as number;
+    closed += Number(hits) || 0;
+  }
+  if (closed) await page.waitForTimeout(400);
+  return closed;
+}
+
+/** The registrable-ish host of the current page, for the per-site stats and notes. */
+export function hostOf(page: Page): string {
+  try {
+    return new URL(page.url()).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * After every navigation: settle (using what we learned about how slow this site is), close whatever
+ * is covering the page, and say so if a bot check is in the way rather than letting the model discover
+ * it thirty steps later.
+ */
+async function arrive(t: Tenant, page: Page, opts: { maxMs?: number } = {}): Promise<string> {
+  const host = hostOf(page);
+  const learned = host ? await siteStat(t, host).catch(() => null) : null;
+  const started = Date.now();
+  await waitInteractive(page, opts.maxMs ?? (learned?.settle_ms ? Math.min(20_000, Math.max(2000, Math.round(learned.settle_ms * 1.3))) : undefined));
+  const settleMs = Date.now() - started;
+  await dismissOverlays(page).catch(() => {});
+  const wall = await detectCaptcha(page).catch(() => ({ kind: "none" as const, evidence: "" }));
+  if (host) void noteSiteVisit(t, host, { settleMs, captcha: wall.kind !== "none" }).catch(() => {});
+  if (wall.kind === "none") return "";
+  return `\n[bot check on this page: ${wall.kind}. Call solve_captcha once before anything else; do not keep clicking.]`;
 }
 
 /** Close the session's tab (a finished task); the browser stays for whoever else uses it. */
@@ -131,6 +230,61 @@ async function ref(page: Page, r: string) {
     if ((await loc.count().catch(() => 0)) > 0) return loc;
   }
   return page.locator(sel).first();
+}
+
+/** "amazon.com/orders", "www.coned.com" or a full URL, all reaching the same place. */
+export function normalizeUrl(url: string): string {
+  const u = url.trim();
+  if (/^https?:\/\//i.test(u)) return u;
+  if (/^[\w.-]+\.[a-z]{2,}(\/|$|\?)/i.test(u)) return `https://${u}`;
+  return u;
+}
+
+/** A form control found by its visible label, placeholder or aria-label, in any frame. */
+async function byLabel(page: Page, label: string) {
+  const want = label.trim();
+  if (!want) return undefined;
+  for (const frame of page.frames()) {
+    for (const loc of [frame.getByLabel(want, { exact: false }).first(), frame.getByPlaceholder(want, { exact: false }).first(), frame.locator(`[aria-label*="${want.replace(/"/g, '\\"')}" i]`).first(), frame.locator(`[name="${want.replace(/"/g, '\\"')}"]`).first()]) {
+      if ((await loc.count().catch(() => 0)) > 0 && (await loc.isVisible().catch(() => false))) return loc;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * A clickable found by what it says. Numbered refs go stale the moment a page re-renders (React sites
+ * re-render on every keystroke), and re-snapshotting to get fresh numbers costs a whole turn; clicking
+ * by text survives that and reads better in the step log.
+ */
+async function byText(page: Page, text: string, role?: string) {
+  const want = text.trim();
+  if (!want) return undefined;
+  const rx = new RegExp(want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  for (const frame of page.frames()) {
+    const tries = role
+      ? [frame.getByRole(role as "button", { name: rx }).first()]
+      : [frame.getByRole("button", { name: rx }).first(), frame.getByRole("link", { name: rx }).first(), frame.getByRole("tab", { name: rx }).first(), frame.getByRole("menuitem", { name: rx }).first(), frame.locator(`button:has-text("${want.replace(/"/g, '\\"')}")`).first(), frame.getByText(rx, { exact: false }).first()];
+    for (const loc of tries) {
+      if ((await loc.count().catch(() => 0)) > 0 && (await loc.isVisible().catch(() => false))) return loc;
+    }
+  }
+  return undefined;
+}
+
+/** The button that submits the form we just filled. */
+async function submitButton(page: Page) {
+  for (const frame of page.frames()) {
+    for (const sel of ['button[type="submit"]', 'input[type="submit"]', "form button:not([type=button])"]) {
+      const loc = frame.locator(sel).first();
+      if ((await loc.count().catch(() => 0)) > 0 && (await loc.isVisible().catch(() => false))) return loc;
+    }
+  }
+  for (const word of ["continue", "next", "submit", "save", "sign in", "log in", "place order", "pay"]) {
+    const loc = await byText(page, word, "button");
+    if (loc) return loc;
+  }
+  return undefined;
 }
 
 /** Visible text of the page and of every child frame that shows something. */
@@ -244,6 +398,10 @@ export async function snapshot(page: Page, max = MAX_ELEMENTS): Promise<string> 
   if (total > max) out.push(`... ${total - max} more elements not shown; browser_snapshot lists up to ${MAX_ELEMENTS}, or scroll, or browser_text`);
   return out.join("\n");
 }
+/** Search results kept briefly per worker: the same query inside one task, or across parallel tasks, is free. */
+const searchCache = new Map<string, { at: number; text: string }>();
+const SEARCH_TTL_MS = Number(process.env.SEARCH_CACHE_MS ?? 5 * 60_000);
+
 /** The last full snapshot each session saw, so an action can return only what changed. */
 const lastSnapshots = new Map<string, { url: string; lines: string[] }>();
 
@@ -277,19 +435,20 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
   switch (name) {
     case "browser_open":
       return withPage(t, row, async (page, _b, h) => {
+        let note = "";
         if (str("url")) {
-          await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
-          await waitInteractive(page);
+          await page.goto(normalizeUrl(str("url")), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
+          note = await arrive(t, page);
         }
-        return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}` };
+        return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}${note}` };
       });
     case "browser_goto":
       return withPage(t, row, async (page) => {
-        await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 });
-        await waitInteractive(page);
+        await page.goto(normalizeUrl(str("url")), { waitUntil: "domcontentloaded", timeout: 45_000 });
+        const note = await arrive(t, page);
         const snap = await snapshot(page);
         lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
-        return { text: `${await page.title()}\n${page.url()}\n\n${snap}` };
+        return { text: `${await page.title()}\n${page.url()}${note}\n\n${snap}` };
       });
     case "browser_snapshot":
       return withPage(t, row, async (page) => {
@@ -408,7 +567,12 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         await settle(page);
         return { text: `${page.url()}\n\n${await snapshot(page)}` };
       });
-    case "web_search":
+    case "web_search": {
+      // The same question comes up across parallel tasks and across the steps of one task ("uber jfk
+      // fare", then "uber jfk fare estimate"). A short per-worker cache turns the repeat into a free,
+      // instant answer and leaves the tab where it was.
+      const cached = searchCache.get(str("query").trim().toLowerCase());
+      if (cached && Date.now() - cached.at < SEARCH_TTL_MS) return { text: cached.text };
       return withPage(t, row, async (page) => {
         await page.goto(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(str("query"))}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
         await settle(page, 1000);
@@ -421,7 +585,124 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
               return `- ${(a as HTMLElement).innerText.trim()} | ${(a as HTMLAnchorElement).href}\n  ${snippet.slice(0, 200)}`;
             }),
         );
-        return { text: results.length ? results.join("\n") : (await page.evaluate(() => document.body.innerText)).slice(0, 3000) };
+        const text = results.length ? results.join("\n") : (await page.evaluate(() => document.body.innerText)).slice(0, 3000);
+        searchCache.set(str("query").trim().toLowerCase(), { at: Date.now(), text });
+        if (searchCache.size > 200) searchCache.delete(searchCache.keys().next().value!);
+        return { text };
+      });
+    }
+    case "browser_fill_form":
+      return withPage(t, row, async (page) => {
+        const fields = (a.fields as Array<{ ref?: string | number; label?: string; value?: string; check?: boolean; select?: string }>) ?? [];
+        if (!fields.length) return { text: "Pass fields: [{ref or label, value}]." };
+        const done: string[] = [];
+        const failed: string[] = [];
+        for (const f of fields) {
+          const where = f.ref != null ? String(f.ref) : (f.label ?? "");
+          try {
+            const loc = f.ref != null ? await ref(page, String(f.ref)) : await byLabel(page, String(f.label ?? ""));
+            if (!loc) {
+              failed.push(`${where}: not found`);
+              continue;
+            }
+            await loc.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => {});
+            if (f.select != null) await loc.selectOption({ label: f.select }).catch(async () => await loc.selectOption(f.select!));
+            else if (f.check != null) await (f.check ? loc.check({ timeout: 6000 }) : loc.uncheck({ timeout: 6000 }));
+            else {
+              await loc.click({ timeout: 6000 }).catch(() => {});
+              await loc.fill("").catch(() => {});
+              await loc.type(String(f.value ?? ""), { delay: 12 });
+            }
+            done.push(where);
+          } catch (err) {
+            failed.push(`${where}: ${(err instanceof Error ? err.message : String(err)).split("\n")[0].slice(0, 80)}`);
+          }
+        }
+        let submitted = "";
+        if (a.submit) {
+          const loc = typeof a.submit === "string" || typeof a.submit === "number" ? await ref(page, String(a.submit)) : await submitButton(page);
+          if (loc) {
+            await loc.click({ timeout: 10_000 }).catch(() => {});
+            await settle(page, 1500);
+            submitted = `\nsubmitted -> ${page.url()}`;
+          } else submitted = "\n(no submit button found; click it yourself)";
+        }
+        const wall = a.submit ? await arrive(t, page, { maxMs: 6000 }) : "";
+        return { text: `filled ${done.length}/${fields.length}${failed.length ? `; failed: ${failed.join("; ")}` : ""}${submitted}${wall}\n\n${await after(page, row.id)}` };
+      });
+    case "browser_click_text":
+      return withPage(t, row, async (page) => {
+        const loc = await byText(page, str("text"), str("role") || undefined);
+        if (!loc) return { text: `nothing clickable says "${str("text")}" on this page.\n\n${await snapshot(page, ACTION_ELEMENTS)}` };
+        await loc.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => {});
+        await loc.click({ timeout: 10_000 });
+        await settle(page);
+        return { text: `clicked "${str("text")}" -> ${page.url()}\n\n${await after(page, row.id)}` };
+      });
+    case "browser_find":
+      return withPage(t, row, async (page) => {
+        const needle = str("what").toLowerCase().trim();
+        const snap = await snapshot(page);
+        const hits = snap.split("\n").filter((l) => /^\[\d+\]/.test(l) && l.toLowerCase().includes(needle));
+        lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
+        if (hits.length) return { text: hits.slice(0, 25).join("\n") };
+        const text = (await pageText(page)).toLowerCase();
+        return { text: text.includes(needle) ? `No control says "${str("what")}", but the page text mentions it. Read it with browser_text.` : `Nothing on this page matches "${str("what")}". Scroll, or check you are on the right page.` };
+      });
+    case "browser_upload":
+      return withPage(t, row, async (page) => {
+        const f = await fileContent(t, str("file"));
+        if (!f) return { text: `No stored file "${str("file")}". Use make_pdf or browser_download first; they return the id.` };
+        const loc = str("ref") ? await ref(page, str("ref")) : page.locator('input[type="file"]').first();
+        await loc.setInputFiles({ name: f.filename, mimeType: f.mimeType, buffer: f.content }, { timeout: 15_000 });
+        await settle(page, 1200);
+        return { text: `attached ${f.filename} (${Math.round(f.content.length / 1024)} kB)\n\n${await after(page, row.id)}` };
+      });
+    case "browser_download":
+      return withPage(t, row, async (page) => {
+        const url = str("url") || page.url();
+        // Fetched from inside the page so the site's cookies come along: statements and invoices
+        // behind a login download exactly as they would for the user.
+        const got = (await page.evaluate(
+          `(async (u) => {
+             try {
+               const r = await fetch(u, { credentials: "include" });
+               if (!r.ok) return { error: "HTTP " + r.status };
+               const b = await r.arrayBuffer();
+               if (b.byteLength > 8000000) return { error: "file too large (" + Math.round(b.byteLength / 1024) + " kB)" };
+               let s = "";
+               const bytes = new Uint8Array(b);
+               for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+               return { data: btoa(s), type: r.headers.get("content-type") || "application/octet-stream" };
+             } catch (e) { return { error: String(e && e.message || e) }; }
+           })(${JSON.stringify(url)})`,
+        ).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }))) as { data?: string; type?: string; error?: string };
+        if (!got?.data) return { text: `Could not download it: ${got?.error ?? "no data"}` };
+        const name = str("filename") || decodeURIComponent(url.split("?")[0].split("/").pop() || "download") || "download";
+        const saved = await saveFile(t, { sessionId: row.id, filename: name, mimeType: got.type ?? "application/octet-stream", content: Buffer.from(got.data, "base64") });
+        return { text: JSON.stringify({ saved: true, file: saved.id, filename: saved.filename, kb: Math.round(saved.bytes / 1024), link: saved.url, note: "Give the link to the user, attach it to an email, or fill it with fill_pdf." }) };
+      });
+    case "browser_pdf":
+      return withPage(t, row, async (page) => {
+        const name = str("filename") || `${(await page.title()).replace(/[^\w .-]+/g, " ").trim().slice(0, 60) || "page"}.pdf`;
+        let buf: Buffer;
+        try {
+          buf = Buffer.from(await page.pdf({ format: "Letter", printBackground: true, margin: { top: "0.5in", bottom: "0.5in", left: "0.5in", right: "0.5in" } }));
+        } catch {
+          // Some hosted browsers refuse Page.printToPDF; fall back to the readable text as a PDF.
+          buf = await makePdf(await pageText(page), { title: await page.title(), footer: page.url() });
+        }
+        const saved = await saveFile(t, { sessionId: row.id, filename: name.endsWith(".pdf") ? name : `${name}.pdf`, mimeType: "application/pdf", content: buf });
+        return { text: JSON.stringify({ saved: true, file: saved.id, filename: saved.filename, kb: Math.round(saved.bytes / 1024), link: saved.url }) };
+      });
+    case "solve_captcha":
+      return withPage(t, row, async (page) => {
+        const host = hostOf(page);
+        const result = await solveCaptcha(page);
+        if (host) void noteSiteVisit(t, host, { captcha: result.status !== "no_captcha" }).catch(() => {});
+        if (result.status === "needs_user") return { text: JSON.stringify({ ...result, tell_the_user: handoverLine(result), note: "Do not retry. Say this to the user in one line and stop." }) };
+        if (result.status === "no_captcha") return { text: "No bot check on this page; carry on." };
+        return { text: `${result.how}. The page is through; take the next step.\n\n${await snapshot(page, ACTION_ELEMENTS)}` };
       });
     default:
       return { text: `unknown browser tool ${name}` };

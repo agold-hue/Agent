@@ -4,6 +4,7 @@ import { ensureSchema, q } from "../../lib/db.js";
 import { env } from "../../lib/env.js";
 import { takeDueFollowUps } from "../../lib/followups.js";
 import { attachmentsFor, takeUntriaged } from "../../lib/inbound.js";
+import { learningReport } from "../../lib/learning.js";
 import { isBatchMinute, takeDigest } from "../../lib/notify.js";
 import { kick } from "../../lib/runtime.js";
 import { createSession, expiredAskUserSessions, hasDigestKey, hasSessionOfKindToday, staleRunnableSessions, UsageCapError } from "../../lib/sessions.js";
@@ -51,6 +52,12 @@ async function weeklyData(t: Tenant): Promise<string> {
  * died, fires due timers and watches, flushes held heads-ups at check-in times, starts the daily
  * and weekly reviews, and triages forwarded mail in batches.
  */
+/** The host's own measurements of how the agent is doing, for a review to act on rather than guess. */
+async function learningLine(t: Tenant, days = 7): Promise<string> {
+  const text = await learningReport(t, days).catch(() => "");
+  return text || "(no task history yet)";
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if ((req.headers.authorization ?? "") !== `Bearer ${env.cronSecret()}` && req.query.token !== env.cronSecret()) return res.status(401).end();
   await ensureSchema();
@@ -146,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const reviewHour = Number(t.settings.daily_review_hour ?? 8);
     if (reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "review", clock.day))) {
-      await start(t, "reviews", () =>
+      await start(t, "reviews", async () =>
         createSession(t, {
           channel: "email",
           kind: "review",
@@ -160,7 +167,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               `For every open project: is anything blocked, overdue, or waiting on someone for more than two days? If so, chase it (a task) and update the project file.`,
               `Look ahead 7 days: travel that needs bookings or check-ins, appointments that need prep, deliveries or pickups that collide with where the owner will be, meetings that need a brief. Start tasks for what can be done; set schedule_follow_up for the rest.`,
               `Walk renewals.md and watchlist.md: anything due, expiring, renewing, or worth checking today. If topics.md has entries, add a short signals digest (web_search; only if new and relevant).`,
-              `Read history/failures.md for the last 7 days. For each failure, write the one change that prevents it next time into the right place (sites/<domain>.md for a site, preferences.md for a rule, standing_instructions.md for a default the owner should add), then remove the entry from failures.md.`,
+              `Read history/failures.md for the last 7 days. For each failure, write the one change that prevents it next time into the right place (sites/<domain>.md for a site, preferences.md for a rule, standing_instructions.md for a default the owner should add), then remove the entry from failures.md. Where the change is a rule you should apply yourself next time, also call record_lesson so it lands in the prompt of the task that needs it.`,
+              `How you have been doing lately (from the host, not from memory):`,
+              await learningLine(t),
               `Then text the owner a short morning brief: what you started (one line each), what moved, what is coming, what needs their decision, and any change you made after a failure. If there is truly nothing, reply with exactly NO_REPORT.`,
             ].join("\n"),
             "email",
@@ -185,6 +194,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               `Weekly review with the owner. Read the next 14 days (calendar tool if connected, else calendar.md), projects/, watchlist.md, renewals.md, actions.md, profile.md and this week's conversations/.`,
               `This week's record, from the host:`,
               await weeklyData(t),
+              `Your own record, from the host:`,
+              await learningLine(t, 7),
               `Write the week's report as a text: money out (what was paid, with amounts), money back (refunds and savings), what is due in the next 14 days, subscriptions and renewals worth a look, tasks done and tasks that did not finish with why, then the week ahead: what is booked, what you will handle, what is waiting on others, decisions the owner needs.`,
               `Then ask at most two questions whose answers (including blanks in profile.md or standing_instructions.md) would let you do more without asking next week. Under 16 lines total.`,
             ].join("\n"),

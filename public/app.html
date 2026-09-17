@@ -182,6 +182,16 @@
   .chatDown { position:absolute; right:16px; bottom:16px; z-index:3; display:inline-flex; align-items:center; justify-content:center; width:42px; height:42px; padding:0; border:1px solid #D3D8DE; border-radius:50%; background:#fff; color:var(--blue); cursor:pointer; box-shadow:0 6px 18px rgba(20,20,20,.16), 0 1px 2px rgba(20,20,20,.06); }
   .chatDown:hover { background:var(--blue-soft); }
   .chatDownBadge { position:absolute; top:-7px; right:-7px; min-width:22px; height:22px; padding:0 6px; box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; border:2px solid #fff; border-radius:999px; background:var(--blue); color:#fff; font-size:11.5px; font-weight:700; line-height:1; }
+  .chatDoing { color:var(--ink); }
+  .chatElapsed { font-variant-numeric:tabular-nums; opacity:.75; }
+  .chatWatch { color:var(--copper); text-decoration:none; border-bottom:1px dotted currentColor; }
+  .chatWatch:hover { opacity:.8; }
+  .fileCard { display:flex; align-items:center; gap:10px; margin-top:8px; padding:8px 10px; border:1px solid #DDE3EA; border-radius:12px; background:#fff; text-decoration:none; color:inherit; max-width:340px; }
+  .fileCard:hover { border-color:var(--copper); }
+  .fileIcon { flex:none; width:34px; height:34px; border-radius:8px; background:#F1F3F7; color:#5B6572; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; letter-spacing:.02em; }
+  .fileMeta { min-width:0; display:flex; flex-direction:column; }
+  .fileMeta b { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fileMeta i { font-style:normal; font-size:11.5px; color:var(--muted); }
   .chatTyping { min-height:18px; display:flex; align-items:center; gap:8px; padding:0 6px 4px; font-size:11.5px; color:var(--muted); }
   .chatStatus { color:var(--muted); }
   .chatDots { display:inline-flex; gap:3px; }
@@ -337,6 +347,10 @@
     <h3>Done receipts</h3>
     <p>Proof for everything it finished: order and confirmation numbers, and a screenshot when there was one.</p>
     <div id="receipts"><div class="empty">Nothing yet.</div></div>
+  </div>
+  <div class="card" id="docsCard" hidden>
+    <h3>Documents it made for you</h3>
+    <div id="docs"></div>
   </div>
 </div></main>
 
@@ -529,6 +543,7 @@
     return div;
   }
   async function loadHome() {
+    loadFiles(true);
     $("homeTitle").textContent = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
     const [tr, sr, rr] = await Promise.all([api("/api/today?days=3"), api("/api/stats"), api("/api/receipts")]);
     if (tr.ok) {
@@ -726,6 +741,43 @@
   const saveSeen = () => { try { localStorage.setItem("secretary:seen", JSON.stringify(lastSeen)); } catch {} };
   const esc2 = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const DAY_KEY = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  // A file the agent made or fetched (a PDF, a filled form, a statement) is a card with a name and a
+  // tap target, not a raw URL in the middle of a sentence.
+  const FILE_RE = /(https?:\/\/[^\s<>"']*\/api\/files\?t=[A-Za-z0-9_-]+)/g;
+  function fileLinksIn(text) {
+    const out = []; const seen = new Set();
+    for (const m of String(text || "").matchAll(FILE_RE)) { if (seen.has(m[1])) continue; seen.add(m[1]); out.push(m[1]); }
+    return out;
+  }
+  function stripFileLinks(text) { return String(text || "").replace(FILE_RE, "").replace(/\(\s*\)/g, "").replace(/[ \t]{2,}/g, " ").trim(); }
+  const fileNames = new Map();
+  let filesLoadedAt = 0;
+  async function loadFiles(force) {
+    if (!force && Date.now() - filesLoadedAt < 20_000) return;
+    filesLoadedAt = Date.now();
+    try {
+      const r = await api("/api/files?list=1"); if (!r.ok) return;
+      const { files } = await r.json();
+      for (const f of files) fileNames.set(f.token, f);
+      renderDocs(files);
+    } catch {}
+  }
+  function fileCard(url) {
+    const token = (url.match(/[?&]t=([A-Za-z0-9_-]+)/) || [])[1] || "";
+    const known = fileNames.get(token);
+    const a = document.createElement("a");
+    a.className = "fileCard"; a.href = url; a.target = "_blank"; a.rel = "noopener";
+    if (!known) loadFiles(true).then(() => { const f = fileNames.get(token); if (f) a.querySelector("b").textContent = f.filename; });
+    const kind = (known?.filename || "").split(".").pop().slice(0, 4).toUpperCase() || "PDF";
+    a.innerHTML = `<span class="fileIcon" aria-hidden="true">${esc2(kind)}</span><span class="fileMeta"><b>${esc2(known?.filename || "Document")}</b><i>${known ? esc2(known.kb + " kB · tap to open or save") : "tap to open or save"}</i></span>`;
+    return a;
+  }
+  function renderDocs(files) {
+    const box = $("docs"); if (!box) return;
+    const card = $("docsCard"); if (card) card.hidden = !files.length;
+    box.innerHTML = files.slice(0, 8).map((f) => `<a class="fileCard" href="${esc2(f.url)}" target="_blank" rel="noopener"><span class="fileIcon" aria-hidden="true">${esc2((f.filename.split(".").pop() || "pdf").slice(0, 4).toUpperCase())}</span><span class="fileMeta"><b>${esc2(f.filename)}</b><i>${esc2(f.kb + " kB · " + agoText(f.at))}</i></span></a>`).join("");
+  }
+
   function dayLabel(iso) { const k = DAY_KEY(iso), t = DAY_KEY(new Date()), y = DAY_KEY(new Date(Date.now() - 86400000)); if (k === t) return "Today"; if (k === y) return "Yesterday"; return new Date(iso).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }); }
   function agoText(iso) { const ms = Date.now() - new Date(iso).getTime(); if (ms < 60000) return "now"; if (ms < 3600000) return `${Math.round(ms / 60000)} min`; if (ms < 86400000) return fmtTime(iso); return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" }); }
   const isEmojiOnly = (t) => /^[\p{Extended_Pictographic}\p{Emoji_Presentation}️‍\s]{1,8}$/u.test((t || "").trim()) && /\p{Extended_Pictographic}/u.test(t || "");
@@ -818,7 +870,8 @@
         qd.onclick = (e) => { e.stopPropagation(); jumpTo(item.quote.id); };
         bubble.appendChild(qd);
       }
-      const body = document.createElement("span"); body.className = "chatBody"; body.textContent = item.text; bubble.appendChild(body);
+      const body = document.createElement("span"); body.className = "chatBody"; body.textContent = stripFileLinks(item.text); bubble.appendChild(body);
+      for (const f of fileLinksIn(item.text)) bubble.appendChild(fileCard(f));
     }
     stack.appendChild(bubble);
     if (item.reaction) {
@@ -909,12 +962,12 @@
     box.innerHTML = SMART.map((t) => `<button type="button" class="gcSmartChip">${esc2(t)}</button>`).join("");
     box.querySelectorAll("button").forEach((b) => b.onclick = () => send(b.textContent));
   }
-  let liveViewUrl = null;
+  let liveViewUrl = null, activity = null;
   // Tasks running alongside the chat (their own sessions): one chip each with what it is doing.
   function renderTasks() {
     const box = $("taskStrip");
     box.hidden = !tasks.length; if (!tasks.length) { box.innerHTML = ""; return; }
-    box.innerHTML = tasks.map((t) => `<span class="taskChip ${t.status === "waiting" ? "waiting" : ""}" title="${esc2(t.title)}"><span class="dot"></span><b>${esc2(t.title)}</b><i>${t.status === "waiting" ? "waiting for you" : ""}</i><button type="button" class="taskStop" data-id="${esc2(t.id)}" title="Stop this task" aria-label="Stop this task">×</button></span>`).join("");
+    box.innerHTML = tasks.map((t) => `<span class="taskChip ${t.status === "waiting" ? "waiting" : ""}" title="${esc2(t.title)}"><span class="dot"></span><b>${esc2(t.title)}</b><i>${esc2(t.status === "waiting" ? "waiting for you" : t.activity || "working")}</i><button type="button" class="taskStop" data-id="${esc2(t.id)}" title="Stop this task" aria-label="Stop this task">×</button></span>`).join("");
     box.querySelectorAll(".taskStop").forEach((b) => b.onclick = () => stopSession(b.dataset.id));
   }
   async function stopSession(id) {
@@ -925,10 +978,24 @@
   // Never reveal the site or a link to the browser: a calm status line during tool work, and the
   // bouncing "typing" dots only while composing a reply (a post is imminent).
   // While the agent works: the three dots and a small stop link. No status text, no browser links.
+  // What it is doing right now, how long it has been at it, and a live window into the browser: the
+  // three things a person wants while they wait, instead of three dots and no idea.
+  let runningSince = 0;
+  function elapsedText(ms) { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`; }
   function setTyping(on) {
-    $("typing").innerHTML = on ? `<span class="chatDots"><i></i><i></i><i></i></span><button type="button" class="chatStop" id="stopMain">stop</button>` : "";
+    const box = $("typing");
+    if (!on) { runningSince = 0; box.innerHTML = ""; return; }
+    if (!runningSince) runningSince = Date.now();
+    const what = activity || (pending ? "waiting for you" : "");
+    box.innerHTML = `<span class="chatDots"><i></i><i></i><i></i></span>`
+      + (what ? `<span class="chatDoing">${esc2(what)}</span>` : "")
+      + `<span class="chatElapsed">${esc2(elapsedText(Date.now() - runningSince))}</span>`
+      + (liveViewUrl ? `<a class="chatWatch" href="${esc2(liveViewUrl)}" target="_blank" rel="noopener" title="Watch the browser it is using">watch</a>` : "")
+      + `<button type="button" class="chatStop" id="stopMain">stop</button>`;
     const b = $("stopMain"); if (b) b.onclick = () => stopSession(sessionId);
   }
+  // The elapsed counter ticks on its own so a long task never looks frozen between polls.
+  setInterval(() => { if (runningSince && status === "running") setTyping(true); }, 1000);
   $("findChip").onclick = () => { const b = $("findBox"); b.hidden = !b.hidden; $("findChip").classList.toggle("toolChipOn", !b.hidden); if (!b.hidden) b.focus(); else { findQuery = ""; b.value = ""; renderList(true); } };
   $("findBox").addEventListener("input", () => { findQuery = $("findBox").value; renderList(false); });
   $("notifyChip").onclick = async () => { try { if (window.Notification) { const p = await Notification.requestPermission(); $("notifyChip").classList.toggle("toolChipOn", p === "granted"); } } catch {} };
@@ -944,7 +1011,8 @@
     // Belt and braces: the same agent line twice in a row within a minute is one line.
     items = items.filter((it, i) => !(i > 0 && it.kind === "agent" && items[i - 1].kind === "agent" && items[i - 1].text === it.text && Math.abs(new Date(it.at) - new Date(items[i - 1].at)) < 60_000));
     for (const t of data.items.filter((i) => i.kind === "tool_resolved")) { const it = items.find((x) => x.id === t.id); if (it) it.resolved = true; }
-    sessionId = data.session_id; status = data.status; pending = data.pending; liveViewUrl = data.live_view_url || null; tasks = data.tasks || [];
+    sessionId = data.session_id; status = data.status; pending = data.pending; liveViewUrl = data.live_view_url || null; activity = data.activity || null; tasks = data.tasks || [];
+    if (status !== "running") runningSince = 0;
     // The reply being written: shown as a live bubble at the end until the real one lands.
     if (data.draft && status === "running") items.push({ kind: "agent", id: "draft", text: data.draft, at: new Date().toISOString() });
     renderTasks();
@@ -964,15 +1032,29 @@
     applyHistory(await r.json());
     if ((sessionId && status === "running") || tasks.some((t) => t.status === "running")) openStream();
   }
-  let pollTimer = null;
+  // Polling that follows the work: fast while a reply is being written (so it reads as typing), slower
+  // when only a background task is running, and paused entirely when the tab is hidden. A fixed
+  // 1.2 s poll was both too slow to feel live and too fast when nothing was happening.
+  let pollTimer = null, pollEvery = 0, streaming = false;
+  function pollDelay() {
+    if (pending) return 2500;
+    if (streaming || status === "running") return 600;
+    return 2500;
+  }
   function openStream() {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(async () => {
-      if (document.hidden || $("chats").hidden) return;
-      const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion)); if (!r.ok) return;
-      applyHistory(await r.json());
-      if (status !== "running" && !tasks.some((t) => t.status === "running")) { clearInterval(pollTimer); pollTimer = null; }
-    }, 1200);
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    const tick = async () => {
+      pollTimer = null;
+      if (document.hidden || $("chats").hidden) { pollTimer = setTimeout(tick, 2000); return; }
+      try {
+        const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion));
+        if (r.ok) { const data = await r.json(); streaming = !!data.draft; applyHistory(data); }
+      } catch { /* offline for a moment; try again */ }
+      if (status !== "running" && !tasks.some((t) => t.status === "running")) { pollEvery = 0; return; }
+      pollEvery = pollDelay();
+      pollTimer = setTimeout(tick, pollEvery);
+    };
+    pollTimer = setTimeout(tick, 250);
   }
   function optimistic(text, reaction, quote) {
     const it = { kind: "user", id: "tmp-" + Date.now(), text, at: new Date().toISOString(), reaction, ...(quote ? { quote } : {}) };

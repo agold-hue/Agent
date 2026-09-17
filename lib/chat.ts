@@ -189,6 +189,27 @@ export function activityOf(row: SessionRow | undefined): string | null {
         return "Reading your mail…";
       case "send_email":
         return "Writing an email…";
+      case "browser_fill_form":
+        return "Filling in the form…";
+      case "browser_click_text":
+      case "browser_click":
+        return "Working through the page…";
+      case "browser_find":
+        return "Looking for it on the page…";
+      case "browser_download":
+        return "Downloading it…";
+      case "browser_upload":
+        return "Attaching the file…";
+      case "browser_pdf":
+      case "make_pdf":
+        return "Writing the document…";
+      case "fill_pdf":
+      case "read_pdf_fields":
+        return "Filling in the PDF…";
+      case "solve_captcha":
+        return "Getting past a bot check…";
+      case "record_lesson":
+        return "Noting that for next time…";
       case "escalate_model":
         return "Bringing in a stronger model…";
       case "tell_user":

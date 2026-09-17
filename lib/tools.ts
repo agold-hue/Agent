@@ -1,4 +1,7 @@
 import { runBrowserTool } from "./browser-tools.js";
+import { fileContent, listFiles, saveFile } from "./files.js";
+import { upsertLesson } from "./learning.js";
+import { fillPdfForm, makePdf, pdfFormFields, pdfInfo } from "./pdf.js";
 import { liveViewUrl, reuseBrowser } from "./browser.js";
 import { registrableDomain, saveCredential } from "./credentials.js";
 import { addFollowUp, cancelFollowUp, durationMs, parseWhen } from "./followups.js";
@@ -197,6 +200,57 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const started = await startTaskSession(t, text, row.kind === "chat" ? row : undefined);
         await kick(started.id);
         return { text: `Started as its own task (${started.id}): "${text.slice(0, 80)}". It reports into the chat when done; do not wait for it.` };
+      }
+      case "make_pdf": {
+        const body = s("markdown");
+        if (!body.trim()) return { text: "Nothing to write; pass markdown." };
+        const name = s("filename").replace(/[^\w .()-]+/g, " ").trim() || "document.pdf";
+        const pdf = await makePdf(body, { title: args.title ? s("title") : undefined, footer: args.footer ? s("footer") : `${t.name ?? "Prepared"} · ${new Date().toISOString().slice(0, 10)}` });
+        const saved = await saveFile(t, { sessionId: row.id, filename: name.endsWith(".pdf") ? name : `${name}.pdf`, mimeType: "application/pdf", content: pdf });
+        const info = await pdfInfo(pdf).catch(() => ({ pages: 0 }));
+        return { text: JSON.stringify({ made: true, file: saved.id, filename: saved.filename, pages: info.pages, kb: Math.round(saved.bytes / 1024), link: saved.url, note: "Give the link to the user in your reply, or attach it with email_file, or upload it with browser_upload." }) };
+      }
+      case "read_pdf_fields": {
+        const f = await fileContent(t, s("file"));
+        if (!f) return { text: `No stored file "${s("file")}". list_files shows what you have.` };
+        const fields = await pdfFormFields(f.content).catch((e: unknown) => {
+          throw new Error(`that PDF's form could not be read (${e instanceof Error ? e.message : String(e)})`);
+        });
+        if (!fields.length) return { text: `${f.filename} has no fillable fields. It is a flat PDF: fill it by hand is not possible, so either ask the site for the online form, or write the answers into a new document with make_pdf.` };
+        return { text: JSON.stringify({ filename: f.filename, fields: fields.slice(0, 120) }) };
+      }
+      case "fill_pdf": {
+        const f = await fileContent(t, s("file"));
+        if (!f) return { text: `No stored file "${s("file")}". list_files shows what you have.` };
+        const values = (args.values as Record<string, string | boolean>) ?? {};
+        if (!Object.keys(values).length) return { text: "Nothing to fill; pass values as a map of field name to value." };
+        const out = await fillPdfForm(f.content, values, args.flatten !== false);
+        const name = (args.filename ? s("filename") : `filled-${f.filename}`).replace(/[^\w .()-]+/g, " ").trim();
+        const saved = await saveFile(t, { sessionId: row.id, filename: name.endsWith(".pdf") ? name : `${name}.pdf`, mimeType: "application/pdf", content: out.pdf });
+        return { text: JSON.stringify({ filled: out.filled, skipped: out.skipped, file: saved.id, filename: saved.filename, link: saved.url, note: out.skipped.length ? "Check the skipped fields: read_pdf_fields shows the exact names and options." : "Every value landed." }) };
+      }
+      case "list_files": {
+        const files = await listFiles(t, Math.min(Number(args.limit ?? 10), 50));
+        return { text: files.length ? JSON.stringify(files.map((f) => ({ file: f.id, filename: f.filename, kb: Math.round(f.bytes / 1024), made: f.created_at, link: f.url }))) : "(no files yet)" };
+      }
+      case "email_file": {
+        const f = await fileContent(t, s("file"));
+        if (!f) return { text: `No stored file "${s("file")}".` };
+        const draft = { to: s("to") || t.email, subject: s("subject"), body: s("body"), mode: (args.mode as "send" | "send_to_owner") ?? (s("to") && s("to") !== t.email ? "send" : "send_to_owner") };
+        if (draft.mode === "send") {
+          const verdict = autoApprove(t, { action_type: "message", summary: `Email "${draft.subject}" with ${f.filename} attached`, details: draft.body });
+          if (!verdict.ok) {
+            await notifyOwner(t, row, formatEmailApproval({ ...draft, body: `${draft.body}\n\n[attached: ${f.filename}]` }), `Approve email to ${draft.to}`);
+            return { text: "", pending: "send_email" };
+          }
+        }
+        const to = draft.mode === "send_to_owner" ? t.email : draft.to;
+        const sent = await sendAgentMail(t, { to, subject: draft.subject, body: draft.body, replyTag: row.reply_tag ?? undefined, attachments: [{ filename: f.filename, mimeType: f.mimeType, content: f.content }] });
+        return { text: JSON.stringify({ sent: true, to, attached: f.filename, message_id: sent.messageId }) };
+      }
+      case "record_lesson": {
+        await upsertLesson(t, { scope: args.scope ? s("scope") : "general", topic: s("topic"), lesson: s("lesson"), keywords: args.keywords ? s("keywords") : undefined, sessionId: row.id });
+        return { text: "Kept. It will be in the prompt of later tasks that match." };
       }
       case "escalate_model": {
         const next = nextTier(tierOfModel(row.model ?? "", t));
