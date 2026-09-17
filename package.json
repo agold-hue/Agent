@@ -9,7 +9,8 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "dev": "vercel dev",
     "test": "tsx --test test/*.test.ts",
-    "db:backfill-times": "tsx scripts/backfill-times.ts"
+    "db:backfill-times": "tsx scripts/backfill-times.ts",
+    "eval:search": "tsx scripts/search-eval.ts"
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.20.0",

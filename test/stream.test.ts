@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readStream } from "../lib/llm.js";
+import { FirstTokenTimeout, readStream } from "../lib/llm.js";
 
 function sse(chunks: string[]): Response {
   const enc = new TextEncoder();
@@ -45,4 +45,42 @@ test("tool-call fragments split across chunks are merged by index", async () => 
 test("a provider error inside the stream is surfaced", async () => {
   const out = await readStream(sse(['data: {"error":{"message":"out of credits"}}\n']), () => {});
   assert.equal(out.error?.message, "out of credits");
+});
+
+/** A stream that sends its chunks and then stays open, the way a wedged upstream behind a keepalive does. */
+function sseOpen(chunks: string[]): Response {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      for (const ch of chunks) c.enqueue(enc.encode(ch));
+    },
+  });
+  return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
+test("a keepalive or a role-only delta is not a first token: the guard still fires", async () => {
+  // OpenRouter sends ": OPENROUTER PROCESSING" at once, then an opening delta with only the role, while
+  // the upstream may not have generated anything. Both used to satisfy the first-token window.
+  await assert.rejects(
+    readStream(sseOpen([": OPENROUTER PROCESSING\n\n", 'data: {"model":"m","choices":[{"delta":{"role":"assistant","content":""}}]}\n\n']), () => {}, { firstTokenMs: 80 }),
+    (e: Error) => e instanceof FirstTokenTimeout && e.ms === 80,
+  );
+});
+
+test("a token inside the window keeps the stream, and the guard does not fire later", async () => {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(c) {
+      c.enqueue(enc.encode(": OPENROUTER PROCESSING\n\n"));
+      await new Promise((r) => setTimeout(r, 30));
+      c.enqueue(enc.encode('data: {"model":"m","provider":"Google","choices":[{"delta":{"reasoning":"hmm"}}]}\n\n'));
+      await new Promise((r) => setTimeout(r, 150)); // a long think after the first token is fine
+      c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Zohran Mamdani."},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4}}\n\ndata: [DONE]\n'));
+      c.close();
+    },
+  });
+  const out = await readStream(new Response(stream, { status: 200 }), () => {}, { firstTokenMs: 100 });
+  assert.equal(out.choices?.[0].message.content, "Zohran Mamdani.");
+  assert.equal(out.provider, "Google");
+  assert.ok((out.ttft_ms ?? 0) >= 20 && (out.ttft_ms ?? 0) < 100, String(out.ttft_ms));
 });

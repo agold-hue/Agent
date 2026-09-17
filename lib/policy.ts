@@ -16,6 +16,14 @@ export function autoApprove(t: Tenant, input: CheckpointInput): { ok: boolean; r
   const types = (t.settings.auto_approve_types ?? []).map((s) => s.toLowerCase());
   if (types.includes(type)) return { ok: true, reason: `action type '${type}' is on your auto-approve list` };
   const amount = Number(input.amount_usd ?? 0);
+  // Learned rules: the same kind of action at the same merchant the user has approved before and agreed to stop being asked about.
+  const merchant = String(input.merchant ?? "").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+  for (const r of t.settings.auto_approve_rules ?? []) {
+    if (r.action_type.toLowerCase() !== type) continue;
+    if (r.merchant && !(merchant.includes(r.merchant.toLowerCase()) || r.merchant.toLowerCase().includes(merchant))) continue;
+    if (r.max_usd != null && (amount <= 0 || amount > r.max_usd)) continue;
+    return { ok: true, reason: `your rule: ${type}${r.merchant ? ` at ${r.merchant}` : ""}${r.max_usd != null ? ` under $${r.max_usd}` : ""} needs no approval` };
+  }
   const ceiling = Number(t.settings.auto_approve_max_usd ?? 0);
   if (["purchase", "payment"].includes(type) && ceiling > 0 && amount > 0 && amount <= ceiling) {
     return { ok: true, reason: `$${amount.toFixed(2)} is within your $${ceiling.toFixed(2)} no-approval ceiling` };

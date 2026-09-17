@@ -241,3 +241,217 @@ create table if not exists standing_orders (
 );
 create index if not exists standing_orders_user on standing_orders(user_id);
 create index if not exists agent_sessions_parent on agent_sessions(parent_session_id) where parent_session_id is not null;
+
+-- Web search and page reads over HTTPS, cached and shared across customers (a result page is the
+-- same for everyone). Rows expire; the cron sweep prunes them.
+create table if not exists search_cache (
+  key text primary key,                       -- search:<query>|<country>|<lang>|<near>|<since>  or  page:<canonical url>
+  kind text not null,                         -- search | page
+  value jsonb not null,
+  fetched_at timestamptz not null default now(),
+  expires_at timestamptz not null
+);
+create index if not exists search_cache_expires on search_cache(expires_at);
+
+-- The search golden set's runs: one row per question per run (npm run eval:search, or nightly with SEARCH_EVAL_NIGHTLY=on).
+create table if not exists search_evals (
+  id uuid primary key default gen_random_uuid(),
+  run_id text not null,
+  question text not null,
+  expected text not null,
+  answer text,
+  ok boolean not null,
+  ms int not null default 0,
+  cost_cents numeric(14,3) not null default 0,
+  pages int not null default 0,
+  engine text,
+  created_at timestamptz not null default now()
+);
+create index if not exists search_evals_run on search_evals(run_id, created_at desc);
+
+-- Login health: when a saved login last worked or failed (the auto sign-in and the login tool record it).
+alter table credentials add column if not exists last_ok_at timestamptz;
+alter table credentials add column if not exists last_fail_at timestamptz;
+alter table credentials add column if not exists last_fail_reason text;
+
+-- Once-a-day marks (a morning review skipped for lack of work), so the cron does not re-check every minute.
+create table if not exists daily_marks (
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,
+  day date not null,
+  primary key (user_id, kind, day)
+);
+
+-- ---------------------------------------------------------------- Cost attribution, outcomes, watches, integrations
+-- Every model call, tagged with what it was for (turn, condense, lookup, wrapup, postmortem, learn...).
+create table if not exists usage_events (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  session_id text,
+  purpose text not null,
+  model text,
+  cost_cents numeric(14,4) not null default 0,
+  prompt_tokens int not null default 0,
+  cached_tokens int not null default 0,
+  completion_tokens int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists usage_events_user_time on usage_events(user_id, created_at desc);
+create index if not exists usage_events_purpose_time on usage_events(purpose, created_at desc);
+
+-- How each kind of task ended per customer and tier, so the router can start the next one on the cheapest tier that has worked.
+create table if not exists task_outcomes (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  class text not null,                        -- money | shopping | travel | ... | general
+  tier text not null,                         -- chat | task | hard
+  ok boolean not null,
+  session_id text,
+  created_at timestamptz not null default now()
+);
+create index if not exists task_outcomes_user_class on task_outcomes(user_id, class, created_at desc);
+
+-- Change watches: a page or a search re-read on a schedule by the host, with no model call until something changes.
+create table if not exists watches (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,                         -- page | search
+  target text not null,                       -- the URL, or the search query
+  focus text,                                 -- words the change must touch (a price, "available", a date); empty = any change in the main text
+  what text not null,                         -- what to do when it changes, in the user's words
+  every_minutes int not null default 60,
+  last_hash text,
+  last_excerpt text,
+  last_checked_at timestamptz,
+  next_check_at timestamptz not null default now(),
+  fired int not null default 0,
+  active boolean not null default true,
+  channel text not null default 'chat',
+  created_at timestamptz not null default now()
+);
+create index if not exists watches_due on watches(next_check_at) where active;
+
+-- Plaid items (bank connections): the access token is envelope-encrypted like every other secret.
+create table if not exists plaid_items (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  item_id text not null unique,
+  access_token_enc text not null,
+  institution text,
+  cursor text,                                -- transactions/sync cursor
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists plaid_items_user on plaid_items(user_id);
+
+-- The local browser relay: the customer's own browser (an extension) polls for commands and posts results.
+create table if not exists relay_devices (
+  user_id uuid not null references users(id) on delete cascade,
+  token_hash text not null,
+  name text,
+  last_seen_at timestamptz,
+  current_url text,
+  created_at timestamptz not null default now(),
+  primary key (user_id, token_hash)
+);
+create table if not exists relay_commands (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  command jsonb not null,
+  result jsonb,
+  created_at timestamptz not null default now(),
+  taken_at timestamptz,
+  done_at timestamptz
+);
+create index if not exists relay_commands_pending on relay_commands(user_id, created_at) where taken_at is null;
+
+-- Deferred single model calls (post-mortems) sent through the provider's half-price batch endpoint.
+create table if not exists batch_jobs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,                         -- postmortem
+  payload jsonb not null,                     -- { messages, max_tokens, meta }
+  batch_id text,                              -- provider batch id once submitted
+  status text not null default 'pending',     -- pending | submitted | done | failed
+  result text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists batch_jobs_status on batch_jobs(status, created_at);
+
+-- Per-customer relay token (hashed in relay_devices) and Plaid environment live in settings; nothing else needed here.
+
+-- Long documents (a lease, a statement, a policy) stored page by page; the message carries an outline, the document tool reads pages.
+create table if not exists documents (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  name text not null,
+  mime text not null,
+  pages int not null,
+  chars int not null,
+  source text not null,                       -- chat | mail
+  outline text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists documents_user on documents(user_id, created_at desc);
+create table if not exists document_pages (
+  doc_id uuid not null references documents(id) on delete cascade,
+  page int not null,
+  text text not null,
+  primary key (doc_id, page)
+);
+
+-- Host initiative: promises kept, reminders, fix cards, approval history and rules, reply grades, overnight readings.
+alter table agent_sessions add column if not exists reminded_at timestamptz;
+alter table usage_events add column if not exists provider text;
+alter table usage_events add column if not exists ttft_ms int;
+create table if not exists fixes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  kind text not null,                         -- add_login | check_login | connect_google | enable_relay | add_bank
+  domain text,
+  message text not null,
+  created_at timestamptz not null default now(),
+  done_at timestamptz
+);
+create index if not exists fixes_open on fixes(user_id) where done_at is null;
+create table if not exists approval_log (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  action_type text not null,
+  merchant text,
+  amount_usd numeric(14,2),
+  summary text,
+  decision text not null,                     -- approved | denied | auto
+  session_id text,
+  created_at timestamptz not null default now()
+);
+create index if not exists approval_log_user on approval_log(user_id, action_type, created_at desc);
+create table if not exists reply_grades (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  session_id text,
+  score int not null,
+  issue text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists reply_grades_user on reply_grades(user_id, created_at desc);
+create table if not exists path_uses (
+  user_id uuid not null references users(id) on delete cascade,
+  domain text not null,
+  name text not null,
+  uses int not null default 0,
+  last_used_at timestamptz,
+  primary key (user_id, domain, name)
+);
+create table if not exists readings (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  domain text not null,
+  label text not null,
+  value text not null,
+  read_at timestamptz not null default now()
+);
+create index if not exists readings_user_time on readings(user_id, read_at desc);
+-- Quick replies for the last reply, written by the fast model after the reply is on the page.
+alter table agent_sessions add column if not exists chips jsonb;

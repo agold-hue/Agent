@@ -85,9 +85,16 @@ export async function saveCredential(t: Tenant, c: { domain: string; username: s
 }
 
 /** For the settings page: never returns secrets. */
-export async function listCredentials(t: Tenant): Promise<Array<{ id: string; domain: string; username: string; has_totp: boolean; notes: string | null; updated_at: Date }>> {
+/** Login health: when the saved login last worked and last failed, so a broken login is visible before a task hits it. */
+export async function recordLoginOutcome(t: Tenant, domain: string, ok: boolean, reason?: string): Promise<void> {
+  const d = registrableDomain(domain);
+  if (ok) await q("update credentials set last_ok_at = now(), last_fail_reason = null where user_id = $1 and (domain = $2 or domain like $3)", [t.id, d, `%.${d}`]);
+  else await q("update credentials set last_fail_at = now(), last_fail_reason = $4 where user_id = $1 and (domain = $2 or domain like $3)", [t.id, d, `%.${d}`, (reason ?? "").slice(0, 300) || null]);
+}
+
+export async function listCredentials(t: Tenant): Promise<Array<{ id: string; domain: string; username: string; has_totp: boolean; notes: string | null; updated_at: Date; last_ok_at: Date | null; last_fail_at: Date | null; last_fail_reason: string | null }>> {
   return q(
-    "select id, domain, username, (totp_secret_enc is not null) as has_totp, notes, updated_at from credentials where user_id = $1 order by domain",
+    "select id, domain, username, (totp_secret_enc is not null) as has_totp, notes, updated_at, last_ok_at, last_fail_at, last_fail_reason from credentials where user_id = $1 order by domain",
     [t.id],
   );
 }

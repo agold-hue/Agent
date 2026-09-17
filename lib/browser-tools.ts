@@ -1,4 +1,5 @@
 import { chromium, type Browser, type Page } from "playwright-core";
+import { extractRows, fillForm, findTool, maybeAutoLogin, replayPath, resolveTarget, type FormField } from "./browser-extras.js";
 import { createBrowser, pageByTarget, reuseBrowser, targetIdOf, type BrowserHandle } from "./browser.js";
 import { env } from "./env.js";
 import { otherActiveBrowsers, updateSession, type SessionRow } from "./sessions.js";
@@ -20,7 +21,7 @@ const ACTION_ELEMENTS = Number(process.env.ACTION_SNAPSHOT_ELEMENTS ?? 140);
  * site never sees a "new device"), and only opens a fresh one when none is running.
  */
 async function handleFor(t: Tenant, row: SessionRow): Promise<BrowserHandle> {
-  if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, memory, calendar and email, and tell the user browsing is not enabled.");
+  if (!env.browserbase.configured()) throw new Error("The hosted browser is not set up on this server yet. Do what you can with web_search, fetch_page, memory, calendar and email, and tell the user browsing is not enabled.");
   const own = row.browserbase_session_id ? await reuseBrowser(row.browserbase_session_id) : undefined;
   if (own) return own;
   for (const id of await otherActiveBrowsers(row.user_id, row.id).catch(() => [] as string[])) {
@@ -100,7 +101,7 @@ export async function disconnectBrowser(sessionId: string): Promise<void> {
   await b?.close().catch(() => {});
 }
 
-async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser: Browser, handle: BrowserHandle) => Promise<T>): Promise<T> {
+export async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser: Browser, handle: BrowserHandle) => Promise<T>): Promise<T> {
   const handle = await handleFor(t, row);
   const run = async () => {
     const browser = await connect(handle);
@@ -124,7 +125,7 @@ async function withPage<T>(t: Tenant, row: SessionRow, fn: (page: Page, browser:
  * some sign-in dialogs render inside iframes; refs are numbered across every frame, so the agent
  * clicks them like anything else.
  */
-async function ref(page: Page, r: string) {
+export async function ref(page: Page, r: string) {
   const sel = `[data-agent-ref="${String(r).replace(/[^0-9]/g, "")}"]`;
   for (const frame of page.frames()) {
     const loc = frame.locator(sel).first();
@@ -153,7 +154,7 @@ function frameHost(url: string): string {
     return "embedded";
   }
 }
-const settle = async (page: Page, ms = 1000) => {
+export const settle = async (page: Page, ms = 1000) => {
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await page.waitForTimeout(ms);
 };
@@ -192,24 +193,35 @@ const SNAPSHOT_FN = `(max, offset) => {
   const sel = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="combobox"], [role="option"], [role="listbox"] li, [contenteditable="true"], summary, [onclick]';
   const els = Array.from(document.querySelectorAll(sel)).filter(isVisible);
   const lines = [];
+  const seen = new Map();
+  const busy = els.length > 60;
   let n = 0;
   for (const el of els) {
     if (n >= max) break;
-    n++;
-    const id = offset + n;
-    el.setAttribute("data-agent-ref", String(id));
     const e = el;
     const tag = el.tagName.toLowerCase();
     const role = el.getAttribute("role") || (tag === "a" ? "link" : tag === "input" ? "input:" + (e.type || "text") : tag);
+    const rawLabel = el.getAttribute("aria-label") || (e.labels && e.labels[0] && e.labels[0].innerText) || el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || (el.innerText || e.value || "");
+    const key = role + "|" + String(rawLabel).replace(/\s+/g, " ").trim().toLowerCase().slice(0, 60);
+    const count = (seen.get(key) || 0) + 1;
+    seen.set(key, count);
+    // Menu-heavy pages repeat the same control dozens of times (one "Add" per row, one icon link per
+    // card): the first three of a kind are listed, the rest counted. Unlabeled links on a busy page are noise.
+    if (count > 3) continue;
+    if (busy && role === "link" && !String(rawLabel).trim()) continue;
+    n++;
+    const id = offset + n;
+    el.setAttribute("data-agent-ref", String(id));
     const label = el.getAttribute("aria-label") || (e.labels && e.labels[0] && e.labels[0].innerText) || el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || (el.innerText || e.value || "").trim();
     const extra = [];
     if (tag === "input" && e.value && String(e.type) !== "password") extra.push('value="' + e.value.slice(0, 40) + '"');
     if (tag === "select") extra.push('selected="' + ((e.options && e.options[e.selectedIndex] && e.options[e.selectedIndex].text) || "") + '"');
     if (e.checked) extra.push("checked");
     if (e.disabled) extra.push("disabled");
-    if (tag === "a" && e.href && !e.href.startsWith("javascript:")) extra.push(e.href.slice(0, 100));
-    lines.push(("[" + id + "] " + role + ' "' + String(label).replace(/\\s+/g, " ").slice(0, 80) + '" ' + extra.join(" ")).trim());
+    if (tag === "a" && e.href && !e.href.startsWith("javascript:")) { try { const u = new URL(e.href); extra.push((u.origin === location.origin ? u.pathname + u.search : e.href).slice(0, 60)); } catch { extra.push(e.href.slice(0, 60)); } }
+    lines.push(("[" + id + "] " + role + ' "' + String(label).replace(/\\s+/g, " ").slice(0, 60) + '" ' + extra.join(" ")).trim());
   }
+  for (const [k, c] of seen) if (c > 3) lines.push("(+" + (c - 3) + ' more ' + k.split("|")[0] + ' "' + k.split("|")[1] + '" like the ones above)');
   const headings = Array.from(document.querySelectorAll("h1, h2")).filter(isVisible).slice(0, 12).map((h) => "# " + h.innerText.trim().replace(/\\s+/g, " ").slice(0, 100));
   return { title: document.title, url: location.href, headings, lines, total: els.length };
 }`;
@@ -246,13 +258,17 @@ export async function snapshot(page: Page, max = MAX_ELEMENTS): Promise<string> 
 }
 /** The last full snapshot each session saw, so an action can return only what changed. */
 const lastSnapshots = new Map<string, { url: string; lines: string[] }>();
+/** Record the snapshot a session just saw, so the next action can return only what changed. */
+export function rememberSnapshot(sessionId: string, url: string, snap: string): void {
+  lastSnapshots.set(sessionId, { url, lines: snap.split("\n") });
+}
 
 /**
  * The snapshot that comes back with an action. Same page, mostly the same elements: only the lines
  * that changed or appeared are listed (refs are part of each line, so an unchanged line is still
  * clickable by the same number); a new page comes back whole. Halves tokens on long forms.
  */
-async function after(page: Page, sessionId: string): Promise<string> {
+export async function after(page: Page, sessionId: string): Promise<string> {
   const full = await snapshot(page, ACTION_ELEMENTS);
   const lines = full.split("\n");
   const url = page.url();
@@ -277,19 +293,27 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
   switch (name) {
     case "browser_open":
       return withPage(t, row, async (page, _b, h) => {
+        let extra = "";
         if (str("url")) {
           await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
           await waitInteractive(page);
+          // A sign-in wall on a site whose login is in the vault: sign in now, in this same call.
+          const auto = await maybeAutoLogin(t, row, page, h);
+          if (auto) extra = `\n${auto.line}`;
+          const snap = await snapshot(page);
+          lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
+          extra += `\n\n${snap}`;
         }
-        return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}` };
+        return { text: `Browser ready. Live view for the user: ${h.liveViewUrl}\n${await page.title()}\n${page.url()}${extra}` };
       });
     case "browser_goto":
-      return withPage(t, row, async (page) => {
+      return withPage(t, row, async (page, _b, h) => {
         await page.goto(str("url"), { waitUntil: "domcontentloaded", timeout: 45_000 });
         await waitInteractive(page);
+        const auto = await maybeAutoLogin(t, row, page, h);
         const snap = await snapshot(page);
         lastSnapshots.set(row.id, { url: page.url(), lines: snap.split("\n") });
-        return { text: `${await page.title()}\n${page.url()}\n\n${snap}` };
+        return { text: `${await page.title()}\n${page.url()}${auto ? `\n${auto.line}` : ""}\n\n${snap}` };
       });
     case "browser_snapshot":
       return withPage(t, row, async (page) => {
@@ -318,14 +342,24 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         return { text: `"${str("text")}" did not appear within ${Math.round(limit / 1000)}s\n\n${await snapshot(page)}` };
       });
     case "browser_click":
-      return withPage(t, row, async (page) => {
-        await (await ref(page, str("ref"))).click({ timeout: 10_000 });
+      return withPage(t, row, async (page, _b, h) => {
+        const { loc, how } = await resolveTarget(page, a);
+        await loc.click({ timeout: 10_000 });
         await settle(page);
-        return { text: `clicked [${str("ref")}] -> ${page.url()}\n\n${await after(page, row.id)}` };
+        const auto = await maybeAutoLogin(t, row, page, h);
+        return { text: `clicked ${how} -> ${page.url()}${auto ? `\n${auto.line}` : ""}\n\n${await after(page, row.id)}` };
       });
+    case "browser_find":
+      return { text: await findTool(t, row, str("text")) };
+    case "browser_fill_form":
+      return { text: await fillForm(t, row, (Array.isArray(a.fields) ? a.fields : []) as FormField[], a.submit as string | boolean | undefined) };
+    case "browser_extract":
+      return { text: await extractRows(t, row, { scroll: !!a.scroll, maxRows: a.max_rows != null ? Number(a.max_rows) : undefined, ledgerDays: a.ledger_days != null ? Number(a.ledger_days) : undefined }) };
+    case "browser_run_path":
+      return { text: await replayPath(t, row, str("domain"), a.path ? str("path") : undefined) };
     case "browser_type":
       return withPage(t, row, async (page) => {
-        const loc = await ref(page, str("ref"));
+        const { loc, how } = await resolveTarget(page, a);
         await loc.click({ timeout: 10_000 });
         await loc.fill("").catch(() => {});
         await loc.type(str("text"), { delay: 15 });
@@ -336,15 +370,15 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         }
         // Address and search boxes answer typing with a suggestion list that must be clicked; show it.
         await page.waitForTimeout(800);
-        return { text: `typed into [${str("ref")}]\n\n${await after(page, row.id)}` };
+        return { text: `typed into ${how}\n\n${await after(page, row.id)}` };
       });
     case "browser_select":
       return withPage(t, row, async (page) => {
-        const loc = await ref(page, str("ref"));
+        const { loc, how } = await resolveTarget(page, a);
         await loc.selectOption({ label: str("value") }).catch(async () => {
           await loc.selectOption(str("value"));
         });
-        return { text: `selected "${str("value")}" in [${str("ref")}]` };
+        return { text: `selected "${str("value")}" in ${how}` };
       });
     case "browser_press":
       return withPage(t, row, async (page) => {
@@ -408,7 +442,8 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         await settle(page);
         return { text: `${page.url()}\n\n${await snapshot(page)}` };
       });
-    case "web_search":
+    case "web_search_browser":
+      // Last resort behind lib/search.ts, and only when this session already has a browser.
       return withPage(t, row, async (page) => {
         await page.goto(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(str("query"))}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
         await settle(page, 1000);
@@ -421,7 +456,8 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
               return `- ${(a as HTMLElement).innerText.trim()} | ${(a as HTMLAnchorElement).href}\n  ${snippet.slice(0, 200)}`;
             }),
         );
-        return { text: results.length ? results.join("\n") : (await page.evaluate(() => document.body.innerText)).slice(0, 3000) };
+        if (!results.length) throw new Error("the browser search page showed no result links (blocked or empty)");
+        return { text: results.join("\n") };
       });
     default:
       return { text: `unknown browser tool ${name}` };

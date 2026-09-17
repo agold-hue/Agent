@@ -221,7 +221,7 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
 export type ChatItem =
   | { kind: "user"; id: string; text: string; at: string; approx?: boolean; reaction?: string; quote?: MessageQuote; task?: string }
   | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string; task?: string }
-  | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean }
+  | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean; preview?: string }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
 
 /** Turn the session's message array into what the chat page renders. */
@@ -254,7 +254,8 @@ export function toChatItems(row: SessionRow): ChatItem[] {
       items.push({ kind: "user", id: `${row.id}-${i}`, text, at, ...approx, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}), ...task });
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
-      if (text && !m.tool_calls?.length) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx, ...task });
+      // A draft the host sent back to the model (an offer instead of an answer, an unverified figure) is not a bubble.
+      if (text && !m.tool_calls?.length && !m.superseded) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx, ...task });
       for (const tc of m.tool_calls ?? []) {
         if (!["checkpoint", "ask_user", "send_email", "request_code"].includes(tc.function.name)) continue;
         let input: Record<string, unknown> = {};
@@ -264,7 +265,8 @@ export function toChatItems(row: SessionRow): ChatItem[] {
           /* ignore */
         }
         // The id carries the session, so a reply to this card is routed back to it.
-        items.push({ kind: "tool", id: `${row.id}-${i}t${tc.id.replace(/[^\w-]/g, "")}`, name: tc.function.name, input, at, resolved: answered.has(tc.id) });
+        const preview = m.previews?.[tc.id] ? `/api/receipts?image=${encodeURIComponent(m.previews[tc.id])}` : undefined;
+        items.push({ kind: "tool", id: `${row.id}-${i}t${tc.id.replace(/[^\w-]/g, "")}`, name: tc.function.name, input, at, resolved: answered.has(tc.id), ...(preview ? { preview } : {}) });
       }
     }
   });

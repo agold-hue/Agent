@@ -1,11 +1,22 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { backfillMessageTimes } from "../../lib/backfill.js";
+import { pollSubmitted, pruneBatches, submitPending } from "../../lib/batch.js";
+import { pruneRelay } from "../../lib/relay.js";
+import { releaseIdleBrowsers } from "../../lib/browser.js";
 import { ensureSchema, q } from "../../lib/db.js";
 import { env } from "../../lib/env.js";
 import { takeDueFollowUps } from "../../lib/followups.js";
 import { attachmentsFor, takeUntriaged } from "../../lib/inbound.js";
 import { isBatchMinute, takeDigest } from "../../lib/notify.js";
+import { modelFor } from "../../lib/router.js";
 import { kick } from "../../lib/runtime.js";
+import { evalRanToday, runSearchEval } from "../../lib/search-eval.js";
+import { refreshReadings, remindPending, weeklyStyleNote } from "../../lib/proactive.js";
+import { replayPath } from "../../lib/browser-extras.js";
+import { releaseBrowser } from "../../lib/browser.js";
+import { hasReviewWork, markedToday, markToday } from "../../lib/review-work.js";
+import { runDueWatches } from "../../lib/watches.js";
+import { localeFor, pruneSearchCache } from "../../lib/search.js";
 import { createSession, expiredAskUserSessions, hasDigestKey, hasSessionOfKindToday, staleRunnableSessions, UsageCapError } from "../../lib/sessions.js";
 import { activeTenants, tenantById, type Tenant } from "../../lib/tenant.js";
 import { expirePending } from "../../lib/tools.js";
@@ -56,7 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   await ensureSchema();
   // One-time: give bubbles from before per-message times their real time from the conversation log.
   await backfillMessageTimes().catch((err) => console.error("[cron] backfill:", err));
-  const out: Record<string, number> = { resumed: 0, followups: 0, expired: 0, digests: 0, reviews: 0, weekly: 0, triage: 0, capped: 0 };
+  const out: Record<string, number> = { resumed: 0, followups: 0, expired: 0, digests: 0, reviews: 0, weekly: 0, triage: 0, capped: 0, browsers: 0, cache_pruned: 0, search_eval: 0, reviews_skipped: 0, watches_checked: 0, watches_fired: 0, batch_submitted: 0, batch_done: 0, reminded: 0, readings: 0, style_notes: 0 };
   const start = async (t: Tenant, key: string, make: () => ReturnType<typeof createSession>) => {
     try {
       const row = await make();
@@ -80,6 +91,53 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   await q(
     "update agent_sessions set status = 'terminated', pending_kind = null, pending_event_id = null, pending_deadline = null, lease_until = null where kind in ('task', 'aside') and channel = 'chat' and ((status = 'waiting' and updated_at < now() - interval '12 hours') or (status = 'running' and updated_at < now() - interval '2 hours' and (lease_until is null or lease_until < now())))",
   ).catch((err) => console.error("[cron] stale tasks:", err));
+
+  // 0c. Hosted browsers idle past BROWSER_IDLE_RELEASE_MINUTES are released (billed by the minute otherwise).
+  out.browsers = await releaseIdleBrowsers().catch((err) => {
+    console.error("[cron] idle browsers:", err);
+    return 0;
+  });
+
+  // 0d. Expired search and page cache rows, once an hour.
+  if (new Date().getUTCMinutes() === 7) out.cache_pruned = await pruneSearchCache();
+
+  // 0e. The search golden set, a rotating slice every night (SEARCH_EVAL_NIGHTLY=on), recorded in search_evals.
+  const utc = new Date();
+  if ((process.env.SEARCH_EVAL_NIGHTLY ?? "off") === "on" && utc.getUTCHours() === Number(process.env.SEARCH_EVAL_HOUR_UTC ?? 3)) {
+    const runId = `nightly-${utc.toISOString().slice(0, 10)}`;
+    if (!(await evalRanToday(runId))) {
+      const day = Math.floor(utc.getTime() / 86_400_000);
+      const count = Number(process.env.SEARCH_EVAL_NIGHTLY_COUNT ?? 10);
+      const summary = await runSearchEval({ runId, model: modelFor("chat"), locale: localeFor({ timezone: "America/New_York", settings: {} }), limit: count, offset: day * count, concurrency: 3 }).catch((err) => {
+        console.error("[cron] search eval:", err);
+        return undefined;
+      });
+      if (summary) {
+        out.search_eval = summary.total;
+        console.log(`[search-eval] ${runId}: ${summary.ok}/${summary.total} (${Math.round(summary.rate * 100)}%), median ${summary.median_ms}ms, ${summary.cost_per_success_cents.toFixed(3)}c per success`);
+      }
+    }
+  }
+
+  // 0f. Change watches due now: re-read over HTTPS, start a task only on a real change.
+  const w = await runDueWatches().catch((err) => {
+    console.error("[cron] watches:", err);
+    return { checked: 0, fired: 0 };
+  });
+  out.watches_checked = w.checked;
+  out.watches_fired = w.fired;
+
+  // 0g. Deferred model calls: submit what is pending every 5 minutes, collect what has finished every tick.
+  const minute = new Date().getUTCMinutes();
+  if (minute % 5 === 2) out.batch_submitted = await submitPending().catch((err) => (console.error("[cron] batch submit:", err), 0));
+  out.batch_done = await pollSubmitted().catch((err) => (console.error("[cron] batch poll:", err), 0));
+  if (minute === 11) {
+    await pruneBatches();
+    await pruneRelay();
+  }
+
+  // 0h. One reminder for a session waiting on the user before its deadline (or after a couple of quiet hours).
+  out.reminded = await remindPending().catch((err) => (console.error("[cron] remind:", err), 0));
 
   // 1. Timers and watches.
   for (const f of await takeDueFollowUps()) {
@@ -144,9 +202,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     }
 
+    // Overnight: refresh the figures this customer keeps asking for (recorded paths + readers), one browser per night.
+    if (env.browserbase.configured()) {
+      const tmp = { id: `readings-${t.id}`, user_id: t.id, browserbase_session_id: null, browser_target_id: null, messages: [], kind: "task", channel: "chat", status: "running" } as unknown as import("../../lib/sessions.js").SessionRow;
+      const n = await refreshReadings(t, (domain, name) => replayPath(t, tmp, domain, name)).catch((err) => (console.error(`[cron] readings ${t.slug}:`, err), 0));
+      if (tmp.browserbase_session_id) await releaseBrowser(tmp.browserbase_session_id).catch(() => {});
+      out.readings += n;
+    }
+    // Sunday early: the week's most frequent reply flaw becomes one line in preferences.md.
+    if (clock.weekday.toLowerCase().startsWith("sun") && clock.h === 5 && !(await markedToday(t.id, "style-note", clock.day).catch(() => true))) {
+      await markToday(t.id, "style-note", clock.day).catch(() => {});
+      const line = await weeklyStyleNote(t).catch(() => undefined);
+      if (line) out.style_notes++;
+    }
+
     const reviewHour = Number(t.settings.daily_review_hour ?? 8);
-    if (reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "review", clock.day))) {
-      await start(t, "reviews", () =>
+    if (reviewHour >= 0 && clock.h === reviewHour && !(await hasSessionOfKindToday(t.id, "review", clock.day)) && !(await markedToday(t.id, "review-skip", clock.day).catch(() => false))) {
+      // Nothing due, no open project, nothing failed, no calendar: no model call today.
+      if (!(await hasReviewWork(t).catch(() => true))) {
+        await markToday(t.id, "review-skip", clock.day).catch(() => {});
+        out.reviews_skipped++;
+      } else await start(t, "reviews", () =>
         createSession(t, {
           channel: "email",
           kind: "review",

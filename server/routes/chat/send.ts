@@ -5,7 +5,7 @@ import type { MessageQuote } from "../../../lib/llm.js";
 import { appendTranscript } from "../../../lib/memory.js";
 import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
-import { reactionFor } from "../../../lib/reaction.js";
+import { isPleasantryCloser, reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
 import { reroutedModel, tierFor } from "../../../lib/router.js";
 import { activeAsideSessions, activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
@@ -22,7 +22,7 @@ import type { Tenant } from "../../../lib/tenant.js";
  * tool result), and anything else they say while a code is pending ("didn't get one, resend it")
  * shows as is.
  */
-async function echoAnswer(session: SessionRow, text: string, reaction: string, quote?: MessageQuote): Promise<void> {
+async function echoAnswer(session: SessionRow, text: string, reaction: string | undefined, quote?: MessageQuote): Promise<void> {
   const awaitingCode = session.messages.some((m) => m.role === "assistant" && m.tool_calls?.some((c) => c.id === session.pending_event_id && c.function.name === "request_code"));
   const shown = awaitingCode && codeIn(text) ? text.replace(/\d(?:[\d\s-]*\d)?/g, (d) => "•".repeat(d.replace(/\D/g, "").length)) : text;
   await appendUserEcho(session, shown, reaction, quote);
@@ -90,6 +90,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .slice(-9)
       .map((m) => m.reaction!);
     const reaction = reactionFor(text, recentReactions);
+    // A pure "thanks"/"perfect"/"got it" closing the exchange: react with an emoji and say nothing
+    // back, the way a person taps a heart instead of typing "you're welcome". Only when nothing is
+    // running or waiting (mid-task or a pending approval still gets the normal path) and it is not a
+    // reply to a specific bubble. The message and its reaction are stored so the chat shows them; the
+    // worker is never kicked, so no typed reply and no typing indicator.
+    const idleThread = !session || (session.status !== "running" && !session.pending_kind);
+    if (!routed.spawn && !quote && idleThread && isPleasantryCloser(text)) {
+      const react = reaction ?? "\ud83d\udc4d";
+      if (!session) {
+        session = await startChatSession(t, forModel, undefined, react, quote);
+      } else {
+        await appendUserMessage(session, stampMessage(t, forModel, "chat"), undefined, react, quote);
+      }
+      await updateSession(session.id, { status: "idle", draft: null });
+      await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
+      return res.status(200).json({ session_id: session.id, action: "reacted", reaction: react, status: "idle" });
+    }
     // A task that will take real work (a price to look up, a booking, a refund, research) gets an
     // instant "on it" bubble so the chat is never silent while the agent works. Quick chat-tier
     // messages (acks, a calendar note, recall) do not. Wording never repeats what was just said.
@@ -135,7 +152,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       else if (midTask) await appendHostNote(session, MID_TASK_NOTE);
       action = "sent";
     }
-    if (willResearch && (action === "started" || action === "sent" || action === "task_started")) {
+    // The page shows typing dots and "typing…" the moment a task starts, so the "on it" bubble is off
+    // by default (CHAT_ACKS=on brings it back); anything over a minute still gets its tell_user line.
+    if (process.env.CHAT_ACKS === "on" && willResearch && (action === "started" || action === "sent" || action === "task_started")) {
       ack = researchAck(recentSaid);
       await appendAssistantMessage(session, ack, true);
     }

@@ -1,15 +1,24 @@
 import { releaseBrowser } from "./browser.js";
-import { closeTab, disconnectBrowser } from "./browser-tools.js";
+import { batchConfigured, enqueue } from "./batch.js";
+import { recordPaths } from "./browser-extras.js";
+import { closeTab, disconnectBrowser, runBrowserTool } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
 import { tools, toolsFor } from "./agent-config.js";
-import { complete, costCents, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
+import { complete, estimateTokens, LLMError, supportsVision, warmCatalog, type ChatMessage, type Completion } from "./llm.js";
 import { appendMemory, appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
-import { isQuickQuestion, modelFor, tierOfModel } from "./router.js";
-import { acquireLease, browserShared, getLoopState, getMessages, getSession, messageText, persistTurn, taskClockStart, taskStart, taskTurns, taskUserText, updateSession, type SessionRow, systemFor } from "./sessions.js";
+import { quickLookup } from "./research.js";
+import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, tierOfModel, type Tier } from "./router.js";
+import { stubPageResult, stubSearchResult } from "./search.js";
+import { registrableDomain } from "./credentials.js";
+import { learnFromCorrection } from "./learn.js";
+import { detectFixes, gradeReply, keepPromise, recordFixes, suggestReplies } from "./proactive.js";
+import { recordOutcome, taskClassKey } from "./outcomes.js";
+import { readMemory } from "./memory.js";
+import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, sharedSystem, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
-import { executeTool } from "./tools.js";
+import { executeTool, type ToolOutcome } from "./tools.js";
 
 /**
  * The agent loop, resumable. Each invocation runs turns until the task is done, the model needs
@@ -27,6 +36,8 @@ const MAX_SESSION_TURNS = Number(process.env.MAX_TURNS_PER_SESSION ?? 300);
 const TASK_TIME_LIMIT_MS = Number(process.env.TASK_TIME_LIMIT_MINUTES ?? 15) * 60_000;
 // After this long with nothing shown to the user, the model is told to post a one-line progress note.
 const PROGRESS_NOTE_MS = Number(process.env.PROGRESS_NOTE_MINUTES ?? 3) * 60_000;
+// How long a fresh message waits for siblings typed right after it before the run starts.
+const SIBLING_WAIT_MS = Number(process.env.SIBLING_WAIT_MS ?? 600);
 // A quick question ("what's up", "thanks", "how's it going") gets this many tool steps, then a reply.
 const QUICK_STEPS = Number(process.env.QUICK_STEPS ?? 3);
 const QUICK_TIME_MS = Number(process.env.QUICK_SECONDS ?? 75) * 1000;
@@ -39,6 +50,14 @@ const CHAT_ROLLOVER_TURNS = Number(process.env.CHAT_ROLLOVER_TURNS ?? 120);
 const CHAT_ROLLOVER_SHARE = 0.6;
 // How many identical tool calls in a row count as a stuck loop (a real failure hit ~40).
 const LOOP_LIMIT = Number(process.env.LOOP_LIMIT ?? 6);
+/** Tools with no side effects on the world: safe to run concurrently when the model asks for several at once. */
+export const READ_ONLY_TOOLS = new Set(["web_search", "fetch_page", "memory_read", "memory_grep", "memory_list", "list_items", "browser_find"]);
+/** Browser steps that change the page. Several in one turn run in order and only the last returns a snapshot. */
+const BROWSER_ACTIONS = new Set(["browser_goto", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_fill_form"]);
+/** Tools that only tidy up after the result: a turn made of these runs on the fast model. */
+const HOUSEKEEPING_TOOLS = new Set(["memory_write", "memory_append", "record_win", "record_receipt", "track_item"]);
+/** Output cap for a turn that follows a tool result: another tool call or a short reply, never an essay. */
+const TOOL_TURN_MAX_TOKENS = Number(process.env.TOOL_TURN_MAX_TOKENS ?? 1200);
 
 export type RunOutcome = "done" | "waiting" | "continue" | "error" | "busy";
 
@@ -65,16 +84,27 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   // The system message is rebuilt every run, so a session started hours ago sees today's prompt,
   // today's settings, and which services (browser, mail, Google) are available right now.
   // Messages typed in quick succession ("add milk", "remind me at 3", "note Sam's number") are one
-  // call, not three: a request under two seconds old waits a moment for its siblings.
+  // call, not three: a request under two seconds old waits a moment for its siblings. Short: every
+  // chat message is that young when its run starts, so this wait is on the path to every reply.
   const lastAt = row.messages[row.messages.length - 1]?.at;
-  if (lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
-    await new Promise((r) => setTimeout(r, 1500));
+  if (SIBLING_WAIT_MS > 0 && lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
+    await new Promise((r) => setTimeout(r, SIBLING_WAIT_MS));
     row = (await getSession(sessionId)) ?? row;
   }
-  // A side reply (a question answered alongside a busy thread) carries its own status brief and never
+  // The system message is the prompt every customer shares (one cache entry for the whole service);
+  // this customer's facts and this task's notes travel as their own block right after it. A side
+  // reply (a question answered alongside a busy thread) carries its own status brief and never
   // touches a site: no playbook or site notes, no list of parallel tasks.
   const aside = row.kind === "aside";
-  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: await systemFor(t, aside ? { parallel: false } : { task: taskUserText(row.messages) }) };
+  if (row.messages[0]?.role === "system") row.messages[0] = { role: "system", content: sharedSystem() };
+  row.contextBlock = await customerContext(t, aside ? { parallel: false } : { task: taskUserText(row.messages) });
+  // Near the plan's monthly cap, step the tier down instead of hard-stopping at the cap later.
+  const landed = await softLanding(t, row.model ?? "").catch(() => undefined);
+  if (landed && landed !== row.model) {
+    console.log(`[route] ${row.id}: soft landing ${row.model} -> ${landed}`);
+    row.model = landed;
+    await updateSession(row.id, { model: landed });
+  }
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   // Everything up to here is already in the DB; the loop only ever appends beyond this index, so a
   // message the user sends mid-task (its own atomic append) is never overwritten.
@@ -126,6 +156,12 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         const summary = await wrapUp(t, row, `You have taken ${steps} steps on this task without finishing.`, `I've taken ${steps} steps on this without finishing, so I stopped.`);
         return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
       }
+      const spent = taskCostCents(row.messages);
+      if (cls.cents > 0 && spent >= cls.cents) {
+        const usd = (spent / 100).toFixed(2);
+        const summary = await wrapUp(t, row, `You have spent $${usd} on this task without finishing.`, `I've spent $${usd} on this without finishing, so I stopped.`);
+        return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
+      }
       const clock = taskClockStart(row.messages);
       const elapsed = clock ? Date.now() - clock : 0;
       if (cls.ms > 0 && elapsed > cls.ms) {
@@ -152,19 +188,60 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         await save();
       }
 
+      // "done" / "signed in" after a takeover: the user finished on their side. Show the model the page
+      // as it stands now and the task it was on, so it continues instead of asking what to do.
+      if (steps === 0 && row.browserbase_session_id && TAKEOVER_DONE.test(taskUserText(row.messages)) && !hasHostNotePrefix(row.messages, RESUME_PREFIX)) {
+        const previous = previousTaskText(row.messages);
+        const snap = await runBrowserTool(t, row, "browser_snapshot", {}).catch(() => undefined);
+        if (previous || snap) {
+          row.messages.push({ role: "user", content: `${RESUME_PREFIX} the user says they finished their part (signed in, solved the check, or did the step by hand). ${previous ? `Continue the task they asked for before, without asking again: "${previous.slice(0, 400)}". ` : ""}${snap ? `The browser shows this now:\n\n${snap.text.slice(0, 6000)}` : "Snapshot the browser and carry on."})` });
+          await save();
+        }
+      }
+
+      // A plain factual question ("what time does Costco close", "how much is a Metro-North ticket to
+      // White Plains", "who's the mayor of NYC") is answered by one search and one fast-model call,
+      // no tools, no loop. When the sources do not answer it, the search results are left as a note
+      // and the full loop takes over. A short fact question is also "quick" by word count; the lookup
+      // shape wins, since the alternative is the full loop with every tool: one turn to decide to
+      // search and one to reply, each on the whole prompt.
+      if (steps === 0 && (row.kind === "chat" || row.kind === "task") && !arrivedMidTask(row.messages) && isLookupQuestion(taskUserText(row.messages))) {
+        const answer = await quickLookup(t, row, taskUserText(row.messages)).catch((err) => {
+          console.error(`[lookup] ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+          return undefined;
+        });
+        if (answer) return await finish(t, row, persisted, answer, "idle");
+        if (row.messages.length > persisted) await save();
+      }
+
       // The stored conversation is the user's record and is never trimmed; the model gets a working copy
       // kept under the context budget.
-      const context = compacted(row.messages);
+      const context = withContextBlock(compacted(row.messages), row.contextBlock);
       const turnStart = Date.now();
       const timings: string[] = [];
+      const early = new Map<string, Promise<ToolOutcome>>();
       let completion: Completion;
       try {
         // The reply streams into `draft` (throttled) so the page shows it as it is written.
         let lastDraft = 0;
+        const midTask = row.messages[row.messages.length - 1]?.role === "tool";
+        const cheapTurn = housekeepingTurn(row.messages);
+        early.clear();
         completion = await complete({
-          model: row.model!,
+          // A read-only call (a search, a page read, a memory lookup) starts the moment its JSON is
+          // complete in the stream, while the model is still producing the rest of its turn.
+          onToolCall: (call) => {
+            if (!READ_ONLY_TOOLS.has(call.function.name) || early.has(call.id)) return;
+            try {
+              early.set(call.id, executeTool(t, row, call.function.name, JSON.parse(call.function.arguments || "{}") as Record<string, unknown>, call.id));
+            } catch {
+              /* invalid JSON: the loop reports it */
+            }
+          },
+          model: cheapTurn ? modelFor("chat", t) : row.model!,
           messages: context,
           tools: toolsFor(quick ? "quick" : "all"),
+          maxTokens: midTask && TOOL_TURN_MAX_TOKENS > 0 ? TOOL_TURN_MAX_TOKENS : undefined,
           onText: (text) => {
             if (Date.now() - lastDraft < 700) return;
             lastDraft = Date.now();
@@ -176,22 +253,49 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         return await finish(t, row, persisted, providerProblem(err), "error");
       }
       timings.push(`llm=${((Date.now() - turnStart) / 1000).toFixed(1)}s`);
-      await charge(t, row, completion);
-      row.messages.push({ ...completion.message, at: stamp() });
+      const cents = await chargeCompletion(t, row, completion);
+      row.messages.push({ ...completion.message, at: stamp(), cost: cents });
 
       const calls = completion.message.tool_calls ?? [];
       if (!calls.length) {
-        // The reply is what the user reads: drop the closing filler chat models add.
-        if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(completion.message.content);
+        // The reply is what the user reads: drop the closing filler chat models add, and the links and
+        // reference markers a search-shaped answer drags along (unless the user asked for links).
+        if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(calm(stripCitations(completion.message.content, taskUserText(row.messages))));
         const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
         const nudge = stallNudge(row, text);
         if (nudge) {
           // The model "ended" with a promise, an offer to look something up, an empty reply, or a
-          // question it should not ask; send it back to work.
+          // question it should not ask; send it back to work. The draft stays in its context (so
+          // "send the same reply again" works) but never reaches the chat page.
+          supersedeLastReply(row.messages);
           row.messages.push({ role: "user", content: nudge });
           await save();
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} nudge: ${text.slice(0, 80).replace(/\s+/g, " ")}`);
           continue;
+        }
+        // Figures in the reply that appear nowhere in what the model read or was told this task: one
+        // turn to re-read and correct them (or show the arithmetic), before the user sees them.
+        if (text && taskUsedTools(row.messages) && !hasHostNotePrefix(row.messages, VERIFY_PREFIX)) {
+          const missing = unverifiedFigures(row.messages, text, row.contextBlock);
+          if (missing.length) {
+            supersedeLastReply(row.messages);
+            row.messages.push({ role: "user", content: `${VERIFY_PREFIX} these figures in your reply do not appear in anything you read or were told during this task: ${missing.join(", ")}. Re-read the source (browser_text, browser_extract, fetch_page, the tool result) and correct them, or if each is a calculation, show it in the reply (e.g. 3 × $12.50 = $37.50). Then send the reply again as if for the first time: never mention this check, a correction, or where a figure came from.)` });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} verify: ${missing.join(",")}`);
+            continue;
+          }
+        }
+        // The task worked a site it has no notes for: one more turn to write sites/<domain>.md, so the
+        // next visit is a five-step task instead of thirty, then the same reply again.
+        // The reply stands as is and reaches the page now; the note is written behind it.
+        if (text && (row.kind === "chat" || row.kind === "task") && !hasHostNotePrefix(row.messages, SITE_NOTE_PREFIX)) {
+          const missing = await siteNotesMissing(t, row.messages).catch(() => [] as string[]);
+          if (missing.length) {
+            row.messages.push({ role: "user", content: `${SITE_NOTE_PREFIX} you worked on ${missing.join(" and ")} in this task and there is no sites/${missing[0]}.md yet. The user already has your reply above; do not send it again. Write the note now with memory_write, under 40 lines: ## Sign-in (URL, what it asks, whether a code comes), ## Fast path (the exact URLs and clicks that got this result), ## Where things live, ## Quirks, ## Last verified (today). Then reply with exactly NO_REPORT.)` });
+            await save();
+            console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} site-note: ${missing.join(",")}`);
+            continue;
+          }
         }
         if (!text) {
           // Still nothing after a nudge: the user must not be left with a blank. Get a summary.
@@ -209,17 +313,30 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         return await finish(t, row, persisted, text, "idle");
       }
 
-      for (const call of calls) {
-        let args: Record<string, unknown> = {};
+      // Read-only calls issued together (several searches, page reads, memory lookups) run at once;
+      // everything that acts (browser steps, mail, checkpoints) runs in order, one at a time.
+      const parsedArgs = calls.map((c) => {
         try {
-          args = JSON.parse(call.function.arguments || "{}");
+          return JSON.parse(c.function.arguments || "{}") as Record<string, unknown>;
         } catch {
+          return undefined;
+        }
+      });
+      const lastBrowserAction = calls.reduce((last, c, i) => (BROWSER_ACTIONS.has(c.function.name) ? i : last), -1);
+      const ahead = new Map<number, Promise<ToolOutcome>>();
+      if (calls.length > 1) calls.forEach((c, i) => parsedArgs[i] && READ_ONLY_TOOLS.has(c.function.name) && !early.has(c.id) && ahead.set(i, executeTool(t, row, c.function.name, parsedArgs[i]!, c.id)));
+      for (const [i, call] of calls.entries()) {
+        const args = parsedArgs[i];
+        if (!args) {
           row.messages.push({ role: "tool", tool_call_id: call.id, content: "Invalid JSON arguments; call again with valid JSON." });
           continue;
         }
         const toolStart = Date.now();
-        const out = await executeTool(t, row, call.function.name, args, call.id);
-        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s`);
+        const started_early = early.get(call.id);
+        let out = started_early ? await started_early : ahead.has(i) ? await ahead.get(i)! : await executeTool(t, row, call.function.name, args, call.id);
+        // Several browser actions in one turn: the page comes back once, with the last of them.
+        if (BROWSER_ACTIONS.has(call.function.name) && lastBrowserAction > i && !/^Tool .* failed/.test(out.text)) out = { ...out, text: `${out.text.split("\n\n")[0]}\n(page snapshot omitted: the last browser action in this turn returns the page)` };
+        timings.push(`${call.function.name}=${((Date.now() - toolStart) / 1000).toFixed(1)}s${started_early ? "»" : ahead.has(i) ? "‖" : ""}`);
         if (out.pending) {
           console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} pending:${out.pending}`);
           row.status = "waiting";
@@ -233,8 +350,19 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           row.messages[row.messages.length - 1].content = "Screenshot taken, but this model cannot view images. Use browser_text or browser_snapshot instead, or escalate_model.";
         }
         if (out.escalateTo) {
+          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), false).catch(() => {});
           row.model = out.escalateTo;
           row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the notes above.)` });
+        }
+      }
+
+      // Navigating to a site on the hard list while on the task tier: move up now, before it fails.
+      if (tierOfModel(row.model ?? "", t) === "task") {
+        const hardUrl = calls.map((c, i) => (c.function.name === "browser_goto" || c.function.name === "browser_open" ? String(parsedArgs[i]?.url ?? "") : "")).find((u) => u && isHardSite(u));
+        if (hardUrl) {
+          row.model = modelFor("hard", t);
+          row.messages.push({ role: "user", content: `(This site is on the hard list, so you are now on the stronger model. Continue the task from here.)` });
+          console.log(`[route] ${row.id}: hard site ${hardUrl.slice(0, 60)} -> ${row.model}`);
         }
       }
 
@@ -249,6 +377,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (!escalatedForLoop && tierOfModel(row.model ?? "", t) !== "hard") {
           // Give it one real chance to break out on a stronger model before giving up.
           escalatedForLoop = true;
+          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), false).catch(() => {});
           row.model = modelFor("hard", t);
           sigs.length = 0;
           row.messages.push({ role: "user", content: "(You have repeated the same steps several times with no progress — this is a dead end. Stop repeating them. Read the page fresh and take a completely different approach. If a login failed, a code or captcha is blocking you, or the site simply will not let you through, do NOT keep trying: stop and tell the user in one line exactly what is blocking you and what you need from them. You are now on a stronger model.)" });
@@ -278,11 +407,18 @@ async function postMortem(t: Tenant, row: SessionRow, report: string): Promise<v
   const context = compacted(row.messages).slice(-14);
   context.unshift({ role: "system", content: "You write a three-line post-mortem of a task that did not finish: (1) what was asked and where it stopped, (2) the real cause in one line (a site's bot check, a wrong route, a missing login, an expired code, a host limit), (3) the one concrete change that would have made it succeed (a URL to use, an order of steps, a setting for the user to add). Plain text, no headings." });
   context.push({ role: "user", content: `(The task ended with this report to the user: "${report.slice(0, 400)}". Write the post-mortem now.)` });
+  const sites = [...new Set([...row.messages.flatMap((m) => (typeof m.content === "string" ? m.content.match(/https?:\/\/([\w.-]+)/g) ?? [] : [])).map((u) => u.replace(/^https?:\/\//, "").replace(/^www\./, ""))])].slice(0, 3);
+  const header = `### ${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${(row.title ?? row.kind).slice(0, 80)}${sites.length ? ` · ${sites.join(", ")}` : ""}`;
+  // Nobody is waiting for a post-mortem: through the half-price batch endpoint when it is configured.
+  if (batchConfigured()) {
+    await enqueue(t.id, "postmortem", { messages: context, max_tokens: 300, meta: { path: "history/failures.md", header } });
+    return;
+  }
   const c = await complete({ model: modelFor("chat", t), messages: context, maxTokens: 300 });
+  await chargeCompletion(t, row, c, "postmortem").catch(() => {});
   const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
   if (!text) return;
-  const sites = [...new Set([...row.messages.flatMap((m) => (typeof m.content === "string" ? m.content.match(/https?:\/\/([\w.-]+)/g) ?? [] : [])).map((u) => u.replace(/^https?:\/\//, "").replace(/^www\./, ""))])].slice(0, 3);
-  await appendMemory(t, "history/failures.md", `\n### ${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${(row.title ?? row.kind).slice(0, 80)}${sites.length ? ` · ${sites.join(", ")}` : ""}\n${text}\n`);
+  await appendMemory(t, "history/failures.md", `\n${header}\n${text}\n`);
 }
 
 /** A provider failure in the user's words, not the provider's JSON. */
@@ -299,26 +435,16 @@ function providerProblem(err: unknown): string {
  * request (a lookup, a form, a bill) gets a middle budget; hard-tier work (refunds, negotiations,
  * projects) and self-started reviews get the full one.
  */
-function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number } {
+function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number; cents: number } {
   const tier = tierOfModel(row.model ?? "", t);
+  // Spend per task, by class: a lookup (a balance, a price, a figure off a page) stops at LOOKUP_BUDGET_USD
+  // with a summary instead of running its whole step budget on a strong model; real work gets TASK_BUDGET_USD
+  // (the session budget by default). 0 disables a cap.
+  const taskCents = Number(process.env.TASK_BUDGET_USD ?? env.plans.sessionBudgetUsd()) * 100;
   if (row.kind === "chat" || row.kind === "task") {
-    if (tier === "task") return { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000) };
+    if (tier === "task") return { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000), cents: Number(process.env.LOOKUP_BUDGET_USD ?? 0.5) * 100 };
   }
-  return { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS };
-}
-
-/** Book a completion's cost and tokens on the session and the month. */
-async function charge(t: Tenant, row: SessionRow, completion: Completion): Promise<void> {
-  const cost = costCents(completion.model, completion.usage);
-  row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
-  row.prompt_tokens = Number(row.prompt_tokens) + completion.usage.prompt_tokens;
-  row.completion_tokens = Number(row.completion_tokens) + completion.usage.completion_tokens;
-  row.cached_tokens = Number(row.cached_tokens ?? 0) + (completion.usage.cached_tokens ?? 0);
-  row.turns += 1;
-  await q(
-    "insert into usage (user_id, month, cost_cents, prompt_tokens, cached_tokens) values ($1, date_trunc('month', now())::date, $2, $3, $4) on conflict (user_id, month) do update set cost_cents = usage.cost_cents + $2, prompt_tokens = usage.prompt_tokens + $3, cached_tokens = usage.cached_tokens + $4",
-    [t.id, cost.toFixed(3), completion.usage.prompt_tokens, completion.usage.cached_tokens ?? 0],
-  );
+  return { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS, cents: taskCents };
 }
 
 /**
@@ -333,8 +459,8 @@ async function wrapUp(t: Tenant, row: SessionRow, reason: string, fallback: stri
       role: "user",
       content: `(${reason} Stop working now and report to the user in at most three short lines: what you got done, what you found (figures, confirmation numbers), and exactly what is blocking or what you need from them. Plain words, no tool calls, no promises, no browser links, no site names.)`,
     });
-    const c = await complete({ model: row.model!, messages: context, tools, toolChoice: "none", maxTokens: 400 });
-    await charge(t, row, c);
+    const c = await complete({ model: row.model!, messages: withContextBlock(context, row.contextBlock), tools, toolChoice: "none", maxTokens: 400 });
+    await chargeCompletion(t, row, c, "wrapup");
     const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
     if (text && !c.message.tool_calls?.length) return text;
   } catch (err) {
@@ -347,21 +473,54 @@ async function wrapUp(t: Tenant, row: SessionRow, reason: string, fallback: stri
 /** The task ended for this turn: deliver the report on the right channel and mark idle. */
 async function finish(t: Tenant, row: SessionRow, persisted: number, report: string, status: "idle" | "error"): Promise<RunOutcome> {
   const proactive = ["review", "weekly", "followup", "triage", "digest", "inbox"].includes(row.kind);
-  // A task the host had to stop, or that ended on a failure: a three-line post-mortem into memory,
-  // so the morning review can propose the one change that prevents it next time.
-  if (status === "error" || /\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200))) await postMortem(t, row, report).catch(() => {});
+  // A task that answered, then only wrote its site note: the reply already in the thread is the report.
+  if (!proactive && /^NO_REPORT\b/.test(report.trim()) && lastAssistantText(row.messages)) report = lastAssistantText(row.messages);
   const silent = /^NO_REPORT\b/.test(report.trim()) && proactive;
   // The chat page renders the message list, so a report the loop wrote itself (step limit, spend cap,
   // provider error) must be in it or the user sees nothing at all.
   if (report && !silent && lastAssistantText(row.messages) !== report.trim()) row.messages.push({ role: "assistant", content: report, at: stamp() });
+  const failedWords = /\b(stopped|couldn'?t|could not|unable|blocked|failed)\b/i.test(report.slice(0, 200));
   const sessionCap = env.plans.sessionBudgetUsd() * 100;
   const limitHit = row.turns >= MAX_SESSION_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap);
   // A provider error no longer terminates the chat: the thread stays open (status "error", still
   // resumable) so the next message continues it with full context. Only the real limits roll over.
   const rollOver = row.kind === "chat" && (limitHit || row.turns >= CHAT_ROLLOVER_TURNS || (sessionCap > 0 && row.cost_cents >= sessionCap * CHAT_ROLLOVER_SHARE));
   if (rollOver) status = "terminated" as typeof status;
-  // Append-only: never overwrite the whole array, or a message the user just sent is lost.
-  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null });
+  // The reply reaches the page now. Append-only: never overwrite the whole array, or a message the
+  // user just sent is lost. Everything below is bookkeeping the user never waits for.
+  await persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, status, last_report: report.slice(0, 20_000), lease_until: null, model: row.model, draft: null, chips: null });
+  // A task the host had to stop, or that ended on a failure: a three-line post-mortem into memory,
+  // so the morning review can propose the one change that prevents it next time.
+  if (status === "error" || failedWords) await postMortem(t, row, report).catch(() => {});
+  if (row.kind === "chat" || row.kind === "task") {
+    // The chips under the reply, from the reply itself; the page picks them up on its next poll.
+    if (status === "idle" && report && !silent) await suggestReplies(t, row, report).catch(() => {});
+    // How this kind of task ended on this tier, for the adaptive router; and the rule in a correction, if this task was one.
+    if (taskUsedTools(row.messages)) await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), status === "idle" && !failedWords).catch(() => {});
+    const learned = await learnFromCorrection(t, row).catch(() => undefined);
+    if (learned) console.log(`[learn] ${row.id}: ${learned}`);
+    // A promise in the reply ("I'll check back Thursday") is kept by the host if the model set no follow-up.
+    if (status === "idle" && report) {
+      const due = await keepPromise(t, row, report).catch(() => undefined);
+      if (due) console.log(`[promise] ${row.id}: follow-up ${due.toISOString()}`);
+    }
+    // What blocked the task becomes a fix card the user can act on in one tap.
+    if (failedWords || status === "error") {
+      const { relayStatus } = await import("./relay.js");
+      const relay = await relayStatus(t).catch(() => ({ online: false }));
+      const fixes = detectFixes(row.messages, !!t.googleRefreshToken, relay.online);
+      if (fixes.length) await recordFixes(t, fixes).catch(() => {});
+    }
+    if (status === "idle" && report && taskUsedTools(row.messages)) await gradeReply(t, row, report).catch(() => {});
+  }
+  // A browser task that ended well: what it did on each site becomes a replayable path in the site note.
+  if (status === "idle" && (row.kind === "chat" || row.kind === "task") && !failedWords) {
+    const domains = [...siteActivity(row.messages).visited].filter(([, n]) => n >= 3).map(([d]) => d);
+    if (domains.length) {
+      const written = await recordPaths(t, row, domains, report).catch(() => [] as string[]);
+      if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}`);
+    }
+  }
   // A message that landed while we were finishing: flip back to running and re-kick so it gets
   // answered now, instead of sitting idle until the user sends something else.
   if (!rollOver && status === "idle") {
@@ -411,9 +570,10 @@ const GAVE_UP = /\b(couldn'?t|could not|unable to|can'?t|cannot|wasn'?t able|not
 /** A task that stops with a failure report before this many steps has not really tried. */
 const GAVE_UP_STEPS = Number(process.env.GAVE_UP_STEPS ?? 12);
 const PROMISED_ACTION =
-  /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(now\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|search for|look (?:for|up)|open)\b|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
+  /\b(i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(now\s+)?(try|attempt|retry|proceed|go ahead|give it|keep trying|have another|take another|search for|look (?:for|up)|open|grab|pull (?:up|it|the|that|them)|fetch|dig)\b|\btry(?:ing)?\s+(again|one more time|once more|another|a different)\b/i;
 const ASKS_FOR_ADDRESS = /\b(provide|tell me|what(?:'|’)?s|what is|send me|confirm|i need|share)\b[^.?\n]{0,60}\b(your|the)\s+(current\s+|pickup\s+|home\s+|starting\s+|exact\s+)?(location|address)\b/i;
-const OFFERS_LOOKUP = /\b(want|would you like|do you want|should|shall)\s+(me|i)\s+(to\s+)?(check|look|pull|find|see|verify|confirm|dig|get|grab|open|read|search|run|log)\b/i;
+const OFFERS_LOOKUP =
+  /\b(want|would you like|do you want|should|shall|need)\s+(me|i)\s+(to\s+)?(check|look|pull|find|see|verify|confirm|dig|get|grab|open|read|search|run|log)\b|\bsay the word\b|\bjust (?:say|tell me|give me the (?:word|go|nod|ok))\b|\b(?:let me know|tell me) (?:if|whether|when) you(?:'d| would)? (?:want|like|need)\b|\bif you (?:want|like|'d like)(?:,)? (?:i(?:'|’)?ll|i can)\b|\b(?:happy|glad) to (?:grab|pull|fetch|dig|check|look)[^.!?\n]{0,40}\bif\b/i;
 
 export function stallNudge(row: SessionRow, reply: string): string | undefined {
   if (/^NO_REPORT\b/.test(reply)) return undefined;
@@ -430,7 +590,7 @@ export function stallNudge(row: SessionRow, reply: string): string | undefined {
   if (given.size >= MAX_NUDGES) return undefined;
   const pick = (kind: string) => (given.has(kind) ? undefined : NUDGES[kind]);
   if (!reply.trim()) return pick("empty");
-  const system = typeof row.messages[0]?.content === "string" ? row.messages[0].content : "";
+  const system = `${typeof row.messages[0]?.content === "string" ? row.messages[0].content : ""}\n${row.contextBlock ?? ""}`;
   const homeKnown = /home address[^\n]*:\s*\S/i.test(system);
   if (homeKnown && ASKS_FOR_ADDRESS.test(reply)) return pick("address");
   if (PROMISED_ACTION.test(reply)) return pick("promise");
@@ -459,6 +619,195 @@ export function unfilled(text: string): string {
     out = next.trimEnd();
   }
   return out.trim() ? out : text;
+}
+
+/**
+ * Whether the user's latest message landed while the thread was still working (the model was mid
+ * tool call, or the host stamped it as mid-task): then it is handled inside the running task, never
+ * as a fresh lookup that would end that task.
+ */
+export function arrivedMidTask(messages: ChatMessage[]): boolean {
+  const start = taskStart(messages);
+  const prev = messages[start - 1];
+  if (prev && (prev.role === "tool" || (prev.role === "assistant" && prev.tool_calls?.length))) return true;
+  for (let i = start + 1; i < messages.length; i++) if (messages[i].role === "user" && messageText(messages[i]).startsWith("(That message arrived while you are mid-task")) return true;
+  return false;
+}
+
+/** The reply the model just gave is being sent back to it: hide it from the chat, keep it for the model. */
+export function supersedeLastReply(messages: ChatMessage[]): void {
+  const last = messages[messages.length - 1];
+  if (last?.role === "assistant" && !last.tool_calls?.length) last.superseded = true;
+}
+
+/** "done", "signed in": the user finished a takeover step; the task resumes from the current page. */
+export const TAKEOVER_DONE = /^(ok(ay)?[,.! ]*)?(done|all done|i'?m done|signed in|logged in|i'?m in|i signed in|i logged in|finished|it'?s done|you'?re in|you should be in|try (it )?now|go ahead now)\b/i;
+export const RESUME_PREFIX = "(Resuming:";
+
+/** The user's request before the current one (the task a "done" continues). */
+export function previousTaskText(messages: ChatMessage[]): string | undefined {
+  const start = taskStart(messages);
+  for (let i = start - 1; i > 0; i--) if (isUserMessage(messages[i])) return messageText(messages[i]).replace(/^\[[^\]]+\]\n/, "");
+  return undefined;
+}
+
+export const VERIFY_PREFIX = "(Verify before you finish:";
+const MONEY = /\$\s?\d[\d,]*(?:\.\d{1,2})?/g;
+const PHONE = /\(?\b\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g;
+const CONFIRMATION = /\b(?=[A-Z0-9-]{6,}\b)(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9-]+\b/g;
+
+/**
+ * Figures in a reply that nothing in the thread supports: dollar amounts, phone numbers and
+ * confirmation-style codes that appear in no tool result, no user message, no earlier reply and not
+ * in the system prompt. Amounts are compared without separators, phones by digits, codes by exact token.
+ */
+export function unverifiedFigures(messages: ChatMessage[], reply: string, context = ""): string[] {
+  const parts: string[] = [context];
+  // The whole thread counts: what the task read or was told, and every reply the user already has
+  // from earlier tasks. Only this task's own drafts and acks are left out (they may carry the figure
+  // being checked).
+  const start = taskStart(messages);
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "assistant" && (i >= start || m.superseded || m.ephemeral)) continue;
+    parts.push(messageText(m));
+  }
+  const corpus = parts.join("\n");
+  const plain = corpus.replace(/,/g, "");
+  const digits = corpus.replace(/\D/g, "");
+  const missing = new Set<string>();
+  for (const m of reply.match(MONEY) ?? []) {
+    const amount = m.replace(/[$\s,]/g, "");
+    if (!plain.includes(amount) && !plain.includes(amount.replace(/\.00$/, ""))) missing.add(m.replace(/\s/g, ""));
+  }
+  for (const m of reply.match(PHONE) ?? []) if (!digits.includes(m.replace(/\D/g, ""))) missing.add(m);
+  for (const m of reply.match(CONFIRMATION) ?? []) if (!corpus.toLowerCase().includes(m.toLowerCase())) missing.add(m);
+  return [...missing].slice(0, 8);
+}
+
+/** A turn that only tidies up after the result (the site-note request, or the wrap-up after a receipt or win) runs on the fast model. */
+export function housekeepingTurn(messages: ChatMessage[]): boolean {
+  const last = messages[messages.length - 1];
+  if (last?.role === "user" && messageText(last).startsWith(SITE_NOTE_PREFIX)) return true;
+  // The previous assistant turn recorded the receipt or the win: what follows is bookkeeping and the reply.
+  for (let i = messages.length - 1; i >= taskStart(messages); i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || m.ephemeral) continue;
+    const names = (m.tool_calls ?? []).map((c) => c.function.name);
+    return names.length > 0 && names.every((n) => HOUSEKEEPING_TOOLS.has(n)) && names.some((n) => n === "record_receipt" || n === "record_win");
+  }
+  return false;
+}
+
+/** Near the monthly cap the tier steps down instead of the month ending in a hard stop: hard -> task at 80%, task -> chat at 95%. */
+export function softLandedTier(share: number, tier: Tier): Tier {
+  const hardAt = Number(process.env.SOFT_LANDING_HARD ?? 0.8);
+  const taskAt = Number(process.env.SOFT_LANDING_TASK ?? 0.95);
+  if (tier === "hard" && share >= hardAt) return share >= taskAt ? "chat" : "task";
+  if (tier === "task" && share >= taskAt) return "chat";
+  return tier;
+}
+
+async function softLanding(t: Tenant, model: string): Promise<string | undefined> {
+  const cap = env.plans.monthlyCapUsd(t.plan) * 100;
+  if (cap <= 0 || !model) return undefined;
+  const tier = tierOfModel(model, t);
+  if (tier === "chat") return undefined;
+  const landed = softLandedTier((await monthUsageCents(t)) / cap, tier);
+  return landed === tier ? undefined : modelFor(landed, t);
+}
+
+/** The host's request, once per task, for the site notes a browser task left unwritten. */
+export const SITE_NOTE_PREFIX = "(Before you finish:";
+/** Browser steps a task must have taken on a site before the host asks for notes on it; a two-step visit needs none. */
+const SITE_NOTE_MIN_STEPS = Number(process.env.SITE_NOTE_MIN_STEPS ?? 5);
+const NO_SITE_NOTES = /(^|\.)(duckduckgo|google|bing|yahoo|browserbase)\.(com|org)$/i;
+
+/** The sites this task drove the browser on (by domain) and the site notes it wrote or updated. */
+export function siteActivity(messages: ChatMessage[]): { visited: Map<string, number>; noted: Set<string> } {
+  const visited = new Map<string, number>();
+  const noted = new Set<string>();
+  let current = "";
+  for (let i = taskStart(messages); i < messages.length; i++) {
+    for (const c of messages[i].tool_calls ?? []) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(c.function.arguments || "{}");
+      } catch {
+        continue;
+      }
+      const name = c.function.name;
+      if ((name === "browser_goto" || name === "browser_open") && typeof args.url === "string") current = registrableDomain(args.url);
+      else if (name === "login" && typeof args.domain === "string") current = registrableDomain(args.domain);
+      if (name.startsWith("browser_") || name === "login") {
+        if (current && !NO_SITE_NOTES.test(current)) visited.set(current, (visited.get(current) ?? 0) + 1);
+      }
+      if ((name === "memory_write" || name === "memory_append") && typeof args.path === "string") {
+        const m = args.path.match(/^sites\/([^/]+)\.md$/);
+        if (m) noted.add(registrableDomain(m[1]));
+      }
+    }
+  }
+  return { visited, noted };
+}
+
+/** Domains this task worked for several steps, with no site note written in the task and none on file. */
+async function siteNotesMissing(t: Tenant, messages: ChatMessage[]): Promise<string[]> {
+  const { visited, noted } = siteActivity(messages);
+  const out: string[] = [];
+  for (const [domain, steps] of visited) {
+    if (steps < SITE_NOTE_MIN_STEPS || noted.has(domain)) continue;
+    if ((await readMemory(t, `sites/${domain}.md`)) == null) out.push(domain);
+  }
+  return out.slice(0, 2);
+}
+
+function hasHostNotePrefix(messages: ChatMessage[], prefix: string): boolean {
+  for (let i = messages.length - 1; i >= taskStart(messages); i--) if (messages[i].role === "user" && messageText(messages[i]).startsWith(prefix)) return true;
+  return false;
+}
+
+/**
+ * The voice rule "no exclamation marks", enforced: a reply's sentence-ending "!" becomes "." unless it
+ * sits inside quotation marks (a draft the user will send, a name). "!?" keeps the question mark.
+ */
+export function calm(text: string): string {
+  let inQuote = false;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' || ch === "“" || ch === "”") inQuote = ch === '"' ? !inQuote : ch === "“";
+    if (ch === "!" && !inQuote) {
+      const next = text[i + 1] ?? "";
+      if (next === "?") continue; // "!?" -> "?"
+      if (out.endsWith(".") || out.endsWith("!")) continue; // "!!" collapses
+      out += ".";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/** Whether the user asked for links or sources themselves, in which case they stay. */
+const WANTS_LINKS = /\b(link|links|url|urls|source|sources|where did you (see|get|read)|cite|citation|reference)\b/i;
+
+/**
+ * Chat replies are for a person: no "[[2]](https://...)" trails, no bare URLs in parentheses, no
+ * "Sources:" block, no "[n]" markers. Removed by the host when they slip through, unless the user
+ * asked for the links. Markdown links keep their text.
+ */
+export function stripCitations(text: string, userText = ""): string {
+  if (WANTS_LINKS.test(userText)) return text;
+  let out = text
+    .replace(/\[\[?\d+\]?\]\((https?:\/\/[^)\s]+)\)/g, "") // [[2]](https://...) and [2](https://...)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1") // [text](url) -> text
+    .replace(/\s?\((?:source|sources|via|per)?:?\s*https?:\/\/[^)\s]+\)/gi, "") // (https://...) or (source: https://...)
+    .replace(/\s?\[\d+(?:,\s?\d+)*\]/g, "") // [2] [3, 4]
+    .replace(/(^|\n)\s*(sources?|references?)\s*:?\s*\n(?:.*(?:https?:\/\/|^\s*[-•*\d]).*\n?)+$/gim, "$1") // a trailing Sources block
+    .replace(/https?:\/\/\S+/g, (u) => (u.length > 0 ? "" : u)); // any bare URL left
+  out = out.replace(/[ \t]+([.,;:])/g, "$1").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  return out || text;
 }
 
 /** The host's note when a greeting or status question is turning into a task. */
@@ -550,17 +899,79 @@ export function dropStaleScreenshots(messages: ChatMessage[]): ChatMessage[] {
 /** Tool results (page snapshots, memory files) older than this many are stubbed on every call: once acted on, a snapshot is dead weight. */
 const RECENT_TOOL_RESULTS = Number(process.env.RECENT_TOOL_RESULTS ?? 6);
 
+/** The working copy with this customer's context block right after the shared prompt, marked as its own cache boundary. */
+export function withContextBlock(messages: ChatMessage[], block: string | undefined): ChatMessage[] {
+  if (!block) return messages;
+  return [messages[0], { role: "user", content: block, cacheBoundary: true }, ...messages.slice(1)];
+}
+
+/** Which tool produced each result, by call id. */
+function toolNames(messages: ChatMessage[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const m of messages) for (const c of m.tool_calls ?? []) names.set(c.id, c.function.name);
+  return names;
+}
+
+/**
+ * An old tool result once the model has acted on it. A search keeps its `[n]` result lines (title
+ * and URL, so any of them can still be fetched) and loses the snippets and page text; a page read
+ * keeps its header line; anything else keeps its first 240 characters.
+ */
+export function stubToolResult(tool: string | undefined, content: string): string {
+  if (tool === "web_search") return stubSearchResult(content);
+  if (tool === "fetch_page") return stubPageResult(content);
+  return content.slice(0, 240) + "\n... [older output trimmed; call the tool again if you need it]";
+}
+
+/** Earlier tasks in a long thread collapse to a recap once this many messages precede the current task. */
+const RECAP_AFTER_MESSAGES = Number(process.env.RECAP_AFTER_MESSAGES ?? 12);
+const RECAP_MAX_CHARS = 3500;
+
+/**
+ * A long chat thread drags every earlier task into every call. Once the current task starts deep in
+ * the thread, everything before it becomes one note: each earlier request with the reply it got,
+ * oldest first, built deterministically so the prefix stays identical (and cached) for the whole task.
+ * The stored thread is untouched; the details are in memory files if the model needs them.
+ */
+export function recapEarlier(messages: ChatMessage[]): ChatMessage[] {
+  const start = taskStart(messages);
+  if (start - 1 <= RECAP_AFTER_MESSAGES) return messages;
+  const pairs: string[] = [];
+  let request: string | undefined;
+  for (let i = 1; i < start; i++) {
+    const m = messages[i];
+    if (isUserMessage(m)) {
+      if (request) pairs.push(`- ${request}\n  agent: (no reply recorded)`);
+      const text = messageText(m);
+      const when = text.match(/^\[([^\]]+)\]/)?.[1]?.split(" via")[0] ?? "";
+      request = `${when ? `[${when}] ` : ""}user: ${text.replace(/^\[[^\]]+\]\n/, "").replace(/\s+/g, " ").slice(0, 200)}`;
+    } else if (request && m.role === "assistant" && !m.ephemeral && !m.tool_calls?.length && typeof m.content === "string" && m.content.trim()) {
+      pairs.push(`- ${request}\n  agent: ${m.content.replace(/\s+/g, " ").slice(0, 300)}`);
+      request = undefined;
+    }
+  }
+  if (request) pairs.push(`- ${request}\n  agent: (no reply recorded)`);
+  let recap = pairs.slice(-10).join("\n");
+  while (recap.length > RECAP_MAX_CHARS && pairs.length > 1) {
+    pairs.shift();
+    recap = pairs.slice(-10).join("\n");
+  }
+  const note: ChatMessage = { role: "user", content: `(Earlier in this thread, oldest first; the pages and details are gone from context, memory files and the tools have them if needed:\n${recap || "- (nothing of note)"})` };
+  return [messages[0], note, ...messages.slice(start)];
+}
+
 export function compacted(stored: ChatMessage[]): ChatMessage[] {
-  const messages = dropStaleScreenshots(stored.map((m) => ({ ...m })));
+  const messages = recapEarlier(dropStaleScreenshots(stored.map((m) => ({ ...m }))));
   // Always: keep only the newest tool results in full. The user's messages and the assistant's own
   // words stay, so the model remembers what it found; the raw page it found it on does not need to
   // ride along on every later call. The stable prefix keeps the prompt cache warm.
+  const names = toolNames(messages);
   let recent = 0;
   for (let i = messages.length - 1; i >= 1; i--) {
     const m = messages[i];
     if (m.role !== "tool" || typeof m.content !== "string") continue;
     if (recent < RECENT_TOOL_RESULTS) recent++;
-    else if (m.content.length > 400) m.content = m.content.slice(0, 240) + "\n... [older output trimmed; call the tool again if you need it]";
+    else if (m.content.length > 400) m.content = stubToolResult(names.get(m.tool_call_id ?? ""), m.content);
   }
   if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
   const keepTail = 12;

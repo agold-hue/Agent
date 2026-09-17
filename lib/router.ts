@@ -49,6 +49,24 @@ const TASK = /\b(order|reorder|buy|purchase|pay|book|schedule|reschedule|sign up
  */
 const LIGHT = /^(?:please |pls |hey,? |can you |could you )?(?:(?:add|put) [^\n]{1,80}?\b(?:to|on) (?:the |my )?(?:shopping |grocery )?list\b|(?:note|jot down|fyi|for the record|reminder)\b|(?:remember|remind me)\b(?![^\n]*\b(?:log ?in|password|sign ?in)\b))/i;
 
+/**
+ * Sites that defeat the task model often enough that starting there is cheaper than failing first:
+ * banks, card issuers, airlines, government portals. Names and domains; HARD_DOMAINS adds more.
+ */
+const HARD_SITES = new RegExp(
+  `\\b(${[
+    "chase", "bank ?of ?america", "bofa", "wells ?fargo", "citi(bank)?", "capital ?one", "amex", "american ?express", "discover", "us ?bank", "pnc", "td ?bank", "schwab", "fidelity", "vanguard",
+    "delta", "united", "american ?airlines", "aa\\.com", "jetblue", "southwest", "spirit", "frontier", "alaska ?air",
+    "irs", "ssa", "social ?security", "medicare", "healthcare\\.gov", "uscis", "dmv", "passport",
+    ...(process.env.HARD_DOMAINS ?? "").split(",").map((s) => s.trim().toLowerCase().replace(/^www\./, "").replace(/\.[a-z]+$/, "")).filter(Boolean).map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+  ].join("|")})\\b`,
+  "i",
+);
+/** Whether a request or a URL names a site on the hard list. */
+export function isHardSite(textOrUrl: string): boolean {
+  return HARD_SITES.test(textOrUrl.replace(/^\[[^\]]*\]\n/, ""));
+}
+
 /** Pick a tier from the request text and where it came from. Cheap heuristics; wrong guesses can escalate. */
 export function tierFor(text: string, kind: string): Tier {
   if (kind === "correspondence" || kind === "followup") return "task";
@@ -58,6 +76,7 @@ export function tierFor(text: string, kind: string): Tier {
   // A note is a note even when it mentions a refund or a lease: "remind me the lease is up in March".
   if (LIGHT.test(t.trim())) return "chat";
   if (HARD.test(t)) return "hard";
+  if (TASK.test(t) && HARD_SITES.test(t)) return "hard";
   if (TASK.test(t)) return "task";
   return "chat";
 }
@@ -120,6 +139,25 @@ export function isFreshRequest(text: string): boolean {
 
 function clean(text: string): string {
   return text.replace(/^\[[^\]]*\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
+}
+
+/**
+ * A plain factual question the web answers in one search: a store's hours, a fare, a phone number,
+ * who won, when something opens. It runs the lookup fast path (one search, one fast-model reply, no
+ * tools) and falls back to the full loop when the sources do not answer. Anything about the user's
+ * own accounts, orders or calendar, and anything that asks for an action, is not a lookup.
+ */
+const LOOKUP_LEAD = /^(what|what's|whats|when|when's|how much|how many|how long|how late|how early|how far|how old|how big|how tall|is|are|does|do|did|who|who's|where|where's|which|why)\b/i;
+const NOT_LOOKUP = /\b(my|our|mine|me|i|i'm|i've|we|we're|us|you|your|yours|yet|done|status|so far|going on|order|reorder|buy|purchase|book|pay|cancel|send|email|text|call|schedule|reschedule|remind|track|return|sign|log ?in|account|password|code|refund|dispute|draft|reply|calendar|inbox|package|delivery|appointment|reservation|subscription|balance|statement|invoice|bill|receipt|renew|apply|submit|fill|upload|download|save|add|update|set|make|create|get me|for me|please)\b/i;
+export function isLookupQuestion(text: string): boolean {
+  let t = text.replace(/^\[[^\]]*\]\n/, "").replace(/^Re: (?:my|your) message "[^\n]*"\n/, "").trim();
+  if (!t || t.startsWith("(") || t.includes("\n")) return false;
+  t = t.replace(/^(can you |could you |would you |please )?(tell me|find out|look up|check|search|google)\s*[,:]?\s*/i, "").trim();
+  if (t.split(/\s+/).length > 30 || !LOOKUP_LEAD.test(t)) return false;
+  if (NOT_LOOKUP.test(t) || /^(what'?s (up|new|good|happening)|how are|how'?s it)\b/i.test(t)) return false;
+  // The time, the day and the date are in the message stamp; no search answers them better.
+  if (/^(what|what'?s|whats) (the )?(time|day|date)( is it| today| is today| is it today| now)?[?.!\s]*$/i.test(t) || /^what'?s today'?s date/i.test(t)) return false;
+  return true;
 }
 
 export function nextTier(current: Tier): Tier | null {
