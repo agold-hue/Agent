@@ -3,6 +3,7 @@ import { requireTenant } from "../../../lib/auth.js";
 import { ASIDE_LIMIT, currentChatSession, isSeparateTask, looksLikeAnswer, PARALLEL_PREFIX, PARALLEL_TASKS, startAsideSession, startChatSession, startTaskSession, STATUS_PING, statusLine, wantsSideReply, withQuote } from "../../../lib/chat.js";
 import type { MessageQuote } from "../../../lib/llm.js";
 import { appendTranscript } from "../../../lib/memory.js";
+import { loadModelHistory } from "../../../lib/model-history.js";
 import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
 import { chatSessionExhausted, kick, runSession } from "../../../lib/runtime.js";
 import { isPleasantryCloser, reactionFor } from "../../../lib/reaction.js";
@@ -190,6 +191,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // down on an idle thread ("check my balance" after a refund ran on the judgment model runs on
       // the task model; "thanks" on the chat model). A thread mid-task keeps its model for a steer.
       const idle = session.status !== "running" && !session.pending_kind;
+      await loadModelHistory(); // the tier's chain is ordered by the record across customers
       const model = reroutedModel(session.model ?? "", text, idle, t);
       if (model) {
         console.log(`[route] ${session.id}: ${session.model} -> ${model} for "${text.slice(0, 60)}"`);

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { atLeastModel, choosePoolModel, DEFAULT_POOLS, isAsk, isFreshRequest, isQuickQuestion, modelFor, nextTier, reroutedModel, tierFor, tierOfModel, visionTier } from "../lib/router.js";
-import { modelList } from "../lib/llm.js";
+import { atLeastModel, choosePoolModel, DEFAULT_POOLS, isAsk, isFreshRequest, isQuickQuestion, modelFor, nextTier, reroutedModel, routeFor, tierFor, tierOfModel, visionTier } from "../lib/router.js";
+import { isPoor, setModelHistory } from "../lib/model-history.js";
+import { type CatalogModel, modelList, withFallbacks } from "../lib/llm.js";
 
 test("only judgment work starts on the hard tier; lookups, research, bookings and cancellations are task work", () => {
   for (const h of ["get a refund for the broken blender", "dispute the $89 charge on the Amex", "negotiate the Verizon bill down", "appeal the denied insurance claim", "review the lease before I sign", "help me buy a house in Montclair"]) assert.equal(tierFor(h, "chat"), "hard", h);
@@ -85,4 +86,59 @@ test("within a tier the pool member with the best record wins, the untried get a
   assert.equal(choosePoolModel(pool, stats({ "a/one": [1, 4] }), price, false).split(",")[0], "b/two");
   // One sample proves nothing.
   assert.equal(choosePoolModel(pool, stats({ "b/two": [1, 1] }), price, false).split(",")[0], "a/one");
+});
+
+test("a pool member whose record across customers is poor goes to the back of every chain", () => {
+  const fails = (model: string, n: number) => ({ model, ok: false, n });
+  const wins = (model: string, n: number) => ({ model, ok: true, n });
+  try {
+    // Not enough history, or enough tasks ended well: the pool is used as set.
+    setModelHistory([fails("deepseek/deepseek-v4-pro", 5)]);
+    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+    setModelHistory([fails("deepseek/deepseek-v4-pro", 3), wins("deepseek/deepseek-v4-pro", 3)]);
+    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+    assert.deepEqual(routeFor("task").demoted, []);
+    // Six tasks, one ended well: the next pool member leads everywhere the task tier is named.
+    setModelHistory([fails("deepseek/deepseek-v4-pro", 5), wins("deepseek/deepseek-v4-pro", 1)]);
+    assert.ok(isPoor("deepseek/deepseek-v4-pro"));
+    const route = routeFor("task");
+    assert.equal(route.models[0], "moonshotai/kimi-k2-0905");
+    assert.equal(route.models[route.models.length - 1], "deepseek/deepseek-v4-pro"); // still an outage fallback
+    assert.deepEqual(route.demoted, [{ model: "deepseek/deepseek-v4-pro", ok: 1, n: 6 }]);
+    assert.equal(modelList(reroutedModel(modelFor("chat"), "how much is an uber to JFK", false)!)[0], "moonshotai/kimi-k2-0905");
+    assert.equal(modelList(atLeastModel(modelFor("chat"), "task")!)[0], "moonshotai/kimi-k2-0905");
+    // A thread that started on the demoted model still belongs to the task tier.
+    assert.equal(tierOfModel("deepseek/deepseek-v4-pro,moonshotai/kimi-k2-0905"), "task");
+    // Two poor members: least bad first among them, both behind the clean ones.
+    setModelHistory([fails("deepseek/deepseek-v4-pro", 6), fails("moonshotai/kimi-k2-0905", 4), wins("moonshotai/kimi-k2-0905", 2)]);
+    const chain = modelList(modelFor("task"));
+    assert.equal(chain[0], "qwen/qwen3-max");
+    assert.deepEqual(chain.slice(-2), ["moonshotai/kimi-k2-0905", "deepseek/deepseek-v4-pro"]);
+    // The catalog fallback chain never re-introduces a poor model.
+    const cat = (id: string, price: number): CatalogModel => ({ id, name: id, in: price / 5, out: (price * 4) / 5, context: 200_000, tools: true, vision: true });
+    const models = [cat("deepseek/deepseek-v4-pro", 6), cat("google/gemini-2.5-pro", 11), cat("anthropic/claude-haiku-4.5", 6), cat("openai/gpt-5-mini", 5.5)];
+    assert.ok(!withFallbacks(["google/gemini-2.5-pro"], models).includes("deepseek/deepseek-v4-pro"));
+    setModelHistory([]);
+    assert.ok(withFallbacks(["google/gemini-2.5-pro"], models).includes("deepseek/deepseek-v4-pro"));
+    // Once the failures age out of the window the configured order is back.
+    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+    // MODEL_HISTORY=off keeps the pools as set.
+    setModelHistory([fails("deepseek/deepseek-v4-pro", 6)]);
+    process.env.MODEL_HISTORY = "off";
+    assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+  } finally {
+    delete process.env.MODEL_HISTORY;
+    setModelHistory([]);
+  }
+});
+
+test("the per-customer pick never explores a member that is poor across customers, nor stands in with one", () => {
+  const pool = ["a/one", "b/two", "c/three"];
+  const price = new Map([["a/one", 1], ["b/two", 2], ["c/three", 0.5]]);
+  const stats = (o: Record<string, [number, number]>) => new Map(Object.entries(o).map(([k, [ok, n]]) => [k, { ok, n }]));
+  const avoid = new Set(["b/two"]);
+  assert.equal(choosePoolModel(pool, stats({ "a/one": [2, 2] }), price, true, avoid).split(",")[0], "c/three");
+  assert.equal(choosePoolModel(pool, stats({ "a/one": [1, 4] }), price, false, avoid).split(",")[0], "c/three");
+  // This customer's own good record still wins.
+  assert.equal(choosePoolModel(pool, stats({ "b/two": [4, 4] }), price, false, avoid).split(",")[0], "b/two");
 });

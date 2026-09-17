@@ -1,5 +1,6 @@
 import { q } from "./db.js";
 import { catalog, modelList } from "./llm.js";
+import { loadModelHistory, noteOutcome, poorModels, rankByRecord } from "./model-history.js";
 import { choosePoolModel, livePool, type Tier } from "./router.js";
 import { playbooksFor } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
@@ -31,6 +32,10 @@ export function taskClassKey(text: string): string {
 export async function recordOutcome(t: Tenant, sessionId: string, cls: string, tier: Tier, ok: boolean, extra: { model?: string; site?: string } = {}): Promise<void> {
   const model = extra.model ? modelList(extra.model)[0] : null;
   await q("insert into task_outcomes (user_id, class, tier, ok, session_id, model, site) values ($1,$2,$3,$4,$5,$6,$7)", [t.id, cls, tier, ok, sessionId, model, extra.site ?? null]);
+  if (model) {
+    noteOutcome(model, ok);
+    console.log(`[outcome] ${model} ${ok ? "ok" : "failed"} (${cls} on ${tier}, ${sessionId})`);
+  }
 }
 
 type Outcome = { tier: Tier; ok: boolean; model: string | null; site: string | null; created_at: Date };
@@ -69,10 +74,14 @@ export async function adaptiveTier(t: Tenant, text: string, tier: Tier, site?: s
 /**
  * The model chain to start a new session on: the tier's pool member with the best record for this
  * kind of task (an untried one every EXPLORE_EVERY tasks, so the affordable models all get measured),
- * ahead of the rest of the pool as fallbacks. The two cheap tiers only; the frontier tiers run their primary.
+ * ahead of the rest of the pool as fallbacks. The two cheap tiers only; the frontier tiers run their
+ * primary. The pool comes ordered by the record across customers first (lib/model-history.ts): a
+ * member that fails for everyone is at the back, never explored, never the stand-in.
  */
 export async function pickModel(t: Tenant, tier: Tier, text: string): Promise<string> {
-  const pool = await livePool(tier, t);
+  await loadModelHistory();
+  const pool = rankByRecord(await livePool(tier, t));
+  const avoid = new Set(poorModels());
   if (pool.length <= 1 || tier === "hard" || tier === "max" || (process.env.POOL_ROUTING ?? "on") === "off") return pool.join(",");
   const rows = (await recentOutcomes(t, taskClassKey(text))).filter((r) => r.tier === tier);
   const stats = new Map<string, { ok: number; n: number }>();
@@ -88,7 +97,7 @@ export async function pickModel(t: Tenant, tier: Tier, text: string): Promise<st
   // Explore only once the primary has proven itself on this kind of task, and never two tasks in a row.
   const primaryOk = (stats.get(pool[0])?.ok ?? 0) >= 1;
   const explore = primaryOk && EXPLORE_EVERY > 0 && rows.length > 0 && rows.length % EXPLORE_EVERY === EXPLORE_EVERY - 1;
-  return choosePoolModel(pool, stats, price, explore);
+  return choosePoolModel(pool, stats, price, explore, avoid);
 }
 
 /** Pure part of the step-down rule, over the last ADAPTIVE_MIN_SUCCESSES outcomes on the lower tier. */

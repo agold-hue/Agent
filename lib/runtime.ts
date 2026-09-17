@@ -15,6 +15,7 @@ import { stubPageResult, stubSearchResult } from "./search.js";
 import { registrableDomain } from "./credentials.js";
 import { learnFromCorrection } from "./learn.js";
 import { detectFixes, gradeReply, keepPromise, recordFixes, suggestReplies } from "./proactive.js";
+import { loadModelHistory } from "./model-history.js";
 import { recordOutcome, taskClassKey } from "./outcomes.js";
 import { readMemory } from "./memory.js";
 import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, quickSystem, sharedSystem, sitesIn, takePrefetch, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
@@ -113,7 +114,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number; l
 async function runLoop(sessionId: string, started: number, budgetMs: number, opts: { noSiblingWait?: boolean }): Promise<RunOutcome> {
   let row = (await getSession(sessionId))!;
   const t = (await tenantById(row.user_id))!;
-  await warmCatalog().catch(() => {});
+  await Promise.all([warmCatalog().catch(() => {}), loadModelHistory()]);
   // The system message is rebuilt every run, so a session started hours ago sees today's prompt,
   // today's settings, and which services (browser, mail, Google) are available right now.
   // Messages typed in quick succession ("add milk", "remind me at 3", "note Sam's number") are one

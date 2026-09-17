@@ -1,4 +1,5 @@
 import { catalog, geminiDirect, modelList, supportsVision } from "./llm.js";
+import { isPoor, modelStats, rankByRecord } from "./model-history.js";
 import type { Tenant } from "./tenant.js";
 
 /**
@@ -6,9 +7,12 @@ import type { Tenant } from "./tenant.js";
  * (any ids your provider accepts, comma-separated in MODEL_<TIER>), not one model. The router's job
  * is to start every request on the cheapest tier that does that kind of work, and within the tier on
  * the pool member with the best record for that kind of task for this customer (lib/outcomes.ts),
- * trying the untried ones now and then so the record fills in. The ladder is climbed on evidence,
- * never by default: the agent's own escalate_model, the loop guard, a site on the hard list, a photo
- * the current model cannot see, or this customer's record of failures on a tier for that kind of task.
+ * trying the untried ones now and then so the record fills in. Across customers, a pool member
+ * whose track record is poor (lib/model-history.ts) goes to the back of its pool in every decision
+ * that names a tier's model, so a model that fails for everyone stops being anyone's first choice.
+ * The ladder is climbed on evidence, never by default: the agent's own escalate_model, the loop
+ * guard, a site on the hard list, a photo the current model cannot see, or this customer's record
+ * of failures on a tier for that kind of task.
  *
  *   MODEL_CHAT  greetings, status, notes, reminders, recall, digests, side replies
  *   MODEL_TASK  browser work: lookups, orders, forms, bookings, research, drafting, accounts
@@ -40,9 +44,39 @@ export function poolFor(tier: Tier, t?: Tenant): string[] {
   return DEFAULT_POOLS[tier];
 }
 
-/** The tier's model chain: the pool in order, the first as primary and the rest as fallbacks. */
+/**
+ * The tier's model chain: the pool with the members the track record marks poor moved to the back,
+ * the first as primary and the rest as fallbacks. Every re-route, escalation, hard-site jump, photo
+ * and split turn goes through here, so a failing model stops being the first choice everywhere at once.
+ */
 export function modelFor(tier: Tier, t?: Tenant): string {
-  return poolFor(tier, t).join(",");
+  return routeFor(tier, t).models.join(",");
+}
+
+export interface Route {
+  tier: Tier;
+  /** The chain in routing order. */
+  models: string[];
+  /** Pool members the track record moved to the back, with their record; empty when the pool is used as set. */
+  demoted: Array<{ model: string; ok: number; n: number }>;
+}
+
+const logged = new Map<string, string>();
+
+/** The tier's route with the reasons, for GET /api/models and the log; logged once per change. */
+export function routeFor(tier: Tier, t?: Tenant): Route {
+  const pool = poolFor(tier, t);
+  const models = rankByRecord(pool);
+  const demoted = pool.filter((m) => isPoor(m)).map((m) => ({ model: m, ok: modelStats(m)?.ok ?? 0, n: modelStats(m)?.n ?? 0 }));
+  const key = `${tier}:${pool.join(",")}`;
+  const line = demoted.length ? `${models[0]} first; ${demoted.map((d) => `${d.model} (${d.ok}/${d.n} ended well)`).join(", ")} moved back` : "";
+  const prev = logged.get(key);
+  if (prev !== line) {
+    logged.set(key, line);
+    if (line) console.log(`[route] ${tier} tier: ${line}`);
+    else if (prev) console.log(`[route] ${tier} tier: back on ${pool[0]}`);
+  }
+  return { tier, models, demoted };
 }
 
 /** The pool with only the ids the live catalog knows (all of them when the catalog is unreachable). */
@@ -58,9 +92,10 @@ export async function livePool(tier: Tier, t?: Tenant): Promise<string[]> {
  * The pool member to start a new session on, given the record for this kind of task: the best
  * success rate among members with enough outcomes (ties to the cheaper), an untried member now and
  * then so every affordable model gets its chance, else the primary. Returns the chain with the pick
- * first and the rest as fallbacks.
+ * first and the rest as fallbacks. Members in `avoid` (poor across customers) are never explored and
+ * never the stand-in for a failing primary; only this customer's own good record can still pick one.
  */
-export function choosePoolModel(pool: string[], stats: Map<string, { ok: number; n: number }>, price: Map<string, number>, explore: boolean): string {
+export function choosePoolModel(pool: string[], stats: Map<string, { ok: number; n: number }>, price: Map<string, number>, explore: boolean, avoid: Set<string> = new Set()): string {
   const MIN_SAMPLES = 2;
   const GOOD = 0.75;
   const rate = (id: string) => {
@@ -68,13 +103,13 @@ export function choosePoolModel(pool: string[], stats: Map<string, { ok: number;
     return s && s.n >= MIN_SAMPLES ? s.ok / s.n : undefined;
   };
   const proven = pool.filter((id) => (rate(id) ?? 0) >= GOOD).sort((a, b) => rate(b)! - rate(a)! || (price.get(a) ?? 99) - (price.get(b) ?? 99) || pool.indexOf(a) - pool.indexOf(b));
-  const untried = pool.filter((id) => !stats.has(id));
+  const untried = pool.filter((id) => !stats.has(id) && !avoid.has(id));
   let pick = pool[0];
   if (explore && untried.length) pick = untried[0];
   else if (proven.length) pick = proven[0];
   else if ((rate(pool[0]) ?? 1) < 0.5) {
     // The primary keeps failing this kind of task: the next member with no bad record.
-    const other = pool.find((id) => id !== pool[0] && (rate(id) ?? 1) >= 0.5);
+    const other = pool.find((id) => id !== pool[0] && !avoid.has(id) && (rate(id) ?? 1) >= 0.5);
     if (other) pick = other;
   }
   return [pick, ...pool.filter((id) => id !== pick)].join(",");

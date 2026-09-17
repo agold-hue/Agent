@@ -3,6 +3,7 @@
  * providers), DeepSeek, Google's Gemini OpenAI endpoint, OpenAI, or Anthropic through OpenRouter.
  * No SDK; plain fetch.
  */
+import { isPoor } from "./model-history.js";
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
@@ -683,6 +684,7 @@ export function withFallbacks(configured: string[], models: CatalogModel[], max 
   const candidates = models.filter(
     (m) =>
       !configured.includes(m.id) &&
+      !isPoor(m.id) &&
       m.tools &&
       (!vision || m.vision) &&
       FALLBACK_VENDORS.includes(vendorOf(m.id)) &&

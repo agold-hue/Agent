@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireTenant } from "../../../lib/auth.js";
 import { currentChatSession, startChatSession } from "../../../lib/chat.js";
 import { ingestFile } from "../../../lib/docstore.js";
+import { loadModelHistory } from "../../../lib/model-history.js";
 import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { atLeastModel, visionTier } from "../../../lib/router.js";
 import { appendToolResult, appendUserMessage, updateSession, type SessionRow } from "../../../lib/sessions.js";
@@ -70,6 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (session && !session.pending_kind && chatSessionExhausted(session)) session = undefined; // roll over to a fresh task
   // A bill, a statement, a photo of something: reading it well is judgment work, so it runs on the
   // strong model whatever tier the thread started on (never down mid-conversation).
+  await loadModelHistory();
   const lifted = session ? atLeastModel(session.model ?? "", images ? visionTier("task", t) : "task", t) : undefined;
   if (session && lifted) await updateSession(session.id, { model: lifted });
   if (!session) session = await startChatSession(t, `${text}\n${handle}`, images);
