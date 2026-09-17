@@ -193,3 +193,49 @@ test("ledger summary: charges, refunds, pending and $0 lines split by the host w
   assert.match(text, /money back \(refunds, credits\): \$73\.41/);
   assert.match(text, /no cash moved/);
 });
+
+test("learning every step: a checkpoint never displaces a path that worked, a finish replaces the checkpoint, unfinished ones are kept apart and marked", async () => {
+  const { currentSite, parsePages, visitedPages, withPages } = await import("../lib/browser-extras.js");
+  const steps = [{ kind: "goto" as const, url: "https://secure.chase.com/web/auth/dashboard" }, { kind: "click" as const, label: "Accounts" }];
+  let note = withPath("# chase.com\n", { name: "check my chase balance", date: "2026-09-10", steps });
+  // A checkpoint of the same name sits behind the path that worked, marked.
+  note = withPath(note, { name: "check my chase balance", date: "2026-09-17", steps: [...steps, { kind: "click", label: "Statements" }], status: "in progress" });
+  let paths = parsePaths(note);
+  assert.deepEqual(paths.map((p) => [p.date, p.status ?? "worked", p.steps.length]), [["2026-09-10", "worked", 2], ["2026-09-17", "in progress", 3]]);
+  assert.match(note, /### check my chase balance \(2026-09-17, in progress\)/);
+  // The task stops: the checkpoint becomes unfinished; the one that worked is still first, so a replay by name picks it.
+  note = withPath(note, { name: "check my chase balance", date: "2026-09-17", steps: [...steps, { kind: "click", label: "Statements" }], status: "unfinished" });
+  paths = parsePaths(note);
+  assert.deepEqual(paths.map((p) => p.status ?? "worked"), ["worked", "unfinished"]);
+  // A later task of that name ends well: one entry, worked, the partial one gone.
+  note = withPath(note, { name: "check my chase balance", date: "2026-09-18", steps: [...steps, { kind: "click", label: "Statements" }] });
+  paths = parsePaths(note);
+  assert.deepEqual(paths.map((p) => [p.date, p.status ?? "worked"]), [["2026-09-18", "worked"]]);
+  // At most two partial paths, after the ones that worked.
+  for (const n of ["a", "b", "c"]) note = withPath(note, { name: n, date: "2026-09-18", steps, status: "in progress" });
+  assert.deepEqual(parsePaths(note).map((p) => p.name), ["check my chase balance", "c", "b"]);
+
+  // The pages index from the task's browser results: titles and URLs, walls and sign-in screens and tokened URLs left out, one per URL, newest last.
+  const messages: ChatMessage[] = [
+    { role: "system", content: "s" },
+    { role: "user", content: "check my chase balance" },
+    { role: "assistant", content: null, tool_calls: [{ id: "g1", type: "function", function: { name: "browser_goto", arguments: JSON.stringify({ url: "https://www.chase.com/" }) } }] },
+    { role: "tool", tool_call_id: "g1", content: "Sign in to Chase\nhttps://secure.chase.com/web/auth/#/logon/logon/chaseOnline\n[1] textbox \"Username\"" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "browser_click", arguments: JSON.stringify({ text: "Accounts" }) } }] },
+    { role: "tool", tool_call_id: "c1", content: "Accounts overview | Chase\nhttps://secure.chase.com/web/auth/dashboard#/dashboard/overview\n[1] link \"Statements\"" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "browser_click", arguments: JSON.stringify({ text: "Statements" }) } }] },
+    { role: "tool", tool_call_id: "c2", content: "Statements & documents\nhttps://secure.chase.com/web/auth/dashboard#/dashboard/statements?token=abc\n[1] link \"August\"" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c3", type: "function", function: { name: "browser_click", arguments: JSON.stringify({ text: "Overview" }) } }] },
+    { role: "tool", tool_call_id: "c3", content: "Accounts overview | Chase\nhttps://secure.chase.com/web/auth/dashboard#/dashboard/overview\n[1] link \"Statements\"" },
+    { role: "assistant", content: null, tool_calls: [{ id: "m1", type: "function", function: { name: "memory_read", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "m1", content: "Other\nhttps://example.com/not-a-browser-result" },
+  ];
+  const pages = visitedPages(messages, "chase.com");
+  assert.deepEqual(pages, [{ title: "Accounts overview | Chase", url: "https://secure.chase.com/web/auth/dashboard#/dashboard/overview" }]);
+  assert.equal(currentSite(messages), "chase.com");
+  let indexed = withPages("# chase.com\n\n## Quirks\n- slow\n", pages);
+  indexed = withPages(indexed, [{ title: "Pay bills", url: "https://secure.chase.com/web/auth/dashboard#/dashboard/payments" }, ...pages]);
+  assert.deepEqual(parsePages(indexed).map((p) => p.title), ["Pay bills", "Accounts overview | Chase"]);
+  assert.match(indexed, /## Quirks\n- slow/);
+  assert.equal(indexed.match(/## Pages seen/g)?.length, 1);
+});

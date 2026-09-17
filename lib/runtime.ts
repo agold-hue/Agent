@@ -1,6 +1,6 @@
 import { releaseBrowser } from "./browser.js";
 import { batchConfigured, enqueue } from "./batch.js";
-import { recordPaths } from "./browser-extras.js";
+import { checkpointPaths, recordPaths } from "./browser-extras.js";
 import { closeTab, disconnectBrowser, runBrowserTool } from "./browser-tools.js";
 import { q } from "./db.js";
 import { env } from "./env.js";
@@ -524,6 +524,13 @@ async function runLoop(sessionId: string, started: number, budgetMs: number, opt
         }
       }
 
+      // Learning every step: the browser steps so far on this site are checkpointed as a path and the
+      // pages reached go in the site's index, so a task that stops anywhere still leaves what worked.
+      if ((row.kind === "chat" || row.kind === "task") && calls.some((c) => c.function.name.startsWith("browser_"))) {
+        const site = await checkpointPaths(t, row).catch(() => undefined);
+        if (site) console.log(`[paths] ${row.id} #${row.turns} checkpoint ${site}`);
+      }
+
       // The page did not change after two actions: a person would try a different route now. The host
       // lists the ones not yet tried (site-note URLs, recorded paths, find-by-label, search), once per task.
       if ((row.kind === "chat" || row.kind === "task") && pageStuck(row.messages) && !hasHostNotePrefix(row.messages, ROUTES_PREFIX)) {
@@ -739,12 +746,14 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
     }
     if (status === "idle" && report && taskUsedTools(row.messages)) await gradeReply(t, row, report).catch(() => {});
   }
-  // A browser task that ended well: what it did on each site becomes a replayable path in the site note.
-  if (status === "idle" && (row.kind === "chat" || row.kind === "task") && !failedWords) {
-    const domains = [...siteActivity(row.messages).visited].filter(([, n]) => n >= 3).map(([d]) => d);
+  // A browser task that ended well: what it did on each site becomes a path that worked in the site
+  // note. One that stopped keeps its checkpoint, marked unfinished, so the next task starts from it.
+  if (row.kind === "chat" || row.kind === "task") {
+    const finished = status === "idle" && !failedWords;
+    const domains = [...siteActivity(row.messages).visited].filter(([, n]) => n >= (finished ? 3 : 2)).map(([d]) => d);
     if (domains.length) {
-      const written = await recordPaths(t, row, domains, report).catch(() => [] as string[]);
-      if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}`);
+      const written = await recordPaths(t, row, domains, report, finished).catch(() => [] as string[]);
+      if (written.length) console.log(`[paths] ${row.id}: recorded ${written.join(", ")}${finished ? "" : " (unfinished)"}`);
     }
   }
   // A message that landed while we were finishing: flip back to running and re-kick so it gets

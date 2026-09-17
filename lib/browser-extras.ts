@@ -4,7 +4,7 @@ import type { BrowserHandle } from "./browser.js";
 import { findCredential, recordLoginOutcome, registrableDomain } from "./credentials.js";
 import type { ChatMessage } from "./llm.js";
 import { readMemory, writeMemory } from "./memory.js";
-import { taskStart, type SessionRow } from "./sessions.js";
+import { taskStart, taskUserText, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
 /**
@@ -353,7 +353,7 @@ export const RISKY_LABEL = /\b(pay|payment|place (your |the )?order|buy( now)?|p
 const SECRET_FIELD = /pass(word)?|code|otp|one[- ]time|cvv|cvc|card|ssn|social|secur|pin\b/i;
 const MAX_PATH_STEPS = 25;
 const PATHS_HEADING = "## Recorded paths";
-const PATHS_NOTE = "(host-written from tasks that worked; browser_run_path replays one and stops before anything that pays, sends, cancels or deletes)";
+const PATHS_NOTE = "(host-written after every browser step; a path marked 'in progress' or 'unfinished' is from a task still running or one that stopped, so it may stop short; browser_run_path replays one and stops before anything that pays, sends, cancels or deletes)";
 
 /** The label the model saw for a ref: the `[ref] role "label"` line in the last browser result before this call. */
 function labelForRef(prevResult: string | undefined, r: string): string | undefined {
@@ -464,6 +464,8 @@ export interface RecordedPath {
   name: string;
   date: string;
   steps: PathStep[];
+  /** Absent or "worked": from a task that ended well. "in progress": the task is still running. "unfinished": the task stopped. */
+  status?: "worked" | "in progress" | "unfinished";
 }
 
 // ---------------- recorded readers: where a figure lives on a page, so next time the host reads it without the model
@@ -576,25 +578,139 @@ export function parsePaths(note: string): RecordedPath[] {
   const section = end >= 0 ? rest.slice(0, end) : rest;
   const out: RecordedPath[] = [];
   for (const block of section.split(/\n(?=### )/)) {
-    const m = block.match(/^### (.+?) \((\d{4}-\d{2}-\d{2})\)\n([\s\S]*)$/);
+    const m = block.match(/^### (.+?) \((\d{4}-\d{2}-\d{2})(?:, (in progress|unfinished))?\)\n([\s\S]*)$/);
     if (!m) continue;
-    const steps = parseSteps(m[3]);
-    if (steps.length) out.push({ name: m[1].trim(), date: m[2], steps });
+    const steps = parseSteps(m[4]);
+    if (steps.length) out.push({ name: m[1].trim(), date: m[2], steps, ...(m[3] ? { status: m[3] as RecordedPath["status"] } : {}) });
   }
   return out;
 }
 
-/** The note with one path added or replaced (same name), newest first, at most five kept; the rest of the note is untouched. */
+const worked = (p: RecordedPath) => !p.status || p.status === "worked";
+const pathHeading = (p: RecordedPath) => `### ${p.name} (${p.date}${worked(p) ? "" : `, ${p.status}`})`;
+
+/**
+ * The note with one path added or replaced, newest first; the rest of the note is untouched. A path
+ * that worked replaces every entry of its name and at most five are kept. A checkpoint ("in progress")
+ * or an "unfinished" one replaces only the partial entry of its name, never a path that worked, and at
+ * most two partial ones are kept, after the ones that worked.
+ */
 export function withPath(note: string, path: RecordedPath): string {
-  const existing = parsePaths(note).filter((p) => p.name.toLowerCase() !== path.name.toLowerCase());
-  const paths = [path, ...existing].slice(0, 5);
-  const section = `${PATHS_HEADING}\n${PATHS_NOTE}\n${paths.map((p) => `### ${p.name} (${p.date})\n${formatSteps(p.steps)}`).join("\n\n")}\n`;
+  const same = (p: RecordedPath) => p.name.toLowerCase() === path.name.toLowerCase();
+  const existing = parsePaths(note).filter((p) => !same(p) || (!worked(path) && worked(p)));
+  const all = [path, ...existing];
+  const paths = [...all.filter(worked).slice(0, 5), ...all.filter((p) => !worked(p)).slice(0, 2)];
+  const section = `${PATHS_HEADING}\n${PATHS_NOTE}\n${paths.map((p) => `${pathHeading(p)}\n${formatSteps(p.steps)}`).join("\n\n")}\n`;
   const start = note.indexOf(PATHS_HEADING);
   if (start < 0) return `${note.trimEnd()}\n\n${section}`.trimStart();
   const rest = note.slice(start + PATHS_HEADING.length);
   const end = rest.search(/\n## /);
   const tail = end >= 0 ? rest.slice(end + 1) : "";
   return `${note.slice(0, start)}${section}${tail ? `\n${tail}` : ""}`;
+}
+
+// ---------------- pages seen: the pages a site's tasks reached, by title, so the next task opens one directly
+
+export interface SeenPage {
+  title: string;
+  url: string;
+}
+const PAGES_HEADING = "## Pages seen";
+const PAGES_NOTE = "(host-written after every browser step: the pages this site's tasks reached, by title; browser_goto one directly instead of clicking through menus)";
+const PAGES_MAX = 25;
+/** Pages that teach nothing: walls, sign-in screens, errors, blank titles. */
+const UNHELPFUL_PAGE = /verify you are human|are you a robot|captcha|access denied|sign in|log in|login|logon|sign on|error|not found|just a moment|loading/i;
+/** Query parameters that carry a session, a token or a code: a URL with one is not a page to come back to. */
+const SECRET_PARAM = /[?&](token|code|session|sid|auth|key|sig|signature|nonce|state|otp|ticket)=/i;
+
+/** The pages the task's browser results on this site showed: the title and URL lines a snapshot starts with, newest last, one per URL. */
+export function visitedPages(messages: ChatMessage[], domain: string): SeenPage[] {
+  const calls = new Map<string, string>();
+  for (const m of messages) for (const c of m.tool_calls ?? []) calls.set(c.id, c.function.name);
+  const byUrl = new Map<string, SeenPage>();
+  for (let i = taskStart(messages); i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== "tool" || !m.tool_call_id || typeof m.content !== "string" || !calls.get(m.tool_call_id)?.startsWith("browser_")) continue;
+    const head = m.content.match(/^([^\n]{1,120})\n(https?:\/\/\S+)/);
+    if (!head) continue;
+    const title = head[1].replace(/\s+/g, " ").trim();
+    const url = head[2].replace(/\/$/, "");
+    if (registrableDomain(url) !== domain || !title || UNHELPFUL_PAGE.test(title) || SECRET_PARAM.test(url) || url.length > 300) continue;
+    byUrl.delete(url);
+    byUrl.set(url, { title: title.slice(0, 80), url });
+  }
+  return [...byUrl.values()];
+}
+
+export function parsePages(note: string): SeenPage[] {
+  const start = note.indexOf(PAGES_HEADING);
+  if (start < 0) return [];
+  const rest = note.slice(start + PAGES_HEADING.length);
+  const end = rest.search(/\n## /);
+  const section = end >= 0 ? rest.slice(0, end) : rest;
+  const out: SeenPage[] = [];
+  for (const line of section.split("\n")) {
+    const m = line.match(/^- (.+?): (https?:\/\/\S+)$/);
+    if (m) out.push({ title: m[1], url: m[2] });
+  }
+  return out;
+}
+
+/** The note with these pages merged into its index (newest last, one per URL, the last PAGES_MAX kept); the rest untouched. */
+export function withPages(note: string, pages: SeenPage[]): string {
+  const byUrl = new Map<string, SeenPage>();
+  for (const p of [...parsePages(note), ...pages]) {
+    byUrl.delete(p.url);
+    byUrl.set(p.url, p);
+  }
+  const merged = [...byUrl.values()].slice(-PAGES_MAX);
+  const section = `${PAGES_HEADING}\n${PAGES_NOTE}\n${merged.map((p) => `- ${p.title}: ${p.url}`).join("\n")}\n`;
+  const start = note.indexOf(PAGES_HEADING);
+  if (start < 0) return `${note.trimEnd()}\n\n${section}`;
+  const rest = note.slice(start + PAGES_HEADING.length);
+  const end = rest.search(/\n## /);
+  const tail = end >= 0 ? rest.slice(end + 1) : "";
+  return `${note.slice(0, start)}${section}${tail ? `\n${tail}` : ""}`;
+}
+
+/** The site the browser is on: the URL in the task's latest browser result. */
+export function currentSite(messages: ChatMessage[]): string | undefined {
+  const calls = new Map<string, string>();
+  for (const m of messages) for (const c of m.tool_calls ?? []) calls.set(c.id, c.function.name);
+  for (let i = messages.length - 1; i >= taskStart(messages); i--) {
+    const m = messages[i];
+    if (m.role !== "tool" || !m.tool_call_id || typeof m.content !== "string" || !calls.get(m.tool_call_id)?.startsWith("browser_")) continue;
+    const u = m.content.match(/^(?:[^\n]*\n)?(https?:\/\/\S+)/) ?? m.content.match(/-> (https?:\/\/\S+)/);
+    if (u) return registrableDomain(u[1]);
+  }
+  return undefined;
+}
+
+/** The name a task's paths are recorded under: the request itself (a chat thread runs many), else the session title. */
+function taskPathName(row: SessionRow): string {
+  return pathName(taskUserText(row.messages) || row.title || "");
+}
+
+/**
+ * Learning every browser step: the steps so far on the site the browser is on become a path marked
+ * "in progress" in the site note, and every page reached goes in the pages index. A task that stops
+ * anywhere (a limit, a provider error, a takeover, a wrong turn later) still leaves what worked, and
+ * the next task on the site starts from it. One memory read and, when something changed, one write.
+ */
+export async function checkpointPaths(t: Tenant, row: SessionRow): Promise<string | undefined> {
+  const name = taskPathName(row);
+  const domain = currentSite(row.messages);
+  if (!name || !domain) return undefined;
+  const steps = recordedSteps(row.messages, domain);
+  const pages = visitedPages(row.messages, domain);
+  if (!steps.length && !pages.length) return undefined;
+  const path = `sites/${domain}.md`;
+  const before = (await readMemory(t, path).catch(() => null)) ?? `# ${domain}\n`;
+  let note = before;
+  if (steps.length) note = withPath(note, { name, date: new Date().toISOString().slice(0, 10), steps, status: "in progress" });
+  if (pages.length) note = withPages(note, pages);
+  if (note !== before) await writeMemory(t, path, note);
+  return domain;
 }
 
 /** A path name from the task: its title or first line, short and plain. */
@@ -610,20 +726,22 @@ export function pathName(title: string): string {
 }
 
 /**
- * After a browser task that succeeded: record what it did on each site as a replayable path in
- * sites/<domain>.md. Returns the domains written. Never records secrets or risky steps (see recordedSteps).
+ * When a browser task ends: what it did on each site becomes a replayable path in sites/<domain>.md,
+ * as one that worked when the task ended well (its checkpoint is replaced, and the figures in the
+ * reply get readers), else as "unfinished" (the checkpoint stays, marked, so the next task knows it
+ * may stop short). Returns the domains written. Never records secrets or risky steps (see recordedSteps).
  */
-export async function recordPaths(t: Tenant, row: SessionRow, domains: string[], report = ""): Promise<string[]> {
-  const name = pathName(row.title ?? "");
+export async function recordPaths(t: Tenant, row: SessionRow, domains: string[], report = "", finished = true): Promise<string[]> {
+  const name = taskPathName(row);
   if (!name) return [];
   const written: string[] = [];
   for (const domain of domains) {
     const steps = recordedSteps(row.messages, domain);
-    const readers = recordedReaders(row.messages, domain, report);
+    const readers = finished ? recordedReaders(row.messages, domain, report) : [];
     if (!steps.length && !readers.length) continue;
     const path = `sites/${domain}.md`;
     let note = (await readMemory(t, path).catch(() => null)) ?? `# ${domain}\n`;
-    if (steps.length) note = withPath(note, { name, date: new Date().toISOString().slice(0, 10), steps });
+    if (steps.length) note = withPath(note, { name, date: new Date().toISOString().slice(0, 10), steps, ...(finished ? {} : { status: "unfinished" as const }) });
     if (readers.length) note = withReaders(note, readers);
     await writeMemory(t, path, note);
     if (steps.length) {
@@ -695,6 +813,7 @@ export async function replayPath(t: Tenant, row: SessionRow, domainArg: string, 
     // The figures this site's tasks usually end with, read straight off the page.
     const readers = note ? parseReaders(note).filter((r) => registrableDomain(r.url) === registrableDomain(page.url())) : [];
     const values = readers.length ? applyReaders(await pageText(page).catch(() => ""), readers) : [];
-    return `path "${path.name}" replayed (${path.steps.length} steps, ${((Date.now() - started) / 1000).toFixed(1)}s) -> ${page.url()}${values.length ? `\nread off the page: ${values.join("; ")}` : ""}\n\n${snap}`;
+    const caveat = worked(path) ? "" : ` (recorded from a task that did not finish, so the page may not be the goal yet)`;
+    return `path "${path.name}" replayed (${path.steps.length} steps, ${((Date.now() - started) / 1000).toFixed(1)}s)${caveat} -> ${page.url()}${values.length ? `\nread off the page: ${values.join("; ")}` : ""}\n\n${snap}`;
   });
 }
