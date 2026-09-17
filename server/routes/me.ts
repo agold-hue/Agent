@@ -3,7 +3,7 @@ import { requireTenant } from "../../lib/auth.js";
 import { monthUsageCents } from "../../lib/sessions.js";
 import { env } from "../../lib/env.js";
 import { one } from "../../lib/db.js";
-import { sttConfigured } from "../../lib/stt.js";
+import { sttConfigured, sttFormats, sttRoute } from "../../lib/stt.js";
 import { agentAddress, hasAccess, updateSettings, type TenantSettings } from "../../lib/tenant.js";
 
 const SETTABLE: Array<keyof TenantSettings> = [
@@ -65,6 +65,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     current_period_end: t.currentPeriodEnd,
     google_connected: !!t.googleRefreshToken,
     voice_notes: sttConfigured(),
+    // What the page needs to record something this deploy can actually transcribe: empty means any
+    // format, a list means record in one of these (an audio-capable chat model takes no webm).
+    voice_formats: sttFormats(),
+    voice_route: sttRoute().how,
     access: hasAccess(t),
     billing_enabled: env.stripe.configured(),
     browser_enabled: env.browserbase.configured(),

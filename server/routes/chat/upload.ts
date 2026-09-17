@@ -7,7 +7,7 @@ import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
 import { atLeastModel, visionTier } from "../../../lib/router.js";
 import { appendToolResult, appendUserMessage, updateSession, type SessionRow } from "../../../lib/sessions.js";
 import { stampMessage } from "../../../lib/transcript.js";
-import { isAudio, sttConfigured, transcribe } from "../../../lib/stt.js";
+import { isAudio, sttConfigured, sttRoute, transcribe } from "../../../lib/stt.js";
 
 /**
  * An attachment (or voice note) while the agent is waiting on the user: it IS the answer (a screenshot
@@ -41,12 +41,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Held-to-record in the app, or an audio file picked or dropped in (an iPhone memo, a WhatsApp note):
   // either way it is the user talking, so it becomes a spoken message rather than an attachment.
   if (isAudio(mime, body.filename) || body.voice) {
-    if (!sttConfigured()) return res.status(501).json({ error: "voice notes are not enabled on this server; use the dictation button instead" });
+    // `fallback: "dictation"` tells the page to switch to the browser's own dictation and stay there:
+    // this deploy cannot turn audio into words, and recording again would fail the same way.
+    if (!sttConfigured()) return res.status(501).json({ error: `voice notes cannot be transcribed here: ${sttRoute().detail}`, fallback: "dictation" });
     let spoken: string;
     try {
       spoken = await transcribe(content, body.filename, mime);
     } catch (e) {
-      return res.status(502).json({ error: (e as Error).message });
+      const error = (e as Error).message;
+      console.error(`[upload] voice note ${body.filename} (${mime}, ${content.length} bytes) via ${sttRoute().how}: ${error}`);
+      // A format this deploy's route cannot take is a permanent no for this browser, not a bad note.
+      return res.status(/does not take/.test(error) ? 501 : 502).json({ error, ...(/does not take/.test(error) ? { fallback: "dictation" } : {}) });
     }
     if (!spoken) return res.status(422).json({ error: "could not hear anything in that note" });
     let session = await currentChatSession(t);

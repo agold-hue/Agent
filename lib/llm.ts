@@ -14,7 +14,12 @@ export interface ToolCall {
 }
 
 export type CacheControl = { type: "ephemeral" };
-export type ContentPart = { type: "text"; text: string; cache_control?: CacheControl } | { type: "image_url"; image_url: { url: string } } | { type: "file"; file: { filename: string; file_data: string } };
+export type ContentPart =
+  | { type: "text"; text: string; cache_control?: CacheControl }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "file"; file: { filename: string; file_data: string } }
+  /** A voice note handed to an audio-capable model (base64, no data: prefix), the OpenAI-compatible shape Gemini and OpenRouter both take. */
+  | { type: "input_audio"; input_audio: { data: string; format: string } };
 
 export interface ChatMessage {
   role: Role;

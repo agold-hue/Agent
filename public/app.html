@@ -1225,40 +1225,135 @@
       } catch (e) { note.text = `Could not attach ${f.name}: ${e.message}`; renderList(false); }
     }
   });
-  function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; const has = !!t.value.trim(); $("send").hidden = !has; $("mic").hidden = has || $("mic").dataset.gone === "1"; renderSmart(); }
+  function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; const has = !!t.value.trim(); $("send").hidden = !has; $("mic").hidden = (has && !recorder) || $("mic").dataset.gone === "1"; renderSmart(); }
   $("text").addEventListener("input", autosize);
   $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } if (e.key === "Escape") { replyTo = null; $("replyCard").hidden = true; $("emojiDrawer").hidden = true; $("emojiBtn").classList.remove("on"); } });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
   $("emojiBtn").onclick = () => { const d = $("emojiDrawer"); if (d.hidden && !d.childElementCount) d.innerHTML = DRAWER.map((em) => `<button type="button" class="drawerEm">${em}</button>`).join(""); d.hidden = !d.hidden; $("emojiBtn").classList.toggle("on", !d.hidden); d.querySelectorAll("button").forEach((b) => b.onclick = () => { const t = $("text"); const s0 = t.selectionStart ?? t.value.length; t.value = t.value.slice(0, s0) + b.textContent + t.value.slice(s0); t.focus(); t.selectionStart = t.selectionEnd = s0 + b.textContent.length; autosize(); }); };
-  // Voice: hold the mic to record a voice note (server transcribes) when enabled; otherwise browser dictation.
-  let micReady = false;
+  // Voice: tap the mic to start, tap again to send; holding it and letting go sends too. The browser's
+  // own dictation is the fallback when this deploy cannot transcribe audio, or the browser cannot record.
+  let micReady = false, dictateOnly = false, recorder = null, recTimer = null, recStart = 0;
+  function micHint(text) { const t = $("text"); t.placeholder = text || t.dataset.placeholder || "Message"; }
+  function canRecord() { return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
+  // Record in something the server can actually transcribe: /api/me says which formats its route takes
+  // (an audio-capable chat model takes m4a/ogg/wav but no webm); an empty list means anything goes.
+  function pickMime() {
+    const want = (me.voice_formats && me.voice_formats.length) ? me.voice_formats : null;
+    const all = [["audio/mp4", "m4a"], ["audio/mpeg", "mp3"], ["audio/ogg;codecs=opus", "ogg"], ["audio/ogg", "ogg"], ["audio/wav", "wav"], ["audio/webm;codecs=opus", "webm"], ["audio/webm", "webm"]];
+    const ok = all.filter(([mime, ext]) => (!want || want.includes(ext)) && MediaRecorder.isTypeSupported(mime));
+    if (ok.length) return { mime: ok[0][0], ext: ok[0][1] };
+    // Nothing this browser records is on the server's list: record anyway and let it answer, so the
+    // reason shows up in the chat instead of the button doing nothing.
+    const any = all.find(([mime]) => MediaRecorder.isTypeSupported(mime));
+    return any ? { mime: any[0], ext: any[1] } : { mime: "", ext: "webm" };
+  }
+  function paintRec(on) {
+    const mic = $("mic");
+    mic.classList.toggle("rec", on);
+    mic.title = on ? "Tap to send" : dictateOnly ? "Dictate" : "Tap to record a voice note";
+    if (!on) { clearInterval(recTimer); recTimer = null; micHint(""); return; }
+    const tick = () => { const s = Math.round((Date.now() - recStart) / 1000); micHint(`● Recording ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} — tap the mic to send`); };
+    tick(); recTimer = setInterval(tick, 500);
+  }
+  async function startRec() {
+    if (recorder) return;
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch { micHint(""); optimistic("🎤 Microphone blocked — allow it in the browser's site settings."); renderList(false); return; }
+    const { mime, ext } = pickMime();
+    try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (err) {
+      stream.getTracks().forEach((t) => t.stop());
+      recorder = null; micHint("");
+      optimistic(`🎤 This browser cannot record audio (${err.message}). Type it, or email the note in.`); renderList(false);
+      return;
+    }
+    const chunks = [];
+    recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(chunks, { type: recorder.mimeType || mime || "audio/webm" });
+      const secs = (Date.now() - recStart) / 1000;
+      recorder = null; paintRec(false);
+      if (secs < 0.7 || blob.size < 1200) { micHint("Too short — tap the mic and speak."); setTimeout(() => micHint(""), 2500); return; }
+      await sendVoice(blob, ext);
+    };
+    recStart = Date.now();
+    try { recorder.start(); }
+    catch (err) {
+      stream.getTracks().forEach((t) => t.stop());
+      recorder = null; micHint("");
+      optimistic(`🎤 Recording would not start (${err.message}).`); renderList(false);
+      return;
+    }
+    paintRec(true);
+    try { navigator.vibrate?.(15); } catch {}
+    // A note left running (a pocket, a forgotten tap) stops on its own, well under the upload limit.
+    setTimeout(() => { if (recorder && recorder.state === "recording") stopRec(); }, 120_000);
+  }
+  function stopRec() { if (recorder && recorder.state === "recording") recorder.stop(); }
+  function dictate() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { optimistic("🎤 This browser cannot record or dictate — type it, or email the note in."); renderList(false); return; }
+    const r = new SR(); r.lang = navigator.language || "en-US";
+    $("mic").classList.add("rec");
+    r.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); };
+    r.onend = () => $("mic").classList.remove("rec");
+    r.start();
+  }
   function setupMic() {
     if (micReady) return; micReady = true;
     const mic = $("mic");
-    if (me.voice_notes && navigator.mediaDevices && window.MediaRecorder) {
-      mic.title = "Hold to record a voice note";
-      let rec = null, chunks = [], startedAt = 0;
-      const start = async (e) => { e.preventDefault(); if (rec) return; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : ""; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); chunks = []; rec.ondataavailable = (ev) => chunks.push(ev.data); rec.onstop = async () => { stream.getTracks().forEach((t) => t.stop()); const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" }); rec = null; mic.classList.remove("rec"); if (Date.now() - startedAt < 600 || blob.size < 1000) return; await sendVoice(blob); }; rec.start(); startedAt = Date.now(); mic.classList.add("rec"); try { navigator.vibrate?.(15); } catch {} } catch { alert("Microphone not available."); rec = null; } };
-      const stop = (e) => { if (e) e.preventDefault(); if (rec && rec.state === "recording") rec.stop(); };
-      mic.addEventListener("pointerdown", start); mic.addEventListener("pointerup", stop); mic.addEventListener("pointerleave", stop); mic.addEventListener("pointercancel", stop);
-      mic.addEventListener("contextmenu", (e) => e.preventDefault());
-      return;
-    }
+    const t = $("text"); t.dataset.placeholder = t.placeholder;
+    dictateOnly = !me.voice_notes || !canRecord();
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { mic.hidden = true; mic.dataset.gone = "1"; return; }
-    mic.title = "Dictate";
-    mic.onclick = () => { const r = new SR(); r.lang = navigator.language || "en-US"; mic.classList.add("rec"); r.onresult = (ev) => { $("text").value = (($("text").value + " ") + ev.results[0][0].transcript).trim(); autosize(); }; r.onend = () => { mic.classList.remove("rec"); }; r.start(); };
+    if (dictateOnly && !SR) { mic.hidden = true; mic.dataset.gone = "1"; return; }
+    mic.title = dictateOnly ? "Dictate" : "Tap to record a voice note";
+    // One tap starts, the next sends; press-and-hold sends on release. Pointer capture keeps a finger
+    // that slides off the button from cancelling the recording, which is most of a hold on a phone.
+    // The start is async (the microphone prompt), so a press that is released before the recorder
+    // exists is settled when it does: a quick tap leaves it running, a long press sends it.
+    let pressId = 0, releasedPress = 0, pressedAt = Date.now(), heldMs = 0, stopOnRelease = false;
+    mic.addEventListener("pointerdown", async (e) => {
+      e.preventDefault();
+      try { mic.setPointerCapture(e.pointerId); } catch {}
+      pressedAt = Date.now();
+      if (dictateOnly) return;
+      if (recorder) { stopOnRelease = true; return; } // pressing again while recording: send on release
+      const press = ++pressId;
+      await startRec();
+      if (releasedPress === press && heldMs > 500) stopRec(); // they held it and already let go
+    });
+    const release = (e) => {
+      if (e) e.preventDefault();
+      heldMs = Date.now() - pressedAt;
+      releasedPress = pressId;
+      if (dictateOnly) { dictate(); return; }
+      if (stopOnRelease) { stopOnRelease = false; stopRec(); return; }
+      if (recorder && heldMs > 500) stopRec(); // held down: letting go sends it
+      // A quick tap: keep recording until the next tap.
+    };
+    mic.addEventListener("pointerup", release);
+    mic.addEventListener("pointercancel", () => { stopOnRelease = false; });
+    mic.addEventListener("contextmenu", (e) => e.preventDefault());
   }
-  async function sendVoice(blob) {
+  async function sendVoice(blob, ext) {
     const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(blob); });
     const note = optimistic("🎤 sending voice note…");
     try {
-      const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
-      const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: `voice.${ext}`, mimeType: blob.type || "audio/webm", data, voice: true }) });
-      const out = await r.json(); if (!r.ok) throw new Error(out.error || r.status);
+      const r = await api("/api/chat/upload", { method: "POST", body: JSON.stringify({ filename: `voice.${ext || "webm"}`, mimeType: blob.type || "audio/webm", data, voice: true }) });
+      const out = await r.json();
+      if (!r.ok) {
+        // The server cannot transcribe at all, or not this format: stop recording and dictate instead.
+        if (out.fallback === "dictation") { dictateOnly = true; $("mic").title = "Dictate"; }
+        throw new Error(out.error || r.status);
+      }
       note.text = `🎤 ${out.text}`; renderList(false); swoosh();
       sessionId = out.session_id; status = "running"; updateSub(); renderList(false); openStream();
-    } catch (e) { note.text = `Voice note failed: ${e.message}`; renderList(false); }
+    } catch (e) {
+      note.text = dictateOnly ? `Voice note failed: ${e.message} Using dictation instead — tap the mic and speak.` : `Voice note failed: ${e.message}`;
+      renderList(false);
+    }
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me) { loadHistory(); if (currentTab === "chat" && nearBottom()) markSeen(); } });
   window.addEventListener("focus", () => { if (me && currentTab === "chat" && nearBottom()) markSeen(); });
