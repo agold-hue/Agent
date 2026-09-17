@@ -254,8 +254,11 @@ export function taskToolResults(messages: ChatMessage[]): string[] {
 export function scopeNote(messages: ChatMessage[], reply: string): string | undefined {
   const request = taskUserText(messages);
   const period = periodAsked(request);
-  if (!period || !TOTAL_WORDS.test(request) || !/\$\s?\d/.test(reply)) return undefined;
-  if (periodCovered(taskToolResults(messages), period)) return undefined;
+  const claimsZero = /\b(no spending|no orders|nothing (was )?(spent|charged|ordered)|\$0(\.00)?\b|zero)\b/i.test(reply);
+  if (!period || !TOTAL_WORDS.test(request) || (!/\$\s?\d/.test(reply) && !claimsZero)) return undefined;
+  const results = taskToolResults(messages);
+  if (claimsZero && results.some((r) => /^READ NOTHING|COVERS nothing/.test(r))) return `${SCOPE_PREFIX} you are about to tell the user they spent nothing in ${period.label}, but the read came back empty: it read no orders at all, which is a failed read, not a zero. Never report a zero from an empty read. Open the orders page for the period in the current tab, confirm orders are showing, sign in if it asks, and call spending_report again (next_label set to the site's next-page button if it has one). If the page itself shows no orders for the period, say "the orders page shows none for ${period.label}" and what you looked at; never "$0".)`;
+  if (periodCovered(results, period)) return undefined;
   return `${SCOPE_PREFIX} the user asked for ${period.label} (${period.from.toISOString().slice(0, 10)} to ${period.to.toISOString().slice(0, 10)}) and your reply gives a total, but nothing you read covers that period. Do not send it. Call spending_report with the period now (on the site's order or transaction history; sign in first if it asks), then report its figures and the dates it covered. If the site keeps less history than the period, say exactly what it covers.)`;
 }
 

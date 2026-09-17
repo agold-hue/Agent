@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatSpending, parseOrderLine, periodAsked, periodCovered, summarizeOrders } from "../lib/ledger.js";
+import { formatSpending, parseOrderLine, parseOrdersFromText, periodAsked, periodCovered, summarizeOrders } from "../lib/ledger.js";
 import { scopeNote, taskToolResults } from "../lib/tactics.js";
 import { trimSections } from "../lib/sessions.js";
 import { toolsFor } from "../lib/agent-config.js";
@@ -17,6 +17,27 @@ test("periodAsked reads years, trailing windows, this year and named months", ()
   assert.equal(periodAsked("last 3 months of Uber", now)?.label, "the last 3 months");
   assert.equal(periodAsked("Amazon orders in Aug 2026", now)?.to.toISOString().slice(0, 10), "2026-08-31");
   assert.equal(periodAsked("check my balance", now), undefined);
+  assert.equal(periodAsked("Everything I spent in January of 2026?", now)?.to.toISOString().slice(0, 10), "2026-01-31");
+  assert.equal(periodAsked("what did I buy in January", now)?.from.toISOString().slice(0, 10), "2026-01-01");
+  assert.equal(periodAsked("Amazon orders in November", now)?.from.getFullYear(), 2025); // not here yet this year
+});
+
+test("Amazon order cards are read from the page text: date, total, id and the items", () => {
+  const text = [
+    "Your Orders", "Order placed", "January 27, 2026", "Total", "$216.66", "Ship to", "Dan Gold", "Order # 112-4471234-9988776", "View order details", "View invoice", "Delivered January 29", "Apple AirPods Pro 3 with Active Noise Cancellation", "Buy it again", "View your item",
+    "Order placed", "January 27, 2026", "Total", "$8.58", "Ship to", "Dan Gold", "Order # 112-0000000-1111111", "View order details", "Delivered January 30", "Eyeglass cases, 2 pack, hard shell", "Buy it again",
+    "Order placed", "January 28, 2026", "Total", "$0.00", "Ship to", "Dan Gold", "Order # 112-2222222-3333333", "View order details", "Replacement", "AirPods Pro 3 replacement", "Buy it again",
+  ].join("\n");
+  const lines = parseOrdersFromText(text, now);
+  assert.equal(lines.length, 3);
+  assert.deepEqual(lines[0], { date: "2026-01-27", description: "Apple AirPods Pro 3 with Active Noise Cancellation", amount: 216.66, kind: "charge", id: "112-4471234-9988776" });
+  assert.equal(lines[1].amount, 8.58);
+  assert.equal(lines[2].kind, "no_cash");
+  const s = summarizeOrders(lines, periodAsked("January 2026", now)!, 1);
+  assert.equal(s.orders, 2);
+  assert.equal(s.charged, 225.24);
+  // An empty read is never covered.
+  assert.ok(!periodCovered(["SPENDING REPORT for January 2026 (2026-01-01 to 2026-01-31) from amazon.com, 1 page read, computed by the host. COVERS nothing."], periodAsked("January 2026", now)!));
 });
 
 test("an Amazon order card and a bank row both parse to a dated line with a total, refunds and gift cards told apart", () => {
@@ -67,6 +88,9 @@ test("a total for a period nothing read covers is sent back to the full read", (
   const full = [...messages, { role: "tool", tool_call_id: "b", content: "SPENDING REPORT for 2026 so far (2026-01-01 to 2026-09-16) from amazon.com, 9 pages read. COVERS 2026-01-03..2026-09-14." } as ChatMessage];
   assert.equal(scopeNote(full, "Your 2026 Amazon spend is $4,395.45 across 94 orders."), undefined);
   assert.equal(scopeNote(messages, "Here is what I found on the page."), undefined); // no figure, no check
+  // A zero from an empty read is blocked outright.
+  const empty = [...messages.slice(0, 2), { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "spending_report", arguments: "{}" } }] } as ChatMessage, { role: "tool", tool_call_id: "c", content: "READ NOTHING: 1 page of amazon.com came back without a single order for January 2026." } as ChatMessage];
+  assert.match(scopeNote(empty, "In January 2026, you had no spending on Amazon. Net cash spend was $0.00.")!, /failed read, not a zero/);
 });
 
 test("the prompt is trimmed by class and the tools by what the customer has", () => {

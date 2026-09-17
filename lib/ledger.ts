@@ -37,10 +37,16 @@ export function periodAsked(text: string, now = new Date()): Period | undefined 
     return { from: new Date(y - 1, 0, 1), to: new Date(y - 1, 11, 31), label: String(y - 1) };
   }
   if (/\b(this year|year to date|ytd|so far this year)\b/.test(t)) return { from: new Date(y, 0, 1), to: day(now), label: `${y} so far` };
-  if ((m = t.match(new RegExp(`\\b(${MONTHS})[a-z]*\\.?\\s+(20\\d{2})\\b`)))) {
+  if ((m = t.match(new RegExp(`\\b(${MONTHS})[a-z]*\\.?(?:\\s+of)?\\s+(20\\d{2})\\b`)))) {
     const mi = MONTHS.split("|").indexOf(m[1]);
     const yy = Number(m[2]);
     return { from: new Date(yy, mi, 1), to: new Date(yy, mi + 1, 0), label: `${m[1]} ${yy}` };
+  }
+  if ((m = t.match(new RegExp(`\\b(${MONTHS})(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?\\b`))) && !/\b20\d{2}\b/.test(t)) {
+    // A month with no year: this year's, or last year's when it has not come yet.
+    const mi = MONTHS.split("|").indexOf(m[1]);
+    const yy = mi > now.getMonth() ? y - 1 : y;
+    return { from: new Date(yy, mi, 1), to: mi === now.getMonth() && yy === y ? day(now) : new Date(yy, mi + 1, 0), label: `${m[1]} ${yy}` };
   }
   if ((m = t.match(/\b(20\d{2})\b/)) && Number(m[1]) <= y) {
     const yy = Number(m[1]);
@@ -97,6 +103,37 @@ export function parseOrderLine(cells: string[], now = new Date()): OrderLine | u
   const kind: OrderLine["kind"] = GIFT_WORDS.test(joined) && !/\bbought a gift card\b/i.test(joined) ? "gift" : POINTS_WORDS.test(joined) ? "points" : amount === 0 || CANCEL_WORDS.test(joined) ? "no_cash" : amount < 0 || REFUND_WORDS.test(joined) ? "refund" : "charge";
   const description = joined.replace(LONG_DATE, "").replace(/-?\$\s?\d[\d,]*\.\d{2}/g, "").replace(/\b(order placed|total|ship to|order #|view order details|view invoice|track package|buy it again|order details)\b/gi, " ").replace(/\s+/g, " ").trim().slice(0, 90);
   return { date: date.toISOString().slice(0, 10), description, amount: Math.abs(amount), kind, id };
+}
+
+/**
+ * Orders from a page's visible text, for sites whose order list is cards rather than a table
+ * (Amazon): each "Order placed <date> ... Total $x ... Order # id ... <items>" block is one order,
+ * with the item titles that follow it until the next order.
+ */
+const ORDER_START = /order placed\s*:?\s*([A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{1,2}\/\d{1,2}\/\d{2,4})/gi;
+const UI_NOISE = /^(order placed|total|ship to|order #|view order details|view invoice|track package|buy it again|view your item|write a product review|get product support|return or replace items|leave seller feedback|archive order|problem with order|ask product question|delivered|arriving|return window|return started|refund issued|share gift receipt|cancel items?|view return\/refund status|get help|see all buying options|not yet shipped|shipped|invoice)\b/i;
+export function parseOrdersFromText(text: string, now = new Date()): OrderLine[] {
+  const starts = [...text.matchAll(ORDER_START)];
+  const out: OrderLine[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const block = text.slice(starts[i].index!, i + 1 < starts.length ? starts[i + 1].index : undefined);
+    const date = parseDateCell(starts[i][1].replace(/\bsept\b/i, "Sep"), now);
+    if (!date) continue;
+    const total = block.match(/\btotal\b\s*:?\s*(-?\$?\s?\d[\d,]*\.\d{2})/i);
+    const amount = total ? parseMoney(total[1]) : undefined;
+    if (amount === undefined) continue;
+    const id = block.match(ORDER_ID)?.[1] ?? block.match(/\b\d{3}-\d{7}-\d{7}\b/)?.[0];
+    const afterId = id ? block.slice(block.indexOf(id) + id.length) : block;
+    const items = afterId
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 6 && l.length < 140 && !UI_NOISE.test(l) && !/^\$?\d[\d,.]*$/.test(l) && !/^(delivered|arriving|return)/i.test(l) && !/\b(sold by|ship to|order #|placed|total)\b/i.test(l))
+      .slice(0, 4);
+    const joined = block.slice(0, 400);
+    const kind: OrderLine["kind"] = GIFT_WORDS.test(joined) ? "gift" : POINTS_WORDS.test(joined) ? "points" : amount === 0 || CANCEL_WORDS.test(joined) ? "no_cash" : amount < 0 || /\brefund(ed)?\b/i.test(joined) ? "refund" : "charge";
+    out.push({ date: date.toISOString().slice(0, 10), description: (items.join(", ") || "(order)").slice(0, 120), amount: Math.abs(amount), kind, id });
+  }
+  return out;
 }
 
 export interface SpendingSummary {
@@ -170,6 +207,16 @@ async function extract(page: Page): Promise<string[][]> {
   return tables.flatMap((x) => x.rows);
 }
 
+/** The orders on a page: parsed rows when the page has a table or list, else the "Order placed ..." blocks of its text. */
+async function ordersOn(page: Page): Promise<{ lines: OrderLine[]; wall: boolean }> {
+  const text = await page.evaluate("document.body ? document.body.innerText : ''").catch(() => "") as string;
+  if (/ap\/signin|\/signin\b|login/i.test(page.url()) || (/\b(sign in|sign-in)\b/i.test(text.slice(0, 3000)) && /\b(email or mobile phone number|password)\b/i.test(text.slice(0, 3000)) && !/order placed/i.test(text))) return { lines: [], wall: true };
+  const fromRows = (await extract(page)).map((cells) => parseOrderLine(cells)).filter((l): l is OrderLine => !!l);
+  const fromText = parseOrdersFromText(text);
+  // The text parser sees whole orders (date, total, id, items); rows win only when the text found nothing.
+  return { lines: fromText.length >= fromRows.length ? fromText : fromRows, wall: false };
+}
+
 /** Which years the period touches, newest first. */
 function yearsOf(p: Period): number[] {
   const out: number[] = [];
@@ -206,10 +253,9 @@ export async function spendingReport(t: Tenant, row: SessionRow, args: { period?
               try {
                 await tab.goto(pager.url(year, start), { waitUntil: "domcontentloaded", timeout: 45_000 });
                 await waitInteractive(tab, 6000);
-                if (/signin|ap\/signin|login/i.test(tab.url())) return { rows: [] as string[][], wall: true };
-                return { rows: await extract(tab), wall: false };
+                return await ordersOn(tab);
               } catch {
-                return { rows: [] as string[][], wall: false };
+                return { lines: [] as OrderLine[], wall: false };
               } finally {
                 await tab.close().catch(() => {});
               }
@@ -218,12 +264,11 @@ export async function spendingReport(t: Tenant, row: SessionRow, args: { period?
           if (results.some((r) => r.wall)) return `stopped: the site asked for a sign-in on the orders pages. Sign in (login) on the current tab, then call spending_report again.`;
           for (const r of results) {
             pages++;
-            const parsed = r.rows.map((cells) => parseOrderLine(cells)).filter((l): l is OrderLine => !!l);
-            if (!parsed.length) {
+            if (!r.lines.length) {
               stop = true;
               break;
             }
-            lines.push(...parsed);
+            lines.push(...r.lines);
           }
           index += pager.step * PARALLEL;
           if (pages % 3 === 0) await progress(pages);
@@ -234,8 +279,10 @@ export async function spendingReport(t: Tenant, row: SessionRow, args: { period?
       const labels = args.next_label ? [String(args.next_label), ...NEXT_LABELS] : NEXT_LABELS;
       for (; pages < MAX_PAGES; ) {
         pages++;
-        const parsed = (await extract(page)).map((cells) => parseOrderLine(cells)).filter((l): l is OrderLine => !!l);
-        if (!parsed.length && pages === 1) return `no dated rows with amounts on ${page.url()}. Open the site's order or transaction history for the period first (filter to ${period.label} where the site offers it), then call spending_report again.`;
+        const here = await ordersOn(page);
+        if (here.wall) return `stopped: this page is a sign-in wall. Sign in (login) first, open the order or transaction history, then call spending_report again.`;
+        const parsed = here.lines;
+        if (!parsed.length && pages === 1) return `READ NOTHING: no orders or dated rows with amounts on ${page.url()}. This is not a zero; it is a page that could not be read. Open the site's order or transaction history for ${period.label} first (filter to the period where the site offers it, and make sure orders are showing), then call spending_report again.`;
         lines.push(...parsed);
         const oldest = parsed.map((l) => l.date).sort()[0];
         if (oldest && oldest < period.from.toISOString().slice(0, 10)) break;
@@ -260,6 +307,7 @@ export async function spendingReport(t: Tenant, row: SessionRow, args: { period?
         if (pages % 3 === 0) await progress(pages);
       }
     }
+    if (!lines.length) return `READ NOTHING: ${pages} page${pages === 1 ? "" : "s"} of ${site || "the site"} came back without a single order for ${period.label}. This is not a zero; it is a read that failed (a sign-in wall, a page that did not load, or a filter showing the wrong period). Open the orders page in the current tab with browser_goto, confirm it shows orders for the period, then call spending_report again with next_label set to the site's next-page button; if the site truly lists no orders for the period, say so as "the orders page shows none", never as "$0 spent".`;
     const summary = summarizeOrders(lines, period, pages, historyStops);
     const text = formatSpending(summary, site || "the site");
     // The route that worked becomes a recorded reader in the site note, so the next report replays it.
@@ -275,7 +323,7 @@ export async function spendingReport(t: Tenant, row: SessionRow, args: { period?
 export function periodCovered(results: string[], period: Period): boolean {
   const days = Math.round((period.to.getTime() - period.from.getTime()) / 86_400_000);
   for (const r of results) {
-    if (/^SPENDING REPORT for /.test(r)) return true;
+    if (/^SPENDING REPORT for /.test(r) && !/COVERS nothing/.test(r)) return true;
     const m = r.match(/^ledger, last (\d+) days/m);
     if (m && Number(m[1]) >= days - 2) return true;
   }
