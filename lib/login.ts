@@ -1,13 +1,13 @@
 import type { Page } from "playwright-core";
 import { attach } from "./browser.js";
 import { pageText } from "./browser-tools.js";
-import { findCredential, registrableDomain } from "./credentials.js";
+import { describeLoginProfile, findCredential, type LoginObservation, type LoginProfile, loginProfile, registrableDomain, rememberLogin } from "./credentials.js";
 import { env } from "./env.js";
 import { recentCodes } from "./inbound.js";
 import type { Tenant } from "./tenant.js";
 
 export type LoginResult =
-  | { status: "logged_in"; url: string; title: string; account: string }
+  | { status: "logged_in"; url: string; title: string; account: string; remembered?: string }
   | { status: "already_logged_in"; url: string; title: string }
   | { status: "no_credentials"; domain: string }
   | { status: "needs_user"; reason: string; url: string }
@@ -43,42 +43,108 @@ const TAG_FIELDS = `(() => {
 /** Where the sign-in form usually lives when the home page does not show it. */
 const LOGIN_PATHS = ["/login", "/signin", "/sign-in", "/account/login", "/auth/login", "/users/sign_in", "/ap/signin", "/en/login", "/my-account", "/account"];
 export const KNOWN_LOGIN_URLS: Record<string, string> = {
+  "chase.com": "https://secure.chase.com/web/auth/#/logon/logon/chaseOnline",
   "amazon.com": "https://www.amazon.com/ap/signin?openid.return_to=https%3A%2F%2Fwww.amazon.com%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0",
   "coned.com": "https://www.coned.com/en/login",
   "nationalgridus.com": "https://www.nationalgridus.com/Default.aspx?login=true",
   "zillow.com": "https://www.zillow.com/user/acct/login/",
 };
 
-async function tagFields(page: Page): Promise<{ user: number; password: number }> {
-  try {
-    return (await page.evaluate(TAG_FIELDS)) as { user: number; password: number };
-  } catch {
-    return { user: 0, password: 0 };
+/** Tag the sign-in fields in every frame (some banks embed the form) and say whether the form sits in one. */
+async function tagFields(page: Page): Promise<{ user: number; password: number; framed: boolean }> {
+  let user = 0;
+  let password = 0;
+  let framed = false;
+  for (const frame of page.frames()) {
+    const f = (await frame.evaluate(TAG_FIELDS).catch(() => undefined)) as { user: number; password: number } | undefined;
+    if (!f) continue;
+    if (frame !== page.mainFrame() && (f.user > 0 || f.password > 0)) framed = true;
+    user += f.user;
+    password += f.password;
   }
+  return { user, password, framed };
 }
 
-/** Get to a page that shows a sign-in form: the current page, a "Sign in" link, a known URL, or the usual paths. */
-async function reachLoginForm(page: Page, domain: string): Promise<boolean> {
+/** How long the hunt for a sign-in form may take across the usual paths before it gives up. */
+const SCAN_BUDGET_MS = Number(process.env.LOGIN_SCAN_MS ?? 30_000);
+const SCAN_GOTO_MS = 8_000;
+
+/** The pages to try for the sign-in form, best first: where it was last time, the known URL, the usual paths. */
+export function loginCandidates(domain: string, profile?: LoginProfile): string[] {
+  const out = [profile?.login_url, KNOWN_LOGIN_URLS[domain], ...LOGIN_PATHS.map((p) => `https://${domain}${p}`)].filter((u): u is string => !!u);
+  return [...new Set(out)];
+}
+
+/**
+ * Get to a page that shows a sign-in form: the current page, the page that had it last time, a
+ * "Sign in" link, a known URL, or the usual paths, within a time budget. A bot wall on any of them
+ * ends the hunt: every further path would hit the same wall.
+ */
+async function reachLoginForm(page: Page, domain: string, profile?: LoginProfile): Promise<{ found: boolean; wall?: boolean; framed?: boolean }> {
+  let framed = false;
   const hasForm = async () => {
     const f = await tagFields(page);
+    framed = f.framed;
     return f.password > 0 || f.user > 0;
   };
-  if (await hasForm()) return true;
+  const walled = async () => BOT_WALL.test(await pageText(page).catch(() => ""));
+  if (await hasForm()) return { found: true, framed };
+  const started = Date.now();
+  const tryUrl = async (url: string): Promise<{ found: boolean; wall?: boolean; framed?: boolean } | undefined> => {
+    const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: SCAN_GOTO_MS }).catch(() => null);
+    if (!res || res.status() >= 400) return undefined;
+    await settle(page, 1500);
+    if (await hasForm()) return { found: true, framed };
+    if (await walled()) return { found: false, wall: true };
+    return undefined;
+  };
+  // Where the form was last time, before anything else (unless that is the page already showing).
+  if (profile?.login_url && page.url() !== profile.login_url) {
+    const r = await tryUrl(profile.login_url);
+    if (r) return r;
+  }
   const affordance = page.getByRole("link", { name: /sign ?in|log ?in|login|my account|hello, sign in/i }).or(page.getByRole("button", { name: /sign ?in|log ?in|login/i })).first();
   if ((await affordance.count().catch(() => 0)) > 0 && (await affordance.isVisible().catch(() => false))) {
     await affordance.click().catch(() => {});
     await settle(page);
-    if (await hasForm()) return true;
+    if (await hasForm()) return { found: true, framed };
+    if (await walled()) return { found: false, wall: true };
   }
-  const known = KNOWN_LOGIN_URLS[domain];
-  const candidates = known ? [known, ...LOGIN_PATHS.map((p) => `https://${domain}${p}`)] : LOGIN_PATHS.map((p) => `https://${domain}${p}`);
-  for (const url of candidates) {
-    const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => null);
-    if (!res || res.status() >= 400) continue;
-    await settle(page, 1500);
-    if (await hasForm()) return true;
+  for (const url of loginCandidates(domain, profile)) {
+    if (url === profile?.login_url) continue;
+    if (Date.now() - started > SCAN_BUDGET_MS) break;
+    const r = await tryUrl(url);
+    if (r) return r;
   }
-  return false;
+  return { found: false, wall: await walled() };
+}
+
+/** A masked phone number or address on the page: "(***) ***-1234", "ending in 1234", "j***@gmail.com". */
+const MASKED_PHONE = /\(?[*x]{3}\)?[ -]?[*x]{3}[ -]?\d{4}|\b(ending|ends) (in|with) \d{4}\b|\b\d{3}[ -]?[*x]{3}[ -]?\d{4}\b/i;
+const MASKED_EMAIL = /\S[*x]{2,}\S*@|@[*x]{2,}/i;
+
+/**
+ * Where the site says the code went, from its own words on the code screen; the profile's memory
+ * when the page does not say. A texted code never reaches the forwarded mail, so knowing this is
+ * the difference between asking the user at once and waiting a minute for nothing.
+ */
+export function codeChannel(text: string, remembered?: LoginProfile["code"]): "text" | "email" | "unknown" {
+  const t = text.slice(0, 6000);
+  const sentence = t.match(/\b(sent|texted|emailed|text(ed)? you|e-?mailed you)\b[^.\n]{0,120}/i)?.[0] ?? "";
+  const phoneWords = /\b(text(ed)?( message)?|sms|phone|mobile|cell)\b/i;
+  const emailWords = /\b(e-?mail(ed)?|inbox)\b/i;
+  const phone = (sentence && phoneWords.test(sentence)) || MASKED_PHONE.test(t);
+  const email = (sentence && emailWords.test(sentence)) || MASKED_EMAIL.test(t);
+  if (phone && !email) return "text";
+  if (email && !phone) return "email";
+  if (!phone && !email) {
+    // No sentence about the sending: the words on the screen, when only one kind is there.
+    const p = phoneWords.test(t);
+    const e = emailWords.test(t);
+    if (p && !e) return "text";
+    if (e && !p) return "email";
+  }
+  return remembered === "text" || remembered === "email" ? remembered : "unknown";
 }
 
 const USER_SELECTORS = ['input[data-login-role="user"]'];
@@ -243,28 +309,45 @@ export async function loginToSite(t: Tenant, opts: {
   targetId?: string | null;
 }): Promise<LoginResult> {
   const domain = registrableDomain(opts.domain);
-  if (opts.code) return enterCode(opts.connectUrl, domain, opts.code, opts.targetId);
   // A vault record, or the identifier the user just gave (Uber, Lyft and most apps sign in with a phone
   // number and a texted code; no password exists). An empty password means passwordless.
-  const cred = (await findCredential(t, domain, opts.accountHint)) ?? (opts.username ? { username: opts.username.trim(), password: "", totp: undefined } : undefined);
+  const cred = (await findCredential(t, domain, opts.accountHint)) ?? (opts.username ? { id: undefined, username: opts.username.trim(), password: "", totp: undefined } : undefined);
+  // What the host learned the last times: kept on the vault row, so a login from chat alone has none.
+  const profile = cred?.id ? await loginProfile(cred.id).catch(() => undefined) : undefined;
+  const remember = async (seen: LoginObservation): Promise<string | undefined> => (cred?.id ? describeLoginProfile(await rememberLogin(cred.id, seen).catch(() => undefined)) : undefined);
+  if (opts.code) {
+    const r = await enterCode(opts.connectUrl, domain, opts.code, opts.targetId);
+    // The user relayed the code, so next time it is asked for at once (unless the host knows it is emailed).
+    if (r.status === "logged_in") return { ...r, remembered: await remember({ ok: true, code: profile?.code === "email" || profile?.code === "totp" ? profile.code : "text" }) };
+    return r;
+  }
   if (!cred) return { status: "no_credentials", domain };
 
+  const started = Date.now();
   const { browser, page } = await attach(opts.connectUrl, domain, opts.targetId);
   try {
     if (!page.url().includes(domain)) {
-      await page.goto(`https://${domain}`, { waitUntil: "domcontentloaded" }).catch(() => {});
+      // Straight to the page that showed the form last time (or the known one): the home page and its "Sign in" click are skipped.
+      await page.goto(profile?.login_url ?? KNOWN_LOGIN_URLS[domain] ?? `https://${domain}`, { waitUntil: "domcontentloaded" }).catch(() => {});
       await settle(page);
     }
 
     // The user may have signed in themselves (a takeover after a bot wall) or the cookies still hold.
     if (await isSignedIn(page)) return { status: "already_logged_in", url: page.url(), title: await page.title().catch(() => "") };
     // Only ever type into a sign-in form. A home page's search bar is never a username field.
-    if (!(await reachLoginForm(page, domain))) {
+    const reached = await reachLoginForm(page, domain, profile);
+    if (!reached.found) {
       const title = await page.title().catch(() => "");
       if (/account|orders|welcome|hello,/i.test(title) || (await isSignedIn(page))) return { status: "already_logged_in", url: page.url(), title };
-      if (BOT_WALL.test(await pageText(page).catch(() => ""))) return { status: "needs_user", reason: `A bot check blocks the site before the sign-in form. ${TAKEOVER}`, url: page.url() };
+      if (reached.wall) {
+        await remember({ wall: true, ok: false });
+        return { status: "needs_user", reason: `A bot check blocks the site before the sign-in form. ${TAKEOVER}`, url: page.url() };
+      }
+      await remember({ ok: false });
       return { status: "needs_user", reason: "Could not find the sign-in form (no sign-in link, no password field on the usual login pages).", url: page.url() };
     }
+    const formUrl = page.url();
+    const framed = reached.framed;
     let user = await firstVisible(page, USER_SELECTORS);
     let pass = await firstVisible(page, PASS_SELECTORS);
     if (!user && !pass) return { status: "already_logged_in", url: page.url(), title: await page.title() };
@@ -292,10 +375,12 @@ export async function loginToSite(t: Tenant, opts: {
     await settle(page, 4000);
     // A bot check after submit: the hosted browser solves most of them given a moment.
     if (BOT_WALL.test(await pageText(page).catch(() => ""))) {
+      await remember({ wall: true });
       await waitOutBotWall(page);
       await settle(page, 1500);
     }
     await tagFields(page);
+    let channel: LoginProfile["code"] = "none";
 
     // Second factor. Some sites first ask how to send the code: pick text message and send it.
     if (!(await firstVisible(page, OTP_SELECTORS)) && !(await firstVisible(page, PASS_SELECTORS)) && (await isMfaChooser(page))) {
@@ -309,17 +394,25 @@ export async function loginToSite(t: Tenant, opts: {
     }
     if (await firstVisible(page, OTP_SELECTORS)) {
       let code = cred.totp;
-      if (!code && env.mail.configured()) {
-        // Fall back to a code the user auto-forwards to their agent address; give the site a moment to send it.
-        for (let attempt = 0; attempt < 6 && !code; attempt++) {
-          await page.waitForTimeout(10_000);
-          const found = await recentCodes(t, { senderHint: domain, sinceMinutes: 3 });
-          code = found.find((f) => f.codes.length > 0)?.codes[0];
-        }
-      }
+      channel = code ? "totp" : undefined;
       if (!code) {
-        // The code went to the user's phone: the page stays open on the code field.
-        return { status: "needs_code", ask: `${domain} sent a verification code to the user's phone. Call request_code now (one line), and when the user sends it call login again with code.`, url: page.url() };
+        const where = codeChannel(await pageText(page).catch(() => ""), profile?.code);
+        // A code the user auto-forwards to their agent address arrives by mail; a texted one never does,
+        // so that case asks the user at once. Unknown: a short look at the mail, then the user.
+        if (where !== "text" && env.mail.configured()) {
+          const rounds = where === "email" ? 5 : 2;
+          for (let attempt = 0; attempt < rounds && !code; attempt++) {
+            await page.waitForTimeout(8_000);
+            const found = await recentCodes(t, { senderHint: domain, sinceMinutes: 3 });
+            code = found.find((f) => f.codes.length > 0)?.codes[0];
+          }
+          if (code) channel = "email";
+        }
+        if (!code) {
+          // The code went to the user: the page stays open on the code field; the next call brings the code.
+          await remember({ login_url: formUrl, framed, code: where === "email" ? "email" : where === "text" ? "text" : undefined });
+          return { status: "needs_code", ask: `${domain} sent a verification code to the user's ${where === "email" ? "email" : "phone"}. Call request_code now (one line), and when the user sends it call login again with code.`, url: page.url() };
+        }
       }
       await fillOtp(page, code);
     }
@@ -328,15 +421,18 @@ export async function loginToSite(t: Tenant, opts: {
     if (await firstVisible(page, PASS_SELECTORS)) {
       const text = await pageText(page).catch(() => "");
       if (REJECTED.test(text)) {
+        await remember({ login_url: formUrl, framed, ok: false });
         return { status: "needs_user", reason: "The site rejected the saved password (it says the login is wrong or the account is locked). Do not retry; tell the user in one line to check this login under Settings > Logins.", url: page.url() };
       }
+      await remember({ login_url: formUrl, framed, ok: false, wall: BOT_WALL.test(text) });
       if (BOT_WALL.test(text)) return { status: "needs_user", reason: `The site's bot check rejected the automated sign-in. Do not retry. ${TAKEOVER}`, url: page.url() };
       return { status: "needs_user", reason: `Password form is still showing after submit; the site may have shown a challenge. Take one screenshot; if it is a bot check or the same form, do not retry. ${TAKEOVER}`, url: page.url() };
     }
     if (!cred.password && !(await isSignedIn(page)) && (await firstVisible(page, OTP_SELECTORS))) {
       return { status: "needs_user", reason: "The code field is still showing after the code; the site may have rejected it. Ask the user for a fresh one.", url: page.url() };
     }
-    return { status: "logged_in", url: page.url(), title: await page.title(), account: cred.username };
+    const remembered = await remember({ login_url: formUrl, framed, code: channel, ok: true, seconds: (Date.now() - started) / 1000 });
+    return { status: "logged_in", url: page.url(), title: await page.title(), account: cred.username, remembered };
   } finally {
     // Disconnect only; the hosted browser keeps running for the sandbox.
     await browser.close().catch(() => {});

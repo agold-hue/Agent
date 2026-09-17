@@ -118,6 +118,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         if (result.status === "needs_user" && /code/i.test(result.reason)) payload.hint = "If the site offers to text or email a code, click that, then request_code.";
         if (result.status === "no_credentials") payload.note = "Nothing saved for this site. If the user gave you their phone or email for it in chat, call login again with `username` set to it (most apps then text a code: request_code, then login with the code). Otherwise ask them in one line for the login, or to add it under Settings > Logins.";
         if (result.status === "logged_in" && args.username && !args.code) payload.note = "Signed in with the identifier from chat. Call save_login with this username and no password so next time it is known, and note it in facts.md.";
+        if ("remembered" in result && result.remembered) payload.note = `${payload.note ? `${payload.note} ` : ""}The host will do this on its own next time: ${result.remembered}. Keep the ## Sign-in section of sites/${registrableDomain(s("domain"))}.md to what it does not know (a second code, a security question, a device prompt).`;
         return { text: JSON.stringify(payload) };
       }
       case "save_login": {

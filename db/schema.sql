@@ -205,6 +205,8 @@ create index if not exists receipts_user on receipts(user_id, created_at desc);
 
 -- Cache accounting (idempotent adds for existing databases)
 alter table agent_sessions add column if not exists cached_tokens bigint not null default 0;
+-- What the host learned about a site's sign-in (the page with the form, how the code arrives, the record), so the next login skips the discovery.
+alter table credentials add column if not exists login_profile jsonb;
 alter table usage add column if not exists prompt_tokens bigint not null default 0;
 alter table usage add column if not exists cached_tokens bigint not null default 0;
 
