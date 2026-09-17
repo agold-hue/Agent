@@ -98,3 +98,27 @@ test("a site note keeps every section the host and the model wrote", async () =>
   // Running it twice changes nothing more.
   assert.equal(mergeSections(after, { fastPath: "statements: /accounts-billing/statements", ok: true, today: "2026-09-17" }), after);
 });
+
+test("press-and-hold is recognised even when the frame also carries a reCAPTCHA key", async () => {
+  // PerimeterX renders its button in a frame with a reCAPTCHA-shaped key. Classing that as a
+  // reCAPTCHA sent it to the paid solver, which has nothing to solve and bills for the attempt.
+  const { classify } = await import("../lib/captcha.js");
+  assert.equal(classify("Press & Hold to confirm you are human", new Set(["recaptcha_v2"])), "press_hold");
+  assert.equal(classify("Press and Hold", new Set()), "press_hold");
+  assert.equal(classify("I'm not a robot", new Set(["recaptcha_v2"])), "recaptcha_v2");
+  assert.equal(classify("Just a moment...", new Set()), "cloudflare");
+  assert.equal(classify("Your order shipped", new Set()), "none");
+});
+
+test("the hold lasts a human few seconds and always fits inside the budget", async () => {
+  const { holdPlan } = await import("../lib/captcha.js");
+  for (const r of [0, 0.5, 0.999]) {
+    const { holdMs, steps } = holdPlan(60_000, () => r);
+    assert.ok(holdMs >= 7000 && holdMs <= 11_000, `${holdMs} is not a human hold`);
+    assert.ok(steps >= 6, "the pointer must keep moving while held");
+  }
+  // A budget nearly spent shortens the hold rather than overrunning it.
+  assert.ok(holdPlan(9000, () => 0.999).holdMs <= 5000);
+  // And never goes below something a hand could do.
+  assert.equal(holdPlan(1000, () => 0).holdMs, 2500);
+});

@@ -12,7 +12,9 @@ import type { Frame, Page } from "playwright-core";
  *    asked for. Turnstile's "verify you are human" box is the same.
  * 4. Hand it to a solving service if one is configured (any 2Captcha-compatible endpoint), then put
  *    the token back into the page the way the site expects and submit.
- * 5. Give up honestly and hand the live view to the user: one sign-in by hand beats twenty minutes of
+ * 5. Hold the button, when that is what is being asked: a curved approach, a few seconds of contact
+ *    with a hand's tremor, one release. No service can do this one, and a second try scores against us.
+ * 6. Give up honestly and hand the live view to the user: one sign-in by hand beats twenty minutes of
  *    a model fighting a wall it cannot pass.
  *
  * Every step verifies afterwards, so "solved" always means the challenge is really gone.
@@ -66,29 +68,31 @@ export async function detectCaptcha(page: Page): Promise<CaptchaState> {
     else if (/challenges\.cloudflare\.com/.test(url)) keys.set("turnstile", decodeURIComponent(m?.[1] ?? keys.get("turnstile") ?? ""));
   }
   const text = `${seen?.title ?? ""}\n${seen?.text ?? ""}`;
-  const cloudflare = /just a moment|checking your browser|attention required|cf-browser-verification|enable javascript and cookies/i.test(text);
-  const pressHold = /press (and|&) hold/i.test(text);
-  const kind: CaptchaKind = keys.has("recaptcha_v2")
-    ? "recaptcha_v2"
-    : keys.has("hcaptcha")
-      ? "hcaptcha"
-      : keys.has("turnstile")
-        ? "turnstile"
-        : cloudflare
-          ? "cloudflare"
-          : pressHold
-            ? "press_hold"
-            : keys.has("recaptcha_v3")
-              ? "recaptcha_v3"
-              : WALL_TEXT.test(text)
-                ? "unknown"
-                : "none";
+  const kind = classify(text, new Set(keys.keys()));
   return {
     kind,
     evidence: (text.match(WALL_TEXT)?.[0] ?? text.split("\n").find((l) => l.trim())?.slice(0, 120) ?? "").trim(),
     siteKey: keys.get(kind) || undefined,
     frameUrl: seen?.url,
   };
+}
+
+/**
+ * What kind of wall this is, from the page's own words and the widgets found in its frames. Pure, so
+ * it can be tested without a browser.
+ *
+ * Press-and-hold is checked BEFORE the widget kinds: PerimeterX renders its button inside a frame
+ * that also carries a reCAPTCHA-shaped key, and treating that as a reCAPTCHA sent it to the solving
+ * service, which has nothing to solve and charges for the attempt.
+ */
+export function classify(text: string, widgets: Set<string>): CaptchaKind {
+  if (/press (and|&) hold/i.test(text)) return "press_hold";
+  if (widgets.has("recaptcha_v2")) return "recaptcha_v2";
+  if (widgets.has("hcaptcha")) return "hcaptcha";
+  if (widgets.has("turnstile")) return "turnstile";
+  if (/just a moment|checking your browser|attention required|cf-browser-verification|enable javascript and cookies/i.test(text)) return "cloudflare";
+  if (widgets.has("recaptcha_v3")) return "recaptcha_v3";
+  return WALL_TEXT.test(text) ? "unknown" : "none";
 }
 
 export interface SolveResult {
@@ -134,6 +138,12 @@ export async function solveCaptcha(page: Page, opts: { maxMs?: number } = {}): P
     } catch (err) {
       return { status: "needs_user", kind: first.kind, how: `the captcha service failed: ${err instanceof Error ? err.message : String(err)}`, detail: first.evidence };
     }
+  }
+
+  // 5. Press-and-hold. No site key exists, so no service can help: the only thing to try is to do it,
+  //    the way a hand does. Works often enough to be worth ten seconds, never worth a second attempt.
+  if (first.kind === "press_hold" && (await pressAndHold(page, deadline - Date.now()))) {
+    if (await waitUntilGone(page, Math.min(10_000, Math.max(4000, deadline - Date.now())))) return { status: "solved", kind: first.kind, how: "held the button" };
   }
 
   const still = await detectCaptcha(page);
@@ -205,6 +215,78 @@ async function clickCheckbox(page: Page): Promise<boolean> {
     }
   }
   return false;
+}
+
+/** Where a press-and-hold button lives: PerimeterX/HUMAN's own container, or whatever says the words. */
+const HOLD_SELECTORS = ["#px-captcha", "[id^=px-captcha]", "[class*=px-captcha]", "#challenge-container", '[aria-label*="press" i]'];
+
+/**
+ * The press-and-hold challenge (PerimeterX/HUMAN, AWS WAF). There is no token to fetch and nothing a
+ * solving service can do with it: the check is whether a human hand held the button, judged from the
+ * pointer trail, the hold and the release.
+ *
+ * So we do it properly rather than firing a synthetic click: approach the button along a curve
+ * (a straight jump from 0,0 is the cheapest tell there is), press, hold for the advertised few
+ * seconds with the small tremor a hand has, then release. Once. A second attempt on the same page
+ * raises the score against us, so a failure goes to the user instead.
+ *
+ * It is genuinely unreliable — the button is only the last of many signals — which is why the
+ * takeover line stays the fallback. `holdPlan` is pure so the timing can be tested.
+ */
+export function holdPlan(budgetMs: number, rand: () => number = Math.random): { holdMs: number; steps: number } {
+  const wanted = Number(process.env.CAPTCHA_HOLD_MS ?? 0) || Math.round(7000 + rand() * 4000);
+  const holdMs = Math.max(2500, Math.min(wanted, Math.max(2500, budgetMs - 4000)));
+  return { holdMs, steps: Math.max(6, Math.round(holdMs / 400)) };
+}
+
+async function pressAndHold(page: Page, budgetMs: number): Promise<boolean> {
+  if (process.env.CAPTCHA_HOLD === "off" || budgetMs < 6000) return false;
+  const target = await holdTarget(page);
+  if (!target) return false;
+  const { x, y, width, height } = target;
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+  try {
+    // Approach: a few points along a curve into the button, not a teleport onto its centre.
+    await page.mouse.move(cx - 140 + Math.random() * 60, cy + 90 + Math.random() * 40);
+    for (let i = 1; i <= 8; i++) {
+      const p = i / 8;
+      await page.mouse.move(cx - 140 * (1 - p) + (Math.random() - 0.5) * 6, cy + 90 * (1 - p) * (1 - p) + (Math.random() - 0.5) * 6);
+      await page.waitForTimeout(20 + Math.random() * 35);
+    }
+    await page.waitForTimeout(120 + Math.random() * 180);
+    await page.mouse.down();
+    const { holdMs, steps } = holdPlan(budgetMs);
+    // A held finger is not perfectly still: a pixel of drift keeps the pointer trail alive.
+    for (let i = 0; i < steps; i++) {
+      await page.waitForTimeout(holdMs / steps);
+      await page.mouse.move(cx + (Math.random() - 0.5) * 2.5, cy + (Math.random() - 0.5) * 2.5);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(1500);
+    return true;
+  } catch {
+    await page.mouse.up().catch(() => {});
+    return false;
+  }
+}
+
+/** The button's box, in page coordinates, from whichever frame holds it. */
+async function holdTarget(page: Page): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  for (const frame of page.frames()) {
+    for (const sel of HOLD_SELECTORS) {
+      const loc = frame.locator(sel).first();
+      if ((await loc.count().catch(() => 0)) === 0) continue;
+      const box = await loc.boundingBox().catch(() => null);
+      if (box && box.width > 20 && box.height > 10) return box;
+    }
+    const byText = frame.getByText(/press (and|&) hold/i).first();
+    if ((await byText.count().catch(() => 0)) > 0) {
+      const box = await byText.boundingBox().catch(() => null);
+      if (box && box.width > 20 && box.height > 10) return box;
+    }
+  }
+  return null;
 }
 
 export function solverConfigured(): boolean {
@@ -279,6 +361,6 @@ async function injectToken(page: Page, kind: CaptchaKind, token: string): Promis
 
 /** The one line the user reads when a person really is needed. Never mentions "captcha" twice. */
 export function handoverLine(state: { kind: CaptchaKind; detail?: string }): string {
-  if (state.kind === "press_hold") return "The site wants a press-and-hold check that I can't do. Open the Logins tab › Watch the browser, hold the button once, and tell me \"done\" — I'll carry on from there.";
+  if (state.kind === "press_hold") return "The site wants a press-and-hold check and it didn't accept mine. Open the Logins tab › Watch the browser, hold the button once yourself, and tell me \"done\" — it sticks, and I'll carry on from there.";
   return "The site's bot check won't let me through. Open the Logins tab › Watch the browser, clear it once yourself (it sticks), then say \"done\" and I'll pick the task back up.";
 }
