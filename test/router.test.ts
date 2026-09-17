@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { atLeastModel, isAsk, isFreshRequest, isQuickQuestion, modelFor, nextTier, reroutedModel, tierFor, tierOfModel, visionTier } from "../lib/router.js";
+import { atLeastModel, choosePoolModel, DEFAULT_POOLS, isAsk, isFreshRequest, isQuickQuestion, modelFor, nextTier, reroutedModel, tierFor, tierOfModel, visionTier } from "../lib/router.js";
+import { modelList } from "../lib/llm.js";
 
 test("only judgment work starts on the hard tier; lookups, research, bookings and cancellations are task work", () => {
   for (const h of ["get a refund for the broken blender", "dispute the $89 charge on the Amex", "negotiate the Verizon bill down", "appeal the denied insurance claim", "review the lease before I sign", "help me buy a house in Montclair"]) assert.equal(tierFor(h, "chat"), "hard", h);
@@ -39,10 +40,16 @@ test("a thread is re-tiered per request: up at any time, down only when idle and
 });
 
 test("the ladder starts on the affordable models and climbs one rung at a time to the frontier ones", () => {
-  assert.equal(modelFor("chat"), "deepseek/deepseek-chat");
-  assert.equal(modelFor("task"), "deepseek/deepseek-v4-pro");
-  assert.equal(modelFor("hard"), "anthropic/claude-sonnet-5");
-  assert.equal(modelFor("max"), "anthropic/claude-opus-5");
+  assert.equal(modelList(modelFor("chat"))[0], "deepseek/deepseek-chat");
+  assert.equal(modelList(modelFor("task"))[0], "deepseek/deepseek-v4-pro");
+  assert.equal(modelList(modelFor("hard"))[0], "anthropic/claude-sonnet-5");
+  assert.equal(modelList(modelFor("max"))[0], "anthropic/claude-opus-5");
+  // The cheap tiers are pools of affordable models from several vendors, not one model.
+  assert.ok(DEFAULT_POOLS.task.some((m) => m.startsWith("qwen/")) && DEFAULT_POOLS.task.some((m) => m.startsWith("moonshotai/")) && DEFAULT_POOLS.task.some((m) => m.startsWith("z-ai/")));
+  assert.ok(DEFAULT_POOLS.chat.length >= 4 && DEFAULT_POOLS.task.length >= 5);
+  // A session on any pool member belongs to that tier.
+  assert.equal(tierOfModel("moonshotai/kimi-k2-0905,deepseek/deepseek-v4-pro"), "task");
+  assert.equal(tierOfModel("qwen/qwen3-235b-a22b-2507"), "chat");
   assert.equal(nextTier("chat"), "task");
   assert.equal(nextTier("task"), "hard");
   assert.equal(nextTier("hard"), "max");
@@ -61,4 +68,21 @@ test("a photo goes to the cheapest tier whose model can see it", () => {
   assert.equal(visionTier("hard"), "hard");
   assert.equal(atLeastModel(modelFor("chat"), "task"), modelFor("task"));
   assert.equal(atLeastModel(modelFor("hard"), "task"), undefined);
+});
+
+test("within a tier the pool member with the best record wins, the untried get a turn, and a failing primary steps aside", () => {
+  const pool = ["a/one", "b/two", "c/three"];
+  const price = new Map([["a/one", 1], ["b/two", 2], ["c/three", 0.5]]);
+  const stats = (o: Record<string, [number, number]>) => new Map(Object.entries(o).map(([k, [ok, n]]) => [k, { ok, n }]));
+  // No record: the primary, with the rest as fallbacks.
+  assert.equal(choosePoolModel(pool, new Map(), price, false), "a/one,b/two,c/three");
+  // A proven member beats the primary; ties go to the cheaper one.
+  assert.equal(choosePoolModel(pool, stats({ "a/one": [3, 4], "c/three": [4, 4] }), price, false).split(",")[0], "c/three");
+  assert.equal(choosePoolModel(pool, stats({ "b/two": [4, 4], "c/three": [4, 4] }), price, false).split(",")[0], "c/three");
+  // Exploration hands an untried member its turn.
+  assert.equal(choosePoolModel(pool, stats({ "a/one": [2, 2] }), price, true).split(",")[0], "b/two");
+  // A primary failing half its tasks steps aside for a member with no bad record.
+  assert.equal(choosePoolModel(pool, stats({ "a/one": [1, 4] }), price, false).split(",")[0], "b/two");
+  // One sample proves nothing.
+  assert.equal(choosePoolModel(pool, stats({ "b/two": [1, 1] }), price, false).split(",")[0], "a/one");
 });

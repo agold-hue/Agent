@@ -187,6 +187,68 @@ export function sessionProgress(row: SessionRow): string {
   return lines.join("\n");
 }
 
+/**
+ * The task's state as the host can see it, for the context after compaction has dropped turns: the
+ * goal, what the user was told, the steps taken, the last tool error. No model call; deterministic.
+ */
+export function taskStateNote(messages: ChatMessage[]): string | undefined {
+  const start = taskStart(messages);
+  const goal = taskUserText(messages).replace(/\s+/g, " ").trim().slice(0, 300);
+  if (!goal) return undefined;
+  const said: string[] = [];
+  const steps: string[] = [];
+  const calls = new Map<string, string>();
+  let lastError = "";
+  let lastUrl = "";
+  for (let i = start; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "assistant") {
+      if (m.ephemeral && typeof m.content === "string" && m.content.trim()) said.push(m.content.trim().slice(0, 160));
+      for (const tc of m.tool_calls ?? []) {
+        calls.set(tc.id, tc.function.name);
+        const words = STEP_WORDS[tc.function.name] ?? tc.function.name.replace(/_/g, " ");
+        if (steps[steps.length - 1] !== words) steps.push(words);
+        if (tc.function.name === "browser_goto" || tc.function.name === "browser_open") {
+          try {
+            lastUrl = String((JSON.parse(tc.function.arguments) as { url?: string }).url ?? lastUrl);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } else if (m.role === "tool" && typeof m.content === "string") {
+      if (/^Tool .* failed|needs_user|no_credentials|did not appear|stopped at|error/i.test(m.content.slice(0, 200))) lastError = `${calls.get(m.tool_call_id ?? "") ?? "a step"}: ${m.content.split("\n")[0].slice(0, 160)}`;
+      const url = m.content.split("\n").find((l) => /^https?:\/\//.test(l.trim()));
+      if (url) lastUrl = url.trim();
+    }
+  }
+  const lines = [`(Task state so far, kept by the host because earlier turns were dropped from context:`, `- Goal: ${goal}`];
+  if (steps.length) lines.push(`- Done: ${steps.slice(-12).join(", ")} (${steps.length} kinds of step)`);
+  if (said.length) lines.push(`- Told the user: ${said.slice(-3).map((s) => `"${s}"`).join(" · ")}`);
+  if (lastUrl) lines.push(`- Last page: ${lastUrl.slice(0, 160)}`);
+  if (lastError) lines.push(`- Last problem: ${lastError}`);
+  lines.push("Continue from here; do not redo what is done.)");
+  return lines.join("\n");
+}
+
+/**
+ * Threading: an agent bubble carries a quote of the request it answers whenever that request is not
+ * the bubble right above it (another task's lines, the user's next message or a side reply came in
+ * between), so in a busy chat every reply reads as a reply to something, never as a new thread. The
+ * items must already be in display order.
+ */
+export function threadReplies(items: ChatItem[]): ChatItem[] {
+  return items.map((it, i) => {
+    if (it.kind !== "agent" || !it.replyTo) return it;
+    let j = i - 1;
+    // Lines of the same answer (an "on it", a progress line, the reply) sit between the request and this bubble.
+    while (j >= 0 && items[j].kind === "agent" && (items[j] as { replyTo?: string }).replyTo === it.replyTo) j--;
+    const adjacent = j >= 0 && items[j].id === it.replyTo;
+    const { replyTo, replyText, ...rest } = it;
+    return adjacent || !replyText ? rest : { ...rest, quote: { id: replyTo, who: "user", text: replyText } };
+  }) as ChatItem[];
+}
+
 /** What is going on right now across the chat thread and its parallel tasks, plus the last exchanges. */
 export function progressBrief(main: SessionRow, tasks: SessionRow[]): string {
   const live = [main, ...tasks.filter((s) => s.id !== main.id)].filter((s) => s.status === "running" || s.status === "waiting");
@@ -220,7 +282,7 @@ async function recentRecap(t: Tenant): Promise<string | undefined> {
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; at: string; approx?: boolean; reaction?: string; quote?: MessageQuote; task?: string }
-  | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string; task?: string }
+  | { kind: "agent"; id: string; text: string; at: string; approx?: boolean; notice?: string; task?: string; quote?: MessageQuote; replyTo?: string; replyText?: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; at: string; resolved: boolean; preview?: string }
   | { kind: "status"; id: string; status: "running" | "idle" | "waiting" | "terminated" | "error"; at: string };
 
@@ -236,6 +298,8 @@ export function toChatItems(row: SessionRow): ChatItem[] {
   // freshly typed line landed in the middle of the page, "invisible".
   let last = new Date(row.created_at).toISOString();
   const task = row.kind === "task" ? { task: (row.title ?? "task").slice(0, 60) } : {};
+  // The request each agent line answers, for threading (see threadReplies).
+  let reply: { replyTo: string; replyText: string } | undefined;
   row.messages.forEach((m: ChatMessage, i) => {
     const at = m.at && m.at > last ? m.at : last;
     last = at;
@@ -252,10 +316,11 @@ export function toChatItems(row: SessionRow): ChatItem[] {
       if (file) text = `📎 ${file[1].trim()}`;
       else if (text.startsWith("(voice note) ")) text = `🎤 ${text.slice("(voice note) ".length)}`;
       items.push({ kind: "user", id: `${row.id}-${i}`, text, at, ...approx, reaction: m.reaction, ...(m.quote ? { quote: m.quote } : {}), ...task });
+      reply = { replyTo: `${row.id}-${i}`, replyText: text.replace(/\s+/g, " ").slice(0, 160) };
     } else if (m.role === "assistant") {
       const text = typeof m.content === "string" ? m.content.trim() : "";
       // A draft the host sent back to the model (an offer instead of an answer, an unverified figure) is not a bubble.
-      if (text && !m.tool_calls?.length && !m.superseded) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx, ...task });
+      if (text && !m.tool_calls?.length && !m.superseded) items.push({ kind: "agent", id: `${row.id}-${i}`, text, at, ...approx, ...task, ...(reply ?? {}) });
       for (const tc of m.tool_calls ?? []) {
         if (!["checkpoint", "ask_user", "send_email", "request_code"].includes(tc.function.name)) continue;
         let input: Record<string, unknown> = {};

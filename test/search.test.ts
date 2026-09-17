@@ -160,7 +160,7 @@ test("compacted: an old web_search result shrinks to its [n] lines, not to a bli
   const text = formatSearch(outcome, { used: 1, limit: 12 });
   const messages: ChatMessage[] = [{ role: "system", content: "s" }, { role: "user", content: "[2026-09-15 Tue 03:10 America/New_York via chat]\nfind the weight limit" }];
   messages.push({ role: "assistant", content: null, tool_calls: [{ id: "s1", type: "function", function: { name: "web_search", arguments: "{}" } }] }, { role: "tool", tool_call_id: "s1", content: text });
-  for (let i = 0; i < 7; i++) messages.push({ role: "assistant", content: null, tool_calls: [{ id: `b${i}`, type: "function", function: { name: "browser_snapshot", arguments: "{}" } }] }, { role: "tool", tool_call_id: `b${i}`, content: "z".repeat(600) });
+  for (let i = 0; i < 11; i++) messages.push({ role: "assistant", content: null, tool_calls: [{ id: `b${i}`, type: "function", function: { name: "browser_snapshot", arguments: "{}" } }] }, { role: "tool", tool_call_id: `b${i}`, content: "z".repeat(600) });
   const out = compacted(messages);
   const search = out.find((m) => m.tool_call_id === "s1")!;
   assert.match(search.content as string, /\[2\] Shipping weights — https:\/\/blog\.example\.com\/weights/);

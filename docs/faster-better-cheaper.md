@@ -1,5 +1,9 @@
 # Thirty changes that would move the needle
 
+Shipped (see the README's "Fast replies", "Host tactics" and "Models and cost"): Faster 1, 2, 6, 7, 8, 10 (3 in part: the
+kick wait is shorter); Better 1, 2, 3, 4, 5, 9, 10; Cheaper 1, 2, 3, 4, 8, 9. Still open: Faster 3 (the kick as a
+background task), 4 (host-written status pings), 5 (a lean quick prompt), 9 (cache warm-up); Better 6, 7, 8; Cheaper 5, 6, 7, 10.
+
 Each item names the mechanism in this codebase it changes and why the gain is large. They are grouped
 by what they buy: faster replies, more tasks completed correctly, and lower cost without giving any
 capability back. Where one change helps two goals it is listed once, under the goal it helps most.

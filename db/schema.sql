@@ -310,6 +310,8 @@ create table if not exists task_outcomes (
   created_at timestamptz not null default now()
 );
 create index if not exists task_outcomes_user_class on task_outcomes(user_id, class, created_at desc);
+alter table task_outcomes add column if not exists model text;   -- the primary model id the task ran on
+alter table task_outcomes add column if not exists site text;    -- the site the task worked, when it drove the browser
 
 -- Change watches: a page or a search re-read on a schedule by the host, with no model call until something changes.
 create table if not exists watches (

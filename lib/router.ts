@@ -1,38 +1,83 @@
-import { geminiDirect, supportsVision } from "./llm.js";
+import { catalog, geminiDirect, modelList, supportsVision } from "./llm.js";
 import type { Tenant } from "./tenant.js";
 
 /**
- * Which model runs a session. A ladder of four tiers, cheapest first, each an env var holding any
- * model id your provider accepts. The router's job is to start every request on the cheapest tier
- * that does that kind of work; the ladder is climbed on evidence, never by default: the agent's own
- * escalate_model, the loop guard, a site on the hard list, a photo the current model cannot see, or
- * this customer's record of failures on a tier for this kind of task (lib/outcomes.ts).
+ * Which model runs a session. A ladder of four tiers, cheapest first; each tier is a POOL of models
+ * (any ids your provider accepts, comma-separated in MODEL_<TIER>), not one model. The router's job
+ * is to start every request on the cheapest tier that does that kind of work, and within the tier on
+ * the pool member with the best record for that kind of task for this customer (lib/outcomes.ts),
+ * trying the untried ones now and then so the record fills in. The ladder is climbed on evidence,
+ * never by default: the agent's own escalate_model, the loop guard, a site on the hard list, a photo
+ * the current model cannot see, or this customer's record of failures on a tier for that kind of task.
  *
  *   MODEL_CHAT  greetings, status, notes, reminders, recall, digests, side replies
- *                                                           (default deepseek/deepseek-chat)
  *   MODEL_TASK  browser work: lookups, orders, forms, bookings, research, drafting, accounts
- *                                                           (default deepseek/deepseek-v4-pro)
  *   MODEL_HARD  judgment against a counterparty: refunds, disputes, negotiations, appeals, contracts
- *                                                           (default anthropic/claude-sonnet-5)
  *   MODEL_MAX   the strongest model there is, reached only by escalation from the hard tier
- *                                                           (default anthropic/claude-opus-5)
  *
- * The defaults are the affordable, capable models: DeepSeek does the everyday work at a tenth of the
- * price of the frontier models, and what defeats it goes up one rung, with the failed attempt costing
- * cents. Any id OpenRouter serves works in any tier, alone or as a comma-separated chain (Qwen, Kimi,
- * GLM, Grok, Gemini, GPT, Claude); GET /api/models lists them with live prices and tool support.
+ * The default pools are the affordable, capable agentic models on OpenRouter (DeepSeek, Qwen, Kimi,
+ * GLM, MiniMax, Grok, Gemini Flash) for the two cheap tiers, and the frontier models above them.
+ * Ids the live catalog does not know are skipped, so a renamed model never breaks a tier.
+ * GET /api/models lists every id with live prices and tool support.
  */
 export type Tier = "chat" | "task" | "hard" | "max";
 export const TIERS: Tier[] = ["chat", "task", "hard", "max"];
 
-export function modelFor(tier: Tier, t?: Tenant): string {
+/** The affordable, capable pools. Order is preference among equals; the outcome record and price decide otherwise. */
+export const DEFAULT_POOLS: Record<Tier, string[]> = {
+  chat: ["deepseek/deepseek-chat", "qwen/qwen3-235b-a22b-2507", "google/gemini-3.1-flash-lite", "z-ai/glm-4.5-air", "meta-llama/llama-4-maverick", "mistralai/mistral-medium-3.1"],
+  task: ["deepseek/deepseek-v4-pro", "moonshotai/kimi-k2-0905", "qwen/qwen3-max", "z-ai/glm-4.6", "x-ai/grok-4-fast", "minimax/minimax-m2", "google/gemini-3.8-flash"],
+  hard: ["anthropic/claude-sonnet-5", "google/gemini-2.5-pro", "openai/gpt-5"],
+  max: ["anthropic/claude-opus-5"],
+};
+
+/** The tier's pool: MODEL_<TIER>_<PLAN>, else MODEL_<TIER>, else the default pool; always at least one id. */
+export function poolFor(tier: Tier, t?: Tenant): string[] {
   const plan = (t?.plan ?? "starter").toUpperCase();
-  const perPlan = process.env[`MODEL_${tier.toUpperCase()}_${plan}`];
-  if (perPlan) return perPlan;
-  const def = geminiDirect()
-    ? { chat: "gemini-2.5-flash-lite", task: "gemini-2.5-flash", hard: "gemini-2.5-pro", max: "gemini-2.5-pro" }[tier] // Google-only: Pro takes the top
-    : { chat: "deepseek/deepseek-chat", task: "deepseek/deepseek-v4-pro", hard: "anthropic/claude-sonnet-5", max: "anthropic/claude-opus-5" }[tier];
-  return process.env[`MODEL_${tier.toUpperCase()}`] || def;
+  const configured = process.env[`MODEL_${tier.toUpperCase()}_${plan}`] || process.env[`MODEL_${tier.toUpperCase()}`];
+  if (configured) return modelList(configured);
+  if (geminiDirect()) return [{ chat: "gemini-2.5-flash-lite", task: "gemini-2.5-flash", hard: "gemini-2.5-pro", max: "gemini-2.5-pro" }[tier]]; // Google-only: Pro takes the top
+  return DEFAULT_POOLS[tier];
+}
+
+/** The tier's model chain: the pool in order, the first as primary and the rest as fallbacks. */
+export function modelFor(tier: Tier, t?: Tenant): string {
+  return poolFor(tier, t).join(",");
+}
+
+/** The pool with only the ids the live catalog knows (all of them when the catalog is unreachable). */
+export async function livePool(tier: Tier, t?: Tenant): Promise<string[]> {
+  const pool = poolFor(tier, t);
+  const known = await catalog().catch(() => []);
+  if (!known.length) return pool;
+  const live = pool.filter((id) => known.some((m) => m.id === id) || id.includes(":") || !id.includes("/"));
+  return live.length ? live : pool;
+}
+
+/**
+ * The pool member to start a new session on, given the record for this kind of task: the best
+ * success rate among members with enough outcomes (ties to the cheaper), an untried member now and
+ * then so every affordable model gets its chance, else the primary. Returns the chain with the pick
+ * first and the rest as fallbacks.
+ */
+export function choosePoolModel(pool: string[], stats: Map<string, { ok: number; n: number }>, price: Map<string, number>, explore: boolean): string {
+  const MIN_SAMPLES = 2;
+  const GOOD = 0.75;
+  const rate = (id: string) => {
+    const s = stats.get(id);
+    return s && s.n >= MIN_SAMPLES ? s.ok / s.n : undefined;
+  };
+  const proven = pool.filter((id) => (rate(id) ?? 0) >= GOOD).sort((a, b) => rate(b)! - rate(a)! || (price.get(a) ?? 99) - (price.get(b) ?? 99) || pool.indexOf(a) - pool.indexOf(b));
+  const untried = pool.filter((id) => !stats.has(id));
+  let pick = pool[0];
+  if (explore && untried.length) pick = untried[0];
+  else if (proven.length) pick = proven[0];
+  else if ((rate(pool[0]) ?? 1) < 0.5) {
+    // The primary keeps failing this kind of task: the next member with no bad record.
+    const other = pool.find((id) => id !== pool[0] && (rate(id) ?? 1) >= 0.5);
+    if (other) pick = other;
+  }
+  return [pick, ...pool.filter((id) => id !== pick)].join(",");
 }
 
 /**
@@ -172,10 +217,16 @@ export function nextTier(current: Tier): Tier | null {
 
 export const RANK: Record<Tier, number> = { chat: 0, task: 1, hard: 2, max: 3 };
 
-/** The cheapest tier at or above `atLeast` whose model can look at a photo; the top tier when none can. */
+/** The cheapest tier at or above `atLeast` whose primary model can look at a photo; the top tier when none can. */
 export function visionTier(atLeast: Tier, t?: Tenant): Tier {
   for (const tier of TIERS) if (RANK[tier] >= RANK[atLeast] && supportsVision(modelFor(tier, t))) return tier;
   return "max";
+}
+
+/** Reasoning effort per tier (REASONING_<TIER>): none | low | medium | high | default. Thinking tokens are billed as output at the top rate, so mechanical tiers think little. */
+export function reasoningFor(tier: Tier): "none" | "low" | "medium" | "high" | undefined {
+  const v = (process.env[`REASONING_${tier.toUpperCase()}`] ?? { chat: "none", task: "low", hard: "medium", max: "default" }[tier]).toLowerCase();
+  return v === "none" || v === "low" || v === "medium" || v === "high" ? v : undefined;
 }
 
 /** The model to move a session to so it runs on at least this tier, or undefined when it already does. */
@@ -206,9 +257,9 @@ export function reroutedModel(currentModel: string, text: string, idle: boolean,
   return model === currentModel ? undefined : model;
 }
 
+/** The tier a session's model belongs to: the pool that holds its primary id (the top tier wins a tie). */
 export function tierOfModel(model: string, t?: Tenant): Tier {
-  if (model === modelFor("max", t)) return "max";
-  if (model === modelFor("hard", t)) return "hard";
-  if (model === modelFor("task", t)) return "task";
+  const primary = modelList(model)[0] ?? model;
+  for (const tier of [...TIERS].reverse()) if (poolFor(tier, t).includes(primary)) return tier;
   return "chat";
 }

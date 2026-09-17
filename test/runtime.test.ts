@@ -104,18 +104,22 @@ test("quick questions are greetings, thanks and status; approvals, skepticism, c
     assert.ok(!isQuickQuestion(n), n);
 });
 
-import { compacted } from "../lib/runtime.js";
+import { compacted, wholeResultCount } from "../lib/runtime.js";
 
-test("old tool output is stubbed on every call; the newest few stay whole", () => {
+test("old tool output is stubbed in batches, so the cached prefix holds for a run of turns; the newest stay whole", () => {
   const messages: ChatMessage[] = [{ role: "system", content: "s" }, user("do the thing")];
-  for (let i = 0; i < 10; i++) messages.push(call("browser_snapshot"), { role: "tool", tool_call_id: "c", content: `page ${i} ` + "x".repeat(1000) });
+  for (let i = 0; i < 13; i++) messages.push(call("browser_snapshot"), { role: "tool", tool_call_id: "c", content: `page ${i} ` + "x".repeat(1000) });
   const out = compacted(messages);
   const tools = out.filter((m) => m.role === "tool").map((m) => m.content as string);
-  assert.equal(tools.length, 10);
-  assert.ok(tools.slice(0, 4).every((c) => c.includes("[older output trimmed")));
-  assert.ok(tools.slice(4).every((c) => c.length > 1000));
+  assert.equal(tools.length, 13);
+  // 13 results: six stubbed, seven whole (the boundary moves once every six turns, not every turn).
+  assert.ok(tools.slice(0, 6).every((c) => c.includes("[older output trimmed")));
+  assert.ok(tools.slice(6).every((c) => c.length > 1000));
   // The stored conversation is untouched.
   assert.ok((messages[3].content as string).length > 1000);
+  // The boundary: between six and eleven results stay whole, and it only moves at multiples of six.
+  assert.deepEqual([6, 7, 11, 12, 13, 17, 18].map((n) => wholeResultCount(n, 6)), [6, 7, 11, 6, 7, 11, 6]);
+  assert.equal(wholeResultCount(3, 6), 3);
 });
 
 import { siteActivity, SITE_NOTE_PREFIX } from "../lib/runtime.js";

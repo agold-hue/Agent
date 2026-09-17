@@ -4,11 +4,21 @@ import { ASIDE_LIMIT, currentChatSession, isSeparateTask, looksLikeAnswer, PARAL
 import type { MessageQuote } from "../../../lib/llm.js";
 import { appendTranscript } from "../../../lib/memory.js";
 import { codeHint, codeIn, isApprovalReply } from "../../../lib/policy.js";
-import { chatSessionExhausted, kick } from "../../../lib/runtime.js";
+import { chatSessionExhausted, kick, runSession } from "../../../lib/runtime.js";
 import { isPleasantryCloser, reactionFor } from "../../../lib/reaction.js";
 import { researchAck } from "../../../lib/acks.js";
-import { reroutedModel, tierFor } from "../../../lib/router.js";
+import { isLookupQuestion, isQuickQuestion, reroutedModel, tierFor } from "../../../lib/router.js";
 import { activeAsideSessions, activeTaskSessions, appendAssistantMessage, appendHostNote, appendUserEcho, appendUserMessage, ownSession, updateSession, UsageCapError, type SessionRow } from "../../../lib/sessions.js";
+
+/** How long a quick question or side reply may run inside the send request before a worker takes over. */
+const INLINE_MS = Number(process.env.INLINE_REPLY_MS ?? 25_000);
+
+/** A worker that just finished a reply on this thread is still there, holding the lease, and picks the new message up itself. */
+async function warmWorkerHolds(sessionId: string): Promise<boolean> {
+  const { one } = await import("../../../lib/db.js");
+  const r = await one<{ warm: boolean }>("select (lease_until is not null and lease_until > now() + interval '3 seconds') as warm from agent_sessions where id = $1", [sessionId]).catch(() => undefined);
+  return !!r?.warm;
+}
 
 /** The host's note behind a message that lands while the session is mid-task. */
 const MID_TASK_NOTE = "(That message arrived while you are mid-task. If it changes the task, apply it. If it needs an answer, answer it with tell_user in one line. Then continue the task; a text reply now would end it.)";
@@ -159,7 +169,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await appendAssistantMessage(session, ack, true);
     }
     await appendTranscript(t, { channel: "chat", role: "user", text }).catch(() => {});
-    await kick(session.id);
+    // A greeting, a quick question, a fact lookup or a side reply is answered inside this request:
+    // no kick, no worker cold start; the page shows the reply as it streams. The composer is free
+    // meanwhile. A run that needs more than the inline budget is handed to a worker as usual.
+    const inline = INLINE_MS > 0 && (action === "aside" || ((action === "started" || action === "sent") && (isQuickQuestion(text) || isLookupQuestion(text))));
+    if (inline) {
+      const outcome = await runSession(session.id, { budgetMs: INLINE_MS, noSiblingWait: true }).catch((err: unknown) => {
+        console.error(`[inline] ${session!.id}: ${err instanceof Error ? err.message : String(err)}`);
+        return "error" as const;
+      });
+      if (outcome === "continue" || outcome === "error") await kick(session.id);
+    } else if (!(await warmWorkerHolds(session.id))) {
+      await kick(session.id);
+    }
     return res.status(200).json({ session_id: session.id, action, reaction, ack, task: routed.spawn === "task" ? session.title : undefined });
   } catch (err) {
     if (err instanceof UsageCapError) return res.status(402).json({ error: err.message });

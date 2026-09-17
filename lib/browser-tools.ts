@@ -170,16 +170,54 @@ const COUNT_CONTROLS = `(() => { const v = (el) => { const r = el.getBoundingCli
  */
 export async function waitInteractive(page: Page, maxMs = Number(process.env.PAGE_SETTLE_MS ?? 8000)): Promise<void> {
   const start = Date.now();
-  await page.waitForLoadState("load", { timeout: Math.min(4000, maxMs) }).catch(() => {});
-  await page.waitForLoadState("networkidle", { timeout: Math.max(0, Math.min(2500, maxMs - (Date.now() - start))) }).catch(() => {});
+  await page.waitForLoadState("domcontentloaded", { timeout: Math.min(4000, maxMs) }).catch(() => {});
+  // Readiness, not a timer: the page is usable once its visible controls have appeared and stopped
+  // changing across two quick looks. A static page returns in a few hundred milliseconds; a
+  // single-page app that draws its form late is polled until it settles; the network-idle wait is
+  // only taken when nothing has appeared at all after a moment.
   let last = -1;
+  let stable = 0;
+  let idleWaited = false;
   while (Date.now() - start < maxMs) {
     const n = Number(await page.evaluate(COUNT_CONTROLS).catch(() => 0));
-    if (n > 0 && n === last) return;
+    if (n > 0 && n === last && ++stable >= 2) return;
+    if (n !== last) stable = 0;
     last = n;
-    await page.waitForTimeout(600);
+    if (n === 0 && !idleWaited && Date.now() - start > 1200) {
+      idleWaited = true;
+      await page.waitForLoadState("networkidle", { timeout: Math.max(0, Math.min(2500, maxMs - (Date.now() - start))) }).catch(() => {});
+      continue;
+    }
+    await page.waitForTimeout(150);
   }
 }
+
+/** How many messages the session had when a wait began; a longer list means the user sent something. */
+async function messageCount(sessionId: string): Promise<number> {
+  const { one } = await import("./db.js");
+  const r = await one<{ n: number }>("select jsonb_array_length(messages) as n from agent_sessions where id = $1", [sessionId]).catch(() => undefined);
+  return Number(r?.n ?? 0);
+}
+
+/**
+ * A wait that stops when the user sends something: a steer typed mid-task ("no, the Amex") used to
+ * sit behind a half-minute page wait. Polls the session's message count every couple of seconds.
+ */
+export async function interruptibleWait(row: SessionRow, limitMs: number, check: () => Promise<boolean>, stepMs = 700): Promise<"done" | "timeout" | "interrupted"> {
+  const start = Date.now();
+  const baseline = await messageCount(row.id);
+  let lastPoll = Date.now();
+  while (Date.now() - start < limitMs) {
+    if (await check()) return "done";
+    if (Date.now() - lastPoll > 2000) {
+      lastPoll = Date.now();
+      if ((await messageCount(row.id)) > baseline) return "interrupted";
+    }
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return "timeout";
+}
+export const INTERRUPTED = "(stopped waiting: the user just sent a message; read it above and continue)";
 
 /** Text of every frame, lowercased, for "wait until the page says X". */
 const lowerText = async (page: Page) => (await pageText(page).catch(() => "")).toLowerCase();
@@ -335,10 +373,9 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
           await waitInteractive(page, limit);
           return { text: `page settled after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
         }
-        while (Date.now() - start < limit) {
-          if ((await lowerText(page)).includes(want)) return { text: `"${str("text")}" is on the page after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
-          await page.waitForTimeout(700);
-        }
+        const outcome = await interruptibleWait(row, limit, async () => (await lowerText(page)).includes(want));
+        if (outcome === "done") return { text: `"${str("text")}" is on the page after ${Math.round((Date.now() - start) / 1000)}s\n\n${await snapshot(page)}` };
+        if (outcome === "interrupted") return { text: `${INTERRUPTED}\n\n${await snapshot(page)}` };
         return { text: `"${str("text")}" did not appear within ${Math.round(limit / 1000)}s\n\n${await snapshot(page)}` };
       });
     case "browser_click":
@@ -409,15 +446,21 @@ export async function runBrowserTool(t: Tenant, row: SessionRow, name: string, a
         const before = await grab();
         const start = Date.now();
         let after = before;
-        while (Date.now() - start < limit) {
-          await page.waitForTimeout(2000);
-          after = await grab();
-          if (after !== before) {
-            await page.waitForTimeout(1500);
+        const outcome = await interruptibleWait(
+          row,
+          limit,
+          async () => {
             after = await grab();
-            break;
-          }
+            return after !== before;
+          },
+          2000,
+        );
+        if (outcome === "done") {
+          await page.waitForTimeout(1500);
+          after = await grab();
         }
+        void start;
+        if (outcome === "interrupted") return { text: INTERRUPTED };
         if (after === before) return { text: `no change after ${Math.round(limit / 1000)}s` };
         const oldLines = new Set(before.split("\n"));
         const fresh = after.split("\n").filter((l) => l.trim() && !oldLines.has(l));

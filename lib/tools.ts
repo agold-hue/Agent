@@ -18,8 +18,10 @@ import { runLocalBrowserTool } from "./relay.js";
 import { runResearchTool } from "./research.js";
 import { runTrackTool } from "./tracking.js";
 import { runWatchTool } from "./watches.js";
+import { auditMoneyMove, HOLD_PREFIX } from "./audit.js";
+import { tooDearForValue } from "./tactics.js";
 import { modelFor, nextTier, tierOfModel } from "./router.js";
-import { appendAssistantMessage, appendHostNote, appendToolResult, taskStart, updateSession, type SessionRow } from "./sessions.js";
+import { appendAssistantMessage, appendHostNote, appendToolResult, taskStart, taskUserText, updateSession, type SessionRow } from "./sessions.js";
 import type { Tenant } from "./tenant.js";
 
 export interface SendEmailInput {
@@ -170,6 +172,16 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
         const cp = args as unknown as CheckpointInput;
         const verdict = autoApprove(t, cp);
         if (verdict.ok) return { text: `APPROVED (${verdict.reason}). Proceed exactly as described.` };
+        // A second reading before money moves: a cheap model checks the amount, the payee and the card on
+        // the page against the claim, the request and the facts. A discrepancy goes back to the working
+        // model as a HOLD with the specifics, before the user is ever asked.
+        if (row.browserbase_session_id && /^(purchase|payment)$/.test(String(cp.action_type))) {
+          const page = await runBrowserTool(t, row, "browser_text", {}).catch(() => undefined);
+          if (page?.text) {
+            const audit = await auditMoneyMove(t, row, cp, page.text).catch(() => ({ ok: true as const }));
+            if (!audit.ok) return { text: `${HOLD_PREFIX} ${audit.problem} Fix it on the page (the right amount, account or card), or if the page is right and the checkpoint was wrong, call checkpoint again with the correct figures and say what differs from the request in details.` };
+          }
+        }
         const live = row.browserbase_session_id ? await liveViewUrl(row.browserbase_session_id).catch(() => undefined) : undefined;
         // A dry-run preview: the page as it stands (cart, payment form, confirmation) rides with the approval card.
         if (row.browserbase_session_id && /^(purchase|payment|agreement|cancellation|dispute|account_change|signup)$/.test(String(cp.action_type))) {
@@ -251,6 +263,7 @@ export async function executeTool(t: Tenant, row: SessionRow, name: string, args
       case "escalate_model": {
         const next = nextTier(tierOfModel(row.model ?? "", t));
         if (!next) return { text: "You are already on the most capable model. Keep going with what you have, or tell the user where you are stuck." };
+        if (tooDearForValue(taskUserText(row.messages), next)) return { text: "Not escalating: the amount at stake in this request is small, and a dearer model would cost more than it is worth. Finish with what you have, or report in one line exactly what blocks and what the user can do." };
         return { text: `Escalating to the ${next} tier: ${s("reason")}`, escalateTo: modelFor(next, t) };
       }
       default:

@@ -268,6 +268,8 @@ export async function complete(opts: {
   signal?: AbortSignal;
   /** Provider plugins (OpenRouter's file-parser for PDFs); passed through as-is. */
   plugins?: unknown[];
+  /** Reasoning effort for thinking models (OpenRouter's unified parameter): "none" turns it off. Omitted = the model's default. */
+  reasoning?: "none" | "low" | "medium" | "high";
 }): Promise<Completion> {
   let ids = modelList(opts.model);
   let { provider, model } = resolveModel(ids[0] ?? opts.model);
@@ -301,6 +303,8 @@ export async function complete(opts: {
     max_tokens: opts.maxTokens ?? 4000,
   };
   if (opts.plugins?.length) body.plugins = opts.plugins;
+  // Thinking tokens are billed as output at the top rate: the caller says how much thinking a turn deserves.
+  if (opts.reasoning && isOpenRouter()) body.reasoning = opts.reasoning === "none" ? { enabled: false } : { effort: opts.reasoning };
   if (opts.tools?.length) {
     body.tools = provider.baseUrl.includes("generativelanguage.googleapis.com") ? (geminiSafeSchema(opts.tools) as ToolDef[]) : opts.tools;
     body.tool_choice = opts.toolChoice ?? "auto";
@@ -392,6 +396,13 @@ export async function complete(opts: {
         if (trimmed.length <= 1) delete body.models;
         else body.models = trimmed;
         console.error(`[llm] ${model}: models array too long, retrying with ${trimmed.length}`);
+        attempt--;
+        continue;
+      }
+      // A model or provider that rejects the reasoning setting gets the same request without it.
+      if (res.status === 400 && body.reasoning && /reasoning|thinking/i.test(text)) {
+        console.error(`[llm] ${model}: reasoning setting rejected, retrying without it`);
+        delete body.reasoning;
         attempt--;
         continue;
       }

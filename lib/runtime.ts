@@ -9,16 +9,18 @@ import { complete, estimateTokens, LLMError, supportsVision, warmCatalog, type C
 import { appendMemory, appendTranscript } from "./memory.js";
 import { deferToDigest, notifyOwner, shouldDefer } from "./notify.js";
 import { quickLookup } from "./research.js";
-import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, tierOfModel, type Tier } from "./router.js";
+import { isHardSite, isLookupQuestion, isQuickQuestion, modelFor, RANK, reasoningFor, tierOfModel, type Tier } from "./router.js";
 import { stubPageResult, stubSearchResult } from "./search.js";
 import { registrableDomain } from "./credentials.js";
 import { learnFromCorrection } from "./learn.js";
 import { detectFixes, gradeReply, keepPromise, recordFixes, suggestReplies } from "./proactive.js";
 import { recordOutcome, taskClassKey } from "./outcomes.js";
 import { readMemory } from "./memory.js";
-import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, sharedSystem, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
+import { acquireLease, browserShared, chargeCompletion, customerContext, getLoopState, getMessages, getSession, isUserMessage, messageText, monthUsageCents, persistTurn, sharedSystem, sitesIn, taskClockStart, taskCostCents, taskStart, taskTurns, taskUserText, updateSession, type SessionRow } from "./sessions.js";
 import { tenantById, type Tenant } from "./tenant.js";
 import { executeTool, type ToolOutcome } from "./tools.js";
+import { compactAfterHandoff, HANDOFF_PREFIX, HANDOFF_REQUEST, pageStuck, PREFLIGHT_PREFIX, preflightNote, ROUTES_PREFIX, SPLIT_REPORT_NOTE, splitTurnModel, stuckRoutesNote, tooDearForValue, valueAtStake, valueBudgetCents } from "./tactics.js";
+import { taskStateNote } from "./chat.js";
 
 /**
  * The agent loop, resumable. Each invocation runs turns until the task is done, the model needs
@@ -56,6 +58,8 @@ export const READ_ONLY_TOOLS = new Set(["web_search", "fetch_page", "memory_read
 const BROWSER_ACTIONS = new Set(["browser_goto", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_fill_form"]);
 /** Tools that only tidy up after the result: a turn made of these runs on the fast model. */
 const HOUSEKEEPING_TOOLS = new Set(["memory_write", "memory_append", "record_win", "record_receipt", "track_item"]);
+/** After a chat reply the worker stays for this long, holding the lease, and continues in place when the next message lands (no kick, no cold start). */
+const WARM_WAIT_MS = Number(process.env.WARM_WAIT_MS ?? 25_000);
 /** Output cap for a turn that follows a tool result: another tool call or a short reply, never an essay. */
 const TOOL_TURN_MAX_TOKENS = Number(process.env.TOOL_TURN_MAX_TOKENS ?? 1200);
 
@@ -74,10 +78,36 @@ export function chatSessionExhausted(row: SessionRow): boolean {
 
 const stamp = () => new Date().toISOString();
 
-export async function runSession(sessionId: string, opts: { budgetMs?: number } = {}): Promise<RunOutcome> {
+export async function runSession(sessionId: string, opts: { budgetMs?: number; leased?: boolean; noSiblingWait?: boolean } = {}): Promise<RunOutcome> {
   const budgetMs = opts.budgetMs ?? 240_000;
   const started = Date.now();
-  if (!(await acquireLease(sessionId, Math.ceil(budgetMs / 1000) + 60))) return "busy";
+  if (!opts.leased && !(await acquireLease(sessionId, Math.ceil(budgetMs / 1000) + 60))) return "busy";
+  if (opts.leased) await updateSession(sessionId, { lease_until: new Date(Date.now() + budgetMs + 60_000) });
+  const outcome = await runLoop(sessionId, started, budgetMs, opts);
+  // The reply is out. Instead of leaving, wait a moment for the next message on this thread: a
+  // follow-up ("and the other one?") then starts in this warm process with the context in memory,
+  // skipping the kick and the cold start. The lease is held meanwhile, so chat/send does not kick.
+  if (outcome === "done" && WARM_WAIT_MS > 0 && Date.now() - started + WARM_WAIT_MS + 30_000 < budgetMs) {
+    const state = await getLoopState(sessionId).catch(() => undefined);
+    if (state?.status === "idle" && (await getSession(sessionId))?.kind === "chat") {
+      await updateSession(sessionId, { lease_until: new Date(Date.now() + WARM_WAIT_MS + 10_000) });
+      const until = Date.now() + WARM_WAIT_MS;
+      while (Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 500));
+        const now = await getLoopState(sessionId).catch(() => undefined);
+        if (now?.status === "running") {
+          console.log(`[run] ${sessionId}: next message picked up warm`);
+          return await runSession(sessionId, { budgetMs: budgetMs - (Date.now() - started), leased: true, noSiblingWait: true });
+        }
+        if (now && now.status !== "idle") break;
+      }
+      await updateSession(sessionId, { lease_until: null });
+    }
+  }
+  return outcome;
+}
+
+async function runLoop(sessionId: string, started: number, budgetMs: number, opts: { noSiblingWait?: boolean }): Promise<RunOutcome> {
   let row = (await getSession(sessionId))!;
   const t = (await tenantById(row.user_id))!;
   await warmCatalog().catch(() => {});
@@ -87,7 +117,7 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   // call, not three: a request under two seconds old waits a moment for its siblings. Short: every
   // chat message is that young when its run starts, so this wait is on the path to every reply.
   const lastAt = row.messages[row.messages.length - 1]?.at;
-  if (SIBLING_WAIT_MS > 0 && lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
+  if (!opts.noSiblingWait && SIBLING_WAIT_MS > 0 && lastAt && Date.now() - new Date(lastAt).getTime() < 2000) {
     await new Promise((r) => setTimeout(r, SIBLING_WAIT_MS));
     row = (await getSession(sessionId)) ?? row;
   }
@@ -115,6 +145,9 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
   // model, then stop with a clear message rather than spin.
   const sigs: string[] = [];
   let escalatedForLoop = false;
+  // The browser opened on the task's site while the model thinks about its first step (F6).
+  let warm: Promise<unknown> | undefined;
+  let warmed = false;
   const save = (patch: Partial<SessionRow> = {}) =>
     persistTurn(row.id, row.messages.slice(persisted), { turns: row.turns, cost_cents: row.cost_cents, prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: row.cached_tokens, model: row.model, draft: null, ...patch }).then(() => {
       persisted = row.messages.length;
@@ -159,7 +192,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       const spent = taskCostCents(row.messages);
       if (cls.cents > 0 && spent >= cls.cents) {
         const usd = (spent / 100).toFixed(2);
-        const summary = await wrapUp(t, row, `You have spent $${usd} on this task without finishing.`, `I've spent $${usd} on this without finishing, so I stopped.`);
+        const worth = cls.valueUsd !== undefined ? ` The task is about $${cls.valueUsd}, so more spend is not worth it.` : "";
+        const summary = await wrapUp(t, row, `You have spent $${usd} on this task without finishing.${worth}`, `I've spent $${usd} on this without finishing, so I stopped.${cls.valueUsd !== undefined ? ` For a $${cls.valueUsd} matter that is where it stops paying.` : ""}`);
         return await finish(t, row, persisted, `${summary}\n\nTell me to keep going, or what to change.`, "idle");
       }
       const clock = taskClockStart(row.messages);
@@ -214,6 +248,25 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         if (row.messages.length > persisted) await save();
       }
 
+      // The first step of a browser task: what it will need that is not in place (a login, Google, an
+      // address) is said now, so the one question comes up front rather than twenty steps in; and the
+      // browser opens on the task's site while the model thinks, so its first browser step finds a page.
+      const browserTask = !quick && (row.kind === "chat" || row.kind === "task") && RANK[tierOfModel(row.model ?? "", t)] >= RANK.task && !arrivedMidTask(row.messages);
+      if (steps === 0 && browserTask && !hasHostNotePrefix(row.messages, PREFLIGHT_PREFIX)) {
+        const note = await preflightNote(t, row).catch(() => undefined);
+        if (note) {
+          row.messages.push({ role: "user", content: note });
+          await save();
+        }
+      }
+      if (steps === 0 && browserTask && !warmed && env.browserbase.configured() && !row.browserbase_session_id) {
+        const site = sitesIn(taskUserText(row.messages))[0];
+        if (site && !isLookupQuestion(taskUserText(row.messages))) {
+          warmed = true;
+          warm = runBrowserTool(t, row, "browser_open", { url: `https://${site}` }).catch((err: unknown) => console.error(`[warm] ${row.id}: ${err instanceof Error ? err.message : String(err)}`));
+        }
+      }
+
       // The stored conversation is the user's record and is never trimmed; the model gets a working copy
       // kept under the context budget.
       const context = withContextBlock(compacted(row.messages), row.contextBlock);
@@ -221,11 +274,15 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       const timings: string[] = [];
       const early = new Map<string, Promise<ToolOutcome>>();
       let completion: Completion;
+      let turnModel = row.model!;
       try {
         // The reply streams into `draft` (throttled) so the page shows it as it is written.
         let lastDraft = 0;
         const midTask = row.messages[row.messages.length - 1]?.role === "tool";
         const cheapTurn = housekeepingTurn(row.messages);
+        // On a hard-tier task the judgment model plans and decides; the clicking runs on the task model.
+        const split = cheapTurn ? undefined : splitTurnModel(row, modelFor("task", t), t);
+        turnModel = cheapTurn ? modelFor("chat", t) : split ?? row.model!;
         early.clear();
         completion = await complete({
           // A read-only call (a search, a page read, a memory lookup) starts the moment its JSON is
@@ -238,7 +295,8 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
               /* invalid JSON: the loop reports it */
             }
           },
-          model: cheapTurn ? modelFor("chat", t) : row.model!,
+          model: turnModel,
+          reasoning: reasoningFor(tierOfModel(turnModel, t)),
           messages: context,
           tools: toolsFor(quick ? "quick" : "all"),
           maxTokens: midTask && TOOL_TURN_MAX_TOKENS > 0 ? TOOL_TURN_MAX_TOKENS : undefined,
@@ -262,6 +320,14 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
         // reference markers a search-shaped answer drags along (unless the user asked for links).
         if (typeof completion.message.content === "string") completion.message.content = row.messages[row.messages.length - 1].content = unfilled(calm(stripCitations(completion.message.content, taskUserText(row.messages))));
         const text = typeof completion.message.content === "string" ? completion.message.content.trim() : "";
+        if (text && turnModel !== row.model && tierOfModel(turnModel, t) === "task" && RANK[tierOfModel(row.model ?? "", t)] >= RANK.hard) {
+          // The clicking model wrote the report: the judgment model checks it and sends its own.
+          supersedeLastReply(row.messages);
+          row.messages.push({ role: "user", content: SPLIT_REPORT_NOTE });
+          await save();
+          console.log(`[turn] ${row.id} #${row.turns} ${completion.model} ${timings.join(" ")} split-report`);
+          continue;
+        }
         const nudge = stallNudge(row, text);
         if (nudge) {
           // The model "ended" with a promise, an offer to look something up, an empty reply, or a
@@ -322,6 +388,10 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           return undefined;
         }
       });
+      if (warm && calls.some((c) => c.function.name.startsWith("browser_") || c.function.name === "login")) {
+        await warm;
+        warm = undefined;
+      }
       const lastBrowserAction = calls.reduce((last, c, i) => (BROWSER_ACTIONS.has(c.function.name) ? i : last), -1);
       const ahead = new Map<number, Promise<ToolOutcome>>();
       if (calls.length > 1) calls.forEach((c, i) => parsedArgs[i] && READ_ONLY_TOOLS.has(c.function.name) && !early.has(c.id) && ahead.set(i, executeTool(t, row, c.function.name, parsedArgs[i]!, c.id)));
@@ -350,10 +420,18 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
           row.messages[row.messages.length - 1].content = "Screenshot taken, but this model cannot view images. Use browser_text or browser_snapshot instead, or escalate_model.";
         }
         if (out.escalateTo) {
-          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), false).catch(() => {});
+          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), false, outcomeExtra(row)).catch(() => {});
+          await handoff(t, row);
           row.model = out.escalateTo;
-          row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the notes above.)` });
+          row.messages.push({ role: "user", content: `(You are now running on a more capable model. Continue the task from the hand-off above.)` });
         }
+      }
+
+      // The page did not change after two actions: a person would try a different route now. The host
+      // lists the ones not yet tried (site-note URLs, recorded paths, find-by-label, search), once per task.
+      if ((row.kind === "chat" || row.kind === "task") && pageStuck(row.messages) && !hasHostNotePrefix(row.messages, ROUTES_PREFIX)) {
+        row.messages.push({ role: "user", content: await stuckRoutesNote(t, row).catch(() => `${ROUTES_PREFIX} Take a different route now: a direct URL, browser_find by label, web_search for the page, or escalate_model.)`) });
+        console.log(`[turn] ${row.id} #${row.turns} page stuck -> routes note`);
       }
 
       // Navigating to a site on the hard list while on the task tier: move up now, before it fails.
@@ -375,12 +453,15 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       if (period) {
         await save();
         const stuckOn = tierOfModel(row.model ?? "", t);
-        if (!escalatedForLoop && stuckOn !== "max") {
+        const up: Tier = stuckOn === "hard" ? "max" : "hard";
+        if (!escalatedForLoop && stuckOn !== "max" && !tooDearForValue(taskUserText(row.messages), up)) {
           // Give it one real chance to break out on a stronger model before giving up: the judgment
-          // model for the cheap tiers, the top model when the judgment model itself is stuck.
+          // model for the cheap tiers, the top model when the judgment model itself is stuck. Not for
+          // a small amount: a $9 matter does not buy the dear model.
           escalatedForLoop = true;
-          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), stuckOn, false).catch(() => {});
-          row.model = modelFor(stuckOn === "hard" ? "max" : "hard", t);
+          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), stuckOn, false, outcomeExtra(row)).catch(() => {});
+          await handoff(t, row);
+          row.model = modelFor(up, t);
           sigs.length = 0;
           row.messages.push({ role: "user", content: "(You have repeated the same steps several times with no progress — this is a dead end. Stop repeating them. Read the page fresh and take a completely different approach. If a login failed, a code or captcha is blocking you, or the site simply will not let you through, do NOT keep trying: stop and tell the user in one line exactly what is blocking you and what you need from them. You are now on a stronger model.)" });
           await save();
@@ -401,6 +482,12 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
     await updateSession(row.id, { lease_until: null, error: (err instanceof Error ? err.message : String(err)).slice(0, 500) });
     throw err;
   }
+}
+
+/** The model the task ran on and the site it worked, for the outcome record. */
+function outcomeExtra(row: SessionRow): { model?: string; site?: string } {
+  const visited = [...siteActivity(row.messages).visited.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return { model: row.model ?? undefined, site: visited ?? sitesIn(taskUserText(row.messages))[0] };
 }
 
 /** What went wrong and what would have prevented it, appended to history/failures.md for the morning review. */
@@ -437,16 +524,43 @@ function providerProblem(err: unknown): string {
  * request (a lookup, a form, a bill) gets a middle budget; hard-tier work (refunds, negotiations,
  * projects) and self-started reviews get the full one.
  */
-function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number; cents: number } {
+function taskClass(row: SessionRow, t: Tenant): { steps: number; ms: number; cents: number; valueUsd?: number } {
   const tier = tierOfModel(row.model ?? "", t);
   // Spend per task, by class: a lookup (a balance, a price, a figure off a page) stops at LOOKUP_BUDGET_USD
   // with a summary instead of running its whole step budget on a strong model; real work gets TASK_BUDGET_USD
-  // (the session budget by default). 0 disables a cap.
+  // (the session budget by default). 0 disables a cap. A request that names an amount caps its own spend
+  // at a share of that amount: a $9 subscription never buys a dollar of model time.
   const taskCents = Number(process.env.TASK_BUDGET_USD ?? env.plans.sessionBudgetUsd()) * 100;
+  const lookupCents = Number(process.env.LOOKUP_BUDGET_USD ?? 0.5) * 100;
+  let cls: { steps: number; ms: number; cents: number; valueUsd?: number } = { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS, cents: taskCents };
+  if ((row.kind === "chat" || row.kind === "task") && tier === "task") cls = { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000), cents: lookupCents };
   if (row.kind === "chat" || row.kind === "task") {
-    if (tier === "task") return { steps: Number(process.env.MAX_TURNS_LOOKUP ?? Math.min(MAX_TASK_TURNS, 60)), ms: Math.min(TASK_TIME_LIMIT_MS, Number(process.env.LOOKUP_TIME_LIMIT_MINUTES ?? 10) * 60_000), cents: Number(process.env.LOOKUP_BUDGET_USD ?? 0.5) * 100 };
+    const amount = valueAtStake(taskUserText(row.messages));
+    if (amount !== undefined) {
+      const byValue = valueBudgetCents(amount, lookupCents, cls.cents);
+      if (byValue < cls.cents || cls.cents === 0) cls = { ...cls, cents: byValue, valueUsd: amount };
+    }
   }
-  return { steps: MAX_TASK_TURNS, ms: TASK_TIME_LIMIT_MS, cents: taskCents };
+  return cls;
+}
+
+/**
+ * The departing model writes a ten-line hand-off before a stronger model takes over: the goal, what is
+ * established, what failed and why, what to try next. The new model then reads that and the last few
+ * turns instead of forty turns of flailing at full price (compactAfterHandoff), and does better for it.
+ */
+async function handoff(t: Tenant, row: SessionRow): Promise<void> {
+  if (!row.model || (process.env.HANDOFF ?? "on") === "off") return;
+  try {
+    const context = withContextBlock(compacted(row.messages), row.contextBlock);
+    context.push({ role: "user", content: HANDOFF_REQUEST });
+    const c = await complete({ model: row.model, messages: context, tools, toolChoice: "none", maxTokens: 400, reasoning: "low" });
+    await chargeCompletion(t, row, c, "handoff").catch(() => {});
+    const text = typeof c.message.content === "string" ? c.message.content.trim() : "";
+    if (text && !c.message.tool_calls?.length) row.messages.push({ role: "user", content: `${HANDOFF_PREFIX}\n${text.slice(0, 1800)})` });
+  } catch (err) {
+    console.error(`[handoff] ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /**
@@ -498,7 +612,7 @@ async function finish(t: Tenant, row: SessionRow, persisted: number, report: str
     // The chips under the reply, from the reply itself; the page picks them up on its next poll.
     if (status === "idle" && report && !silent) await suggestReplies(t, row, report).catch(() => {});
     // How this kind of task ended on this tier, for the adaptive router; and the rule in a correction, if this task was one.
-    if (taskUsedTools(row.messages)) await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), status === "idle" && !failedWords).catch(() => {});
+    if (taskUsedTools(row.messages)) await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), status === "idle" && !failedWords, outcomeExtra(row)).catch(() => {});
     const learned = await learnFromCorrection(t, row).catch(() => undefined);
     if (learned) console.log(`[learn] ${row.id}: ${learned}`);
     // A promise in the reply ("I'll check back Thursday") is kept by the host if the model set no follow-up.
@@ -962,17 +1076,30 @@ export function recapEarlier(messages: ChatMessage[]): ChatMessage[] {
   return [messages[0], note, ...messages.slice(start)];
 }
 
+/**
+ * How many of the newest tool results stay whole: between RECENT_TOOL_RESULTS and twice that, so the
+ * stub boundary moves once every RECENT_TOOL_RESULTS turns instead of every turn. A boundary that
+ * moved every turn re-wrote one message per call, and on Claude everything after the first changed
+ * message is read again at full price; with hysteresis the prefix stays byte-identical for a run of turns.
+ */
+export function wholeResultCount(total: number, recent = RECENT_TOOL_RESULTS): number {
+  if (total <= recent) return total;
+  return recent + ((total - recent) % recent);
+}
+
 export function compacted(stored: ChatMessage[]): ChatMessage[] {
-  const messages = recapEarlier(dropStaleScreenshots(stored.map((m) => ({ ...m }))));
+  const messages = compactAfterHandoff(recapEarlier(dropStaleScreenshots(stored.map((m) => ({ ...m })))));
   // Always: keep only the newest tool results in full. The user's messages and the assistant's own
   // words stay, so the model remembers what it found; the raw page it found it on does not need to
   // ride along on every later call. The stable prefix keeps the prompt cache warm.
   const names = toolNames(messages);
+  const total = messages.filter((m) => m.role === "tool" && typeof m.content === "string").length;
+  const whole = wholeResultCount(total);
   let recent = 0;
   for (let i = messages.length - 1; i >= 1; i--) {
     const m = messages[i];
     if (m.role !== "tool" || typeof m.content !== "string") continue;
-    if (recent < RECENT_TOOL_RESULTS) recent++;
+    if (recent < whole) recent++;
     else if (m.content.length > 400) m.content = stubToolResult(names.get(m.tool_call_id ?? ""), m.content);
   }
   if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
@@ -989,11 +1116,20 @@ export function compacted(stored: ChatMessage[]): ChatMessage[] {
   if (estimateTokens(messages) < CONTEXT_TOKENS) return messages;
   // Still too big: drop the oldest middle turns entirely, keeping system + first user message.
   // Go well under the budget in one pass: every drop changes the prefix and invalidates the cache.
+  let dropped = false;
   while (estimateTokens(messages) >= CONTEXT_TOKENS * COMPACT_TARGET && messages.length > keepTail + 2) {
     const victim = messages[2];
     messages.splice(2, 1);
+    dropped = true;
     // Never leave a dangling tool result without its call, or a call without its result.
     if (victim.role === "assistant" && victim.tool_calls) while (messages[2]?.role === "tool") messages.splice(2, 1);
+  }
+  // Turns were dropped: the plan could go with them. A host-built state of the task (goal, what has
+  // been done and said, the last steps, what blocked) is pinned right after the first message, so
+  // the thread survives the cut. Built from the stored thread, no model call.
+  if (dropped) {
+    const state = taskStateNote(stored);
+    if (state) messages.splice(2, 0, { role: "user", content: state });
   }
   return messages;
 }
@@ -1005,7 +1141,7 @@ export async function kick(sessionId: string): Promise<void> {
     // The secret travels in a header, never in the URL, so request logs do not carry it.
     // The worker runs its whole slice before answering, so this never completes; it only needs to
     // be delivered. A short wait keeps the chat request snappy; the cron sweep is the backstop.
-    await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${env.cronSecret()}` }, signal: AbortSignal.timeout(Number(process.env.KICK_WAIT_MS ?? 1200)) });
+    await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${env.cronSecret()}` }, signal: AbortSignal.timeout(Number(process.env.KICK_WAIT_MS ?? 500)) });
   } catch {
     /* the cron sweep picks it up if the kick did not land */
   }

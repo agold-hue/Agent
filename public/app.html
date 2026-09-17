@@ -1091,14 +1091,31 @@
     applyHistory(await r.json());
     if (!pollTimer && ((sessionId && status === "running") || tasks.some((t) => t.status === "running"))) openStream();
   }
-  let pollTimer = null, pollTick = 0;
+  let pollTimer = null, pollTick = 0, es = null, esFailed = false;
+  const busy = () => (sessionId && status === "running") || tasks.some((t) => t.status === "running") || composing;
+  // While a reply is due, the server pushes every change over a stream (a token of the reply as it is
+  // written, a progress line, a card) the moment it happens. Polling remains the fallback when the
+  // browser or the network cannot hold a stream.
   function openStream() {
+    if (window.EventSource && !esFailed) { openEvents(); return; }
+    openPoll();
+  }
+  function openEvents() {
+    if (es) return;
+    es = new EventSource("/api/chat/stream?v=" + encodeURIComponent(historyVersion));
+    let got = false;
+    es.addEventListener("history", (e) => { got = true; try { applyHistory(JSON.parse(e.data)); } catch {} });
+    es.addEventListener("end", () => { closeEvents(); if (busy()) openEvents(); });
+    es.onerror = () => { closeEvents(); if (!got) { esFailed = true; openPoll(); } else if (busy()) setTimeout(() => openEvents(), 800); };
+  }
+  function closeEvents() { if (es) { es.close(); es = null; } }
+  function openPoll() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
       pollTick++; if (document.hidden && pollTick % 3) return;
       const r = await api("/api/chat/history?v=" + encodeURIComponent(historyVersion)); if (!r.ok) return;
       applyHistory(await r.json());
-      if (status !== "running" && !tasks.some((t) => t.status === "running")) { clearInterval(pollTimer); pollTimer = null; }
+      if (!busy()) { clearInterval(pollTimer); pollTimer = null; }
     }, 1200);
   }
   function optimistic(text, reaction, quote) {
@@ -1109,11 +1126,13 @@
     text = (text || $("text").value).trim(); if (!text) return;
     let quote = null;
     if (replyTo) { quote = { id: replyTo.id, who: replyTo.kind === "user" ? "user" : "agent", text: textOf(replyTo).slice(0, 160) }; replyTo = null; $("replyCard").hidden = true; }
-    $("send").disabled = true;
     try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch {}
     const it = optimistic(text, undefined, quote);
     swoosh();
     $("text").value = ""; autosize(); $("emojiDrawer").hidden = true; $("emojiBtn").classList.remove("on");
+    // A quick question is answered inside the send request itself and streams while it is written:
+    // the stream opens now, the composer stays free, and the reply shows before the request returns.
+    status = "running"; updateSub(); openStream();
     try {
       const r = await api("/api/chat/send", { method: "POST", body: JSON.stringify({ text, ...(quote ? { reply_to: quote } : {}) }) });
       const data = await r.json();
@@ -1131,7 +1150,7 @@
         openStream();
       }
     } catch (e) { it.text += "\n(failed to send)"; renderList(false); }
-    finally { $("send").disabled = false; if (window.matchMedia("(hover:hover)").matches) $("text").focus(); }
+    finally { if (window.matchMedia("(hover:hover)").matches) $("text").focus(); }
   }
   $("attach").onclick = () => $("file").click();
   $("file").addEventListener("change", async () => {

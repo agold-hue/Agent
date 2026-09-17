@@ -10,7 +10,8 @@
     "dev": "vercel dev",
     "test": "tsx --test test/*.test.ts",
     "db:backfill-times": "tsx scripts/backfill-times.ts",
-    "eval:search": "tsx scripts/search-eval.ts"
+    "eval:search": "tsx scripts/search-eval.ts",
+    "eval:replay": "tsx scripts/replay.ts"
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.20.0",

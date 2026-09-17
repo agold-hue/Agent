@@ -55,7 +55,7 @@ export interface SessionRow {
 export class UsageCapError extends Error {}
 
 /** Book a completion's cost and tokens on the session and the customer's month. Used by the loop and by side calls (condensing pages, the lookup fast path). */
-export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "review" | "grade" | "chips" | "other";
+export type Purpose = "turn" | "condense" | "lookup" | "wrapup" | "postmortem" | "learn" | "eval" | "watch" | "review" | "grade" | "chips" | "audit" | "handoff" | "other";
 export async function chargeCompletion(t: Tenant, row: SessionRow, completion: Completion, purpose: Purpose = "turn"): Promise<number> {
   const cost = costCents(completion.model, completion.usage);
   row.cost_cents = Math.round((Number(row.cost_cents) + cost) * 1000) / 1000;
@@ -189,10 +189,14 @@ export async function createSession(
   await ensureSeeded(t);
   // The router's guess, then one tier down when this customer's history on that tier for this kind of task is clean.
   const guessed = opts.tier ?? tierFor(opts.text, opts.kind);
-  let tier = opts.tier || opts.kind !== "chat" && opts.kind !== "task" ? guessed : await (await import("./outcomes.js")).adaptiveTier(t, opts.text, guessed).catch(() => guessed);
+  const outcomes = await import("./outcomes.js");
+  let tier = opts.tier || opts.kind !== "chat" && opts.kind !== "task" ? guessed : await outcomes.adaptiveTier(t, opts.text, guessed, sitesIn(opts.text)[0]).catch(() => guessed);
   // A photo needs a model that can look at it: the cheapest tier from here up whose model can.
   if (opts.images?.length) tier = visionTier(tier, t);
-  const model = modelFor(tier, t);
+  // A small amount at stake ("refund the $9 charge") does not buy the judgment model to start with.
+  if ((opts.kind === "chat" || opts.kind === "task") && (await import("./tactics.js")).tooDearForValue(opts.text, tier)) tier = "task";
+  // Within the tier, the pool member with the best record for this kind of task (lib/outcomes.ts).
+  const model = opts.kind === "chat" || opts.kind === "task" || opts.kind === "aside" ? await outcomes.pickModel(t, tier, opts.text).catch(() => modelFor(tier, t)) : modelFor(tier, t);
   const id = `s_${Date.now().toString(36)}${randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, "")}`;
   const first: ChatMessage = opts.images?.length
     ? { role: "user", content: [{ type: "text", text: opts.text }, ...opts.images.map((i) => ({ type: "image_url" as const, image_url: { url: `data:${i.mimeType};base64,${i.base64}` } }))], at: now() }
@@ -394,7 +398,7 @@ export function playbooksFor(text: string): string[] {
 }
 
 /** Domains named in the request ("coned.com", "uber", "amazon"). */
-function sitesIn(text: string): string[] {
+export function sitesIn(text: string): string[] {
   const out = new Set<string>();
   for (const m of text.matchAll(/\b([a-z0-9-]+\.(?:com|net|org|gov|edu|co|io|us))\b/gi)) out.add(m[1].toLowerCase().replace(/^www\./, ""));
   for (const [, name] of text.matchAll(/\b(amazon|uber|lyft|coned|con ed(?:ison)?|zillow|verizon|chase|amex|netflix|costco|walmart|target|delta|jetblue|united|expedia|opentable|resy|doordash|instacart|quickbooks)\b/gi)) out.add(name.toLowerCase().replace(/\s+/g, "") === "conedison" ? "coned.com" : `${name.toLowerCase().replace(/\s+/g, "")}.com`);
@@ -413,10 +417,15 @@ export async function inlinedNotes(t: Tenant, task: string): Promise<string> {
     const c = await readMemory(t, `playbooks/${b}.md`).catch(() => null);
     if (c) parts.push(`## playbooks/${b}.md\n${c.trim().slice(0, 6000)}`);
   }
-  for (const d of sitesIn(text)) {
+  const sites = sitesIn(text);
+  for (const d of sites) {
     const c = await readMemory(t, `sites/${d}.md`).catch(() => null);
     if (c) parts.push(`## sites/${d}.md\n${c.trim().slice(0, 3000)}`);
   }
+  // What went wrong the last time on this site or this kind of task: the same mistake is not made twice.
+  const failures = await readMemory(t, "history/failures.md").catch(() => null);
+  const lessons = failures ? relevantFailures(failures, sites, books) : [];
+  if (lessons.length) parts.push(`## What went wrong last time (history/failures.md; avoid it this time)\n${lessons.join("\n\n")}`);
   return parts.length ? `# Notes for this task (already read for you; no need to memory_read them)\n${parts.join("\n\n")}` : "";
 }
 
@@ -590,4 +599,15 @@ export async function acquireLease(id: string, seconds: number): Promise<boolean
 
 export async function releaseLease(id: string): Promise<void> {
   await q("update agent_sessions set lease_until = null where id = $1", [id]);
+}
+
+/**
+ * The last post-mortems that mention one of the task's sites, or failing that its playbook class,
+ * newest first, at most two and short. Entries look like "### 2026-09-15 14:02 · title · site.com\n...".
+ */
+export function relevantFailures(failures: string, sites: string[], classes: string[], max = 2): string[] {
+  const entries = failures.split(/\n(?=### )/).map((e) => e.trim()).filter((e) => e.startsWith("### "));
+  const bySite = entries.filter((e) => sites.some((s) => e.toLowerCase().includes(s.toLowerCase())));
+  const byClass = entries.filter((e) => !bySite.includes(e) && classes.some((c) => new RegExp(`\\b${c}\\b`, "i").test(e.split("\n")[0])));
+  return [...bySite.slice(-max).reverse(), ...byClass.slice(-max).reverse()].slice(0, max).map((e) => e.slice(0, 500));
 }
