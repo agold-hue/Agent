@@ -374,11 +374,13 @@ export async function runSession(sessionId: string, opts: { budgetMs?: number } 
       const period = loopPeriod(sigs, lastSig.startsWith("browser_scroll:") ? LOOP_LIMIT * 3 : LOOP_LIMIT);
       if (period) {
         await save();
-        if (!escalatedForLoop && tierOfModel(row.model ?? "", t) !== "hard") {
-          // Give it one real chance to break out on a stronger model before giving up.
+        const stuckOn = tierOfModel(row.model ?? "", t);
+        if (!escalatedForLoop && stuckOn !== "max") {
+          // Give it one real chance to break out on a stronger model before giving up: the judgment
+          // model for the cheap tiers, the top model when the judgment model itself is stuck.
           escalatedForLoop = true;
-          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), tierOfModel(row.model ?? "", t), false).catch(() => {});
-          row.model = modelFor("hard", t);
+          if (row.kind === "chat" || row.kind === "task") await recordOutcome(t, row.id, taskClassKey(taskUserText(row.messages)), stuckOn, false).catch(() => {});
+          row.model = modelFor(stuckOn === "hard" ? "max" : "hard", t);
           sigs.length = 0;
           row.messages.push({ role: "user", content: "(You have repeated the same steps several times with no progress — this is a dead end. Stop repeating them. Read the page fresh and take a completely different approach. If a login failed, a code or captcha is blocking you, or the site simply will not let you through, do NOT keep trying: stop and tell the user in one line exactly what is blocking you and what you need from them. You are now on a stronger model.)" });
           await save();
@@ -703,7 +705,7 @@ export function housekeepingTurn(messages: ChatMessage[]): boolean {
 export function softLandedTier(share: number, tier: Tier): Tier {
   const hardAt = Number(process.env.SOFT_LANDING_HARD ?? 0.8);
   const taskAt = Number(process.env.SOFT_LANDING_TASK ?? 0.95);
-  if (tier === "hard" && share >= hardAt) return share >= taskAt ? "chat" : "task";
+  if ((tier === "hard" || tier === "max") && share >= hardAt) return share >= taskAt ? "chat" : "task";
   if (tier === "task" && share >= taskAt) return "chat";
   return tier;
 }

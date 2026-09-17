@@ -21,8 +21,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   models.sort((a, b) => a.in + a.out - (b.in + b.out));
   res.setHeader("Cache-Control", "private, max-age=300");
   return res.status(200).json({
-    tiers: { chat: modelFor("chat", t), task: modelFor("task", t), hard: modelFor("hard", t) },
-    note: "Set MODEL_CHAT / MODEL_TASK / MODEL_HARD to any id below (comma-separated for fallbacks). Only models with tools=true can drive the browser. openrouter/auto lets OpenRouter pick per request.",
+    tiers: { chat: modelFor("chat", t), task: modelFor("task", t), hard: modelFor("hard", t), max: modelFor("max", t) },
+    note: "Set MODEL_CHAT / MODEL_TASK / MODEL_HARD / MODEL_MAX to any id below (comma-separated for fallbacks). Only models with tools=true can drive the browser. openrouter/auto lets OpenRouter pick per request.",
     count: models.length,
     models,
   });

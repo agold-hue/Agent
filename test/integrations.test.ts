@@ -5,7 +5,7 @@ import { applyReaders, labelBefore, parseReaders, recordedReaders, withReaders }
 import { toChatItems } from "../lib/chat.js";
 import { isCorrection } from "../lib/learn.js";
 import { withCacheMarkers, type ChatMessage } from "../lib/llm.js";
-import { shouldStepDown, taskClassKey } from "../lib/outcomes.js";
+import { shouldStepDown, shouldStepUp, taskClassKey } from "../lib/outcomes.js";
 import { runLocalBrowserTool } from "../lib/relay.js";
 import { withContextBlock } from "../lib/runtime.js";
 import { sharedSystem, type SessionRow } from "../lib/sessions.js";
@@ -34,6 +34,11 @@ test("adaptive tiers: three clean wins step down, one loss does not; task classe
   assert.equal(shouldStepDown(3, 0), true);
   assert.equal(shouldStepDown(2, 0), false);
   assert.equal(shouldStepDown(10, 1), false);
+  // Two failures on the router's own tier, and more failures than wins, send the class up a rung.
+  assert.equal(shouldStepUp(0, 2), true);
+  assert.equal(shouldStepUp(1, 3), true);
+  assert.equal(shouldStepUp(0, 1), false);
+  assert.equal(shouldStepUp(5, 2), false);
   assert.equal(taskClassKey("pay the con ed bill"), "money");
   assert.equal(taskClassKey("book a flight to Denver"), "travel");
   assert.equal(taskClassKey("hello there"), "general");

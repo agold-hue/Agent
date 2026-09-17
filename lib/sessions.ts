@@ -4,7 +4,7 @@ import { randomToken } from "./crypto.js";
 import { env } from "./env.js";
 import { costCents, type ChatMessage, type Completion, type MessageQuote } from "./llm.js";
 import { ensureSeeded, readMemory } from "./memory.js";
-import { modelFor, tierFor } from "./router.js";
+import { modelFor, tierFor, visionTier, type Tier } from "./router.js";
 import { ensureProvisioned, type Tenant } from "./tenant.js";
 
 /** Our record of an agent session: routing state plus the loop's own state (messages, model, lease). */
@@ -179,7 +179,7 @@ export async function monthUsageCents(t: Tenant): Promise<number> {
  */
 export async function createSession(
   t: Tenant,
-  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: "chat" | "task" | "hard"; reaction?: string; quote?: MessageQuote; recap?: string },
+  opts: { channel: "chat" | "email"; kind: string; title: string; text: string; images?: Array<{ mimeType: string; base64: string }>; row?: Partial<SessionRow>; tier?: Tier; reaction?: string; quote?: MessageQuote; recap?: string },
 ): Promise<SessionRow> {
   const cap = env.plans.monthlyCapUsd(t.plan) * 100;
   if (cap > 0 && (await monthUsageCents(t)) >= cap) {
@@ -189,7 +189,9 @@ export async function createSession(
   await ensureSeeded(t);
   // The router's guess, then one tier down when this customer's history on that tier for this kind of task is clean.
   const guessed = opts.tier ?? tierFor(opts.text, opts.kind);
-  const tier = opts.tier || opts.kind !== "chat" && opts.kind !== "task" ? guessed : await (await import("./outcomes.js")).adaptiveTier(t, opts.text, guessed).catch(() => guessed);
+  let tier = opts.tier || opts.kind !== "chat" && opts.kind !== "task" ? guessed : await (await import("./outcomes.js")).adaptiveTier(t, opts.text, guessed).catch(() => guessed);
+  // A photo needs a model that can look at it: the cheapest tier from here up whose model can.
+  if (opts.images?.length) tier = visionTier(tier, t);
   const model = modelFor(tier, t);
   const id = `s_${Date.now().toString(36)}${randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, "")}`;
   const first: ChatMessage = opts.images?.length

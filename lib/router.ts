@@ -1,33 +1,37 @@
-import { geminiDirect } from "./llm.js";
+import { geminiDirect, supportsVision } from "./llm.js";
 import type { Tenant } from "./tenant.js";
 
 /**
- * Which model runs a session. Three tiers, each an env var holding any model id your provider
- * accepts. The router's job is to pick the cheapest tier that does the job well; the agent can
- * escalate mid-task with the escalate tool, and the loop guard escalates on its own when a task
- * is stuck.
+ * Which model runs a session. A ladder of four tiers, cheapest first, each an env var holding any
+ * model id your provider accepts. The router's job is to start every request on the cheapest tier
+ * that does that kind of work; the ladder is climbed on evidence, never by default: the agent's own
+ * escalate_model, the loop guard, a site on the hard list, a photo the current model cannot see, or
+ * this customer's record of failures on a tier for this kind of task (lib/outcomes.ts).
  *
- *   MODEL_CHAT  short replies, notes, reminders, recall, digests   (default google/gemini-3.8-flash)
+ *   MODEL_CHAT  greetings, status, notes, reminders, recall, digests, side replies
+ *                                                           (default deepseek/deepseek-chat)
  *   MODEL_TASK  browser work: lookups, orders, forms, bookings, research, drafting, accounts
- *                                                                  (default anthropic/claude-sonnet-5)
+ *                                                           (default deepseek/deepseek-v4-pro)
  *   MODEL_HARD  judgment against a counterparty: refunds, disputes, negotiations, appeals, contracts
- *                                                                  (default anthropic/claude-opus-5)
+ *                                                           (default anthropic/claude-sonnet-5)
+ *   MODEL_MAX   the strongest model there is, reached only by escalation from the hard tier
+ *                                                           (default anthropic/claude-opus-5)
  *
- * The defaults favour a secretary that notices things over one that is cheap: a reply that misses the
- * wrong unit number on a bill costs more than the model does. What keeps the bill down is routing:
- * every request is tiered on its own (a thread that ran a refund on the judgment model drops back to
- * the task model for the next lookup and to the chat model for a thank-you), notes and reminders never
- * leave the chat model, and only work that needs judgment starts on the judgment model.
+ * The defaults are the affordable, capable models: DeepSeek does the everyday work at a tenth of the
+ * price of the frontier models, and what defeats it goes up one rung, with the failed attempt costing
+ * cents. Any id OpenRouter serves works in any tier, alone or as a comma-separated chain (Qwen, Kimi,
+ * GLM, Grok, Gemini, GPT, Claude); GET /api/models lists them with live prices and tool support.
  */
-export type Tier = "chat" | "task" | "hard";
+export type Tier = "chat" | "task" | "hard" | "max";
+export const TIERS: Tier[] = ["chat", "task", "hard", "max"];
 
 export function modelFor(tier: Tier, t?: Tenant): string {
   const plan = (t?.plan ?? "starter").toUpperCase();
   const perPlan = process.env[`MODEL_${tier.toUpperCase()}_${plan}`];
   if (perPlan) return perPlan;
   const def = geminiDirect()
-    ? { chat: "gemini-2.5-flash-lite", task: "gemini-2.5-flash", hard: "gemini-2.5-pro" }[tier] // Google-only: Pro takes the hard tier
-    : { chat: "google/gemini-3.8-flash", task: "anthropic/claude-sonnet-5", hard: "anthropic/claude-opus-5" }[tier];
+    ? { chat: "gemini-2.5-flash-lite", task: "gemini-2.5-flash", hard: "gemini-2.5-pro", max: "gemini-2.5-pro" }[tier] // Google-only: Pro takes the top
+    : { chat: "deepseek/deepseek-chat", task: "deepseek/deepseek-v4-pro", hard: "anthropic/claude-sonnet-5", max: "anthropic/claude-opus-5" }[tier];
   return process.env[`MODEL_${tier.toUpperCase()}`] || def;
 }
 
@@ -160,11 +164,26 @@ export function isLookupQuestion(text: string): boolean {
   return true;
 }
 
+/** One rung up the ladder, or null at the top. */
 export function nextTier(current: Tier): Tier | null {
-  return current === "chat" ? "task" : current === "task" ? "hard" : null;
+  const i = TIERS.indexOf(current);
+  return i >= 0 && i < TIERS.length - 1 ? TIERS[i + 1] : null;
 }
 
-const RANK: Record<Tier, number> = { chat: 0, task: 1, hard: 2 };
+export const RANK: Record<Tier, number> = { chat: 0, task: 1, hard: 2, max: 3 };
+
+/** The cheapest tier at or above `atLeast` whose model can look at a photo; the top tier when none can. */
+export function visionTier(atLeast: Tier, t?: Tenant): Tier {
+  for (const tier of TIERS) if (RANK[tier] >= RANK[atLeast] && supportsVision(modelFor(tier, t))) return tier;
+  return "max";
+}
+
+/** The model to move a session to so it runs on at least this tier, or undefined when it already does. */
+export function atLeastModel(currentModel: string, tier: Tier, t?: Tenant): string | undefined {
+  if (RANK[tierOfModel(currentModel, t)] >= RANK[tier]) return undefined;
+  const model = modelFor(tier, t);
+  return model === currentModel ? undefined : model;
+}
 
 /**
  * A chat thread lives for hours and its model was picked from its first message. Each new message
@@ -188,6 +207,7 @@ export function reroutedModel(currentModel: string, text: string, idle: boolean,
 }
 
 export function tierOfModel(model: string, t?: Tenant): Tier {
+  if (model === modelFor("max", t)) return "max";
   if (model === modelFor("hard", t)) return "hard";
   if (model === modelFor("task", t)) return "task";
   return "chat";
